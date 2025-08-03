@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@hcaptcha/react-hcaptcha": "^1.12.0",
+    "@supabase/supabase-js": "^2.53.0",
     "next": "15.4.4",
     "react": "19.1.0",
     "react-dom": "19.1.0"
