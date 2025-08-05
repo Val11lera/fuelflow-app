@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 import { createClient } from "@supabase/supabase-js";
 
@@ -8,6 +8,7 @@ const supabase = createClient(
 );
 
 export default function Register() {
+  const captchaRef = useRef<any>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [captchaToken, setCaptchaToken] = useState("");
@@ -15,13 +16,21 @@ export default function Register() {
 
   const handleRegister = async () => {
     if (!captchaToken) return setMessage("Please complete the captcha.");
+
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: { captchaToken },
     });
-    if (error) setMessage(error.message);
-    else setMessage("Registration successful. Check your email link.");
+
+    if (error) {
+      setMessage(error.message);
+      // Reset captcha if error
+      if (captchaRef.current) captchaRef.current.resetCaptcha();
+      setCaptchaToken("");
+    } else {
+      setMessage("Registration successful. Check your email.");
+    }
   };
 
   return (
@@ -45,6 +54,7 @@ export default function Register() {
         <HCaptcha
           sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
           onVerify={setCaptchaToken}
+          ref={captchaRef}
         />
         <button
           onClick={handleRegister}
@@ -57,3 +67,4 @@ export default function Register() {
     </div>
   );
 }
+
