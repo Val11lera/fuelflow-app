@@ -24,6 +24,7 @@ export default function Login() {
     const { error } = await supabase.auth.signInWithPassword({
       email,
       password,
+      // ❌ DO NOT include captchaToken
     });
 
     if (error) {
@@ -32,9 +33,7 @@ export default function Login() {
       setCaptchaToken("");
     } else {
       setMessage("Login successful!");
-      setTimeout(() => {
-        window.location.href = "/client-dashboard";
-      }, 1000);
+      window.location.href = "/client-dashboard";
     }
   };
 
