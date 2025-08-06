@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 import type HCaptchaType from "@hcaptcha/react-hcaptcha";
 import { createClient } from "@supabase/supabase-js";
+import { useRouter } from "next/router";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -9,11 +10,12 @@ const supabase = createClient(
 );
 
 export default function Login() {
+  const router = useRouter();
+  const captchaRef = useRef<HCaptchaType>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [captchaToken, setCaptchaToken] = useState("");
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [message, setMessage] = useState("");
-  const captchaRef = useRef<HCaptchaType>(null);
 
   const handleLogin = async () => {
     if (!captchaToken) {
@@ -21,19 +23,19 @@ export default function Login() {
       return;
     }
 
-    const { error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
-      // ❌ DO NOT include captchaToken
+      options: { captchaToken },
     });
 
     if (error) {
       setMessage("Login failed: " + error.message);
       captchaRef.current?.resetCaptcha();
-      setCaptchaToken("");
+      setCaptchaToken(null);
     } else {
       setMessage("Login successful!");
-      window.location.href = "/client-dashboard";
+      router.push("/client-dashboard");
     }
   };
 
@@ -44,14 +46,14 @@ export default function Login() {
         <input
           type="email"
           placeholder="Email"
-          className="w-full p-2 mb-3 border border-gray-300 rounded"
+          className="w-full p-2 mb-3 border rounded"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
         <input
           type="password"
           placeholder="Password"
-          className="w-full p-2 mb-3 border border-gray-300 rounded"
+          className="w-full p-2 mb-3 border rounded"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
@@ -73,6 +75,5 @@ export default function Login() {
     </div>
   );
 }
-
 
 
