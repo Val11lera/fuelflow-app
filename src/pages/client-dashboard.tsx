@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/router";
 import { createClient } from "@supabase/supabase-js";
 
@@ -9,23 +9,25 @@ const supabase = createClient(
 
 export default function ClientDashboard() {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const verifySession = async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!data.session) {
-        router.replace("/login"); // ✅ redirect to login if not logged in
-      } else {
-        setLoading(false); // ✅ session valid, render dashboard
+    const checkUser = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        router.push("/login");
       }
     };
 
-    verifySession();
+    checkUser();
   }, [router]);
 
-  if (loading) return <p className="text-center p-10">Loading...</p>;
-
-  return <h1 className="text-center p-10">Welcome to your dashboard</h1>;
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-100">
+      <h1 className="text-3xl font-bold">Welcome to the Client Dashboard</h1>
+    </div>
+  );
 }
 
