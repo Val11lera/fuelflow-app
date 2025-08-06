@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 import type HCaptchaType from "@hcaptcha/react-hcaptcha";
 import { createClient } from "@supabase/supabase-js";
+import { useRouter } from "next/router"; // ✅ added for navigation
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -9,6 +10,7 @@ const supabase = createClient(
 );
 
 export default function Login() {
+  const router = useRouter(); // ✅ useRouter hook
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [captchaToken, setCaptchaToken] = useState("");
@@ -33,8 +35,7 @@ export default function Login() {
       setCaptchaToken(""); // clear captcha token
     } else {
       setMessage("Login successful!");
-      // Optional: redirect to dashboard after login
-      window.location.href = "/client-dashboard";
+      router.push("/client-dashboard"); // ✅ use router push instead of window.location
     }
   };
 
