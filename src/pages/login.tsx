@@ -1,5 +1,5 @@
-import { useRouter } from "next/router";
 import { useEffect, useState, useRef } from "react";
+import { useRouter } from "next/router";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 import type HCaptchaType from "@hcaptcha/react-hcaptcha";
 import { createClient } from "@supabase/supabase-js";
@@ -18,17 +18,16 @@ export default function Login() {
   const captchaRef = useRef<HCaptchaType>(null);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
+    const checkSession = async () => {
+      const { data } = await supabase.auth.getSession();
       if (data.session) {
-        console.log("Already authenticated — redirecting to dashboard");
-        router.replace("/client-dashboard");
+        router.replace("/client-dashboard"); // ✅ redirect if already logged in
       }
-    });
+    };
+    checkSession();
   }, [router]);
 
   const handleLogin = async () => {
-    console.log("Login attempt:", { email, password, captchaToken });
-
     if (!captchaToken) {
       setMessage("Please complete the captcha.");
       return;
@@ -40,25 +39,19 @@ export default function Login() {
       options: { captchaToken },
     });
 
-    console.log("SignIn response:", { error, session: data?.session });
-
     if (error) {
-      console.error("Login error:", error.message);
       setMessage("Login failed: " + error.message);
       captchaRef.current?.resetCaptcha();
       setCaptchaToken("");
     } else {
-      console.log("Login successful — redirecting...");
-      setMessage("Login successful!");
       router.push("/client-dashboard");
     }
   };
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-white">
-      {/* UI elements omitted for brevity */}
-    </div>
+    // ... your existing login form
   );
 }
+
 
 
