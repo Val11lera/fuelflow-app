@@ -3,13 +3,11 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import Stripe from 'stripe';
 
 export const config = {
-  api: {
-    bodyParser: false, // Stripe needs the raw body
-  },
+  api: { bodyParser: false },
 };
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: '2025-07-30.basil', // match your Stripe webhook API version
+  apiVersion: '2024-06-20',
 });
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -19,26 +17,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const buf = await buffer(req);
-  const sig = req.headers['stripe-signature'] as string;
+  const sig = req.headers['stripe-signature'] as string | undefined;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
   let event: Stripe.Event;
 
   try {
-    event = stripe.webhooks.constructEvent(buf, sig, webhookSecret!);
+    event = stripe.webhooks.constructEvent(buf, sig!, webhookSecret!);
   } catch (err: any) {
-    console.error(`Webhook Error: ${err.message}`);
+    console.error('Webhook verify error:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Handle the event
   switch (event.type) {
-    case 'checkout.session.completed':
-      console.log('✅ Payment completed:', event.data.object);
+    case 'payment_intent.succeeded': {
+      const pi = event.data.object as Stripe.PaymentIntent;
+      console.log('💰 PI succeeded:', pi.id, pi.amount);
       break;
+    }
+    case 'checkout.session.completed': {
+      const cs = event.data.object as Stripe.Checkout.Session;
+      console.log('✅ Checkout completed:', cs.id);
+      break;
+    }
     default:
-      console.log(`Unhandled event type ${event.type}`);
+      console.log('Unhandled event:', event.type);
   }
 
-  res.json({ received: true });
+  return res.status(200).json({ received: true });
 }
+
