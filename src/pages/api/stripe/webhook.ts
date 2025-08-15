@@ -1,102 +1,138 @@
+// src/pages/api/stripe/webhook.ts
 import { buffer } from 'micro';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 
-export const config = { api: { bodyParser: false } };
+export const config = {
+  api: { bodyParser: false }, // Stripe needs the raw body
+};
 
+// --- Stripe (use your Test/Live secret; version must match your dashboard) ---
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: '2024-06-20',
 });
 
-// Server-only admin client
+// --- Supabase admin client (SERVICE ROLE KEY; never expose on client) ---
 const supabase = createClient(
   process.env.SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
-// simple UUID validator so we don't send bad values to a uuid column
-const isUUID = (v?: string | null) =>
-  typeof v === 'string' &&
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+// ---------- helpers ----------
+function safeEmailFromPI(
+  pi: Stripe.PaymentIntent,
+  extraEmail?: string | null
+): string | null {
+  // If you retrieved a PI without expand, TS's PaymentIntent doesn't have `charges`.
+  // Cast the WHOLE object to `any` BEFORE touching `.charges`.
+  const charges =
+    (pi as any)?.charges as
+      | { data?: Array<{ billing_details?: { email?: string } }> }
+      | undefined;
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  return (
+    pi.receipt_email ??
+    charges?.data?.[0]?.billing_details?.email ??
+    extraEmail ??
+    null
+  );
+}
+
+function safeAmountFromPI(pi: Stripe.PaymentIntent): number {
+  if (typeof pi.amount_received === 'number') return pi.amount_received;
+  if (typeof pi.amount === 'number') return pi.amount;
+  return 0;
+}
+
+// ---------- handler ----------
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).end('Method Not Allowed');
   }
 
-  // 1) verify signature
-  const buf = await buffer(req);
+  // 1) Verify signature
   const sig = req.headers['stripe-signature'] as string | undefined;
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!sig || !secret) {
+    return res.status(400).send('Missing Stripe signature or webhook secret');
+  }
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(buf, sig!, secret!);
+    const buf = await buffer(req);
+    event = stripe.webhooks.constructEvent(buf, sig, secret);
   } catch (err: any) {
-    console.error('Webhook verify error:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    console.error('Webhook verify error:', err?.message || err);
+    return res.status(400).send(`Webhook Error: ${err?.message ?? 'invalid'}`);
   }
 
-  // 2) idempotency: skip if we already processed this event
-  const { data: already } = await supabase
-    .from('webhook_events')
-    .select('id')
-    .eq('id', event.id)
-    .maybeSingle();
+  // 2) Idempotency guard: skip if already processed
+  try {
+    const { data: existing } = await supabase
+      .from('webhook_events')
+      .select('id')
+      .eq('id', event.id)
+      .maybeSingle();
 
-  if (already) {
-    return res.status(200).json({ received: true, duplicate: true });
+    if (existing) {
+      return res.status(200).json({ received: true, duplicate: true });
+    }
+
+    // Store raw event first (so a later failure lets Stripe retry safely)
+    const { error: insertEvtErr } = await supabase
+      .from('webhook_events')
+      .insert({
+        id: event.id,
+        type: event.type,
+        raw: event as any,
+      });
+
+    if (insertEvtErr) {
+      console.error('DB insert error (webhook_events):', insertEvtErr);
+      return res.status(500).send('DB error (webhook_events)');
+    }
+  } catch (e) {
+    console.error('Idempotency check error:', e);
+    return res.status(500).send('Idempotency error');
   }
 
-  // store raw event early so Stripe retries are safe
-  const { error: rawErr } = await supabase.from('webhook_events').insert({
-    id: event.id,
-    type: event.type,
-    raw: event as any,
-  });
-  if (rawErr) {
-    console.error('Failed to store raw event:', rawErr);
-    // not fatal – continue
-  }
-
+  // 3) Process
   try {
     switch (event.type) {
+      // Fired directly if you trigger `payment_intent.succeeded` in CLI
       case 'payment_intent.succeeded': {
         const pi = event.data.object as Stripe.PaymentIntent;
 
-        const orderId = (pi.metadata?.order_id as string) || null;
+        const orderId: string | null =
+          (pi.metadata?.order_id as string) || null;
 
-        const email =
-          pi.receipt_email ??
-          (pi.charges as any)?.data?.[0]?.billing_details?.email ??
-          null;
+        const email = safeEmailFromPI(pi, null);
+        const amount = safeAmountFromPI(pi);
 
-        const amount = Number(pi.amount_received ?? pi.amount ?? 0);
-        const currency = pi.currency ?? 'gbp';
-        const status = pi.status ?? 'unknown';
-
-        const { error: upsertPayErr } = await supabase
-          .from('payments')
-          .upsert(
-            {
-              pi_id: pi.id,
-              amount,
-              currency,
-              status,
-              email,
-              order_id: isUUID(orderId) ? orderId : null,
-            },
-            { onConflict: 'pi_id' }
-          );
-
+        // Upsert into payments (unique on pi_id)
+        const { error: upsertPayErr } = await supabase.from('payments').upsert(
+          {
+            pi_id: pi.id,
+            amount,
+            currency: pi.currency,
+            status: pi.status,
+            email,
+            order_id: orderId,
+          },
+          { onConflict: 'pi_id' }
+        );
         if (upsertPayErr) {
-          console.error('Supabase upsert error (payments):', upsertPayErr);
-          throw upsertPayErr;
+          console.error('DB upsert error (payments):', upsertPayErr);
+          return res.status(500).send('DB upsert error (payments)');
         }
 
-        if (isUUID(orderId)) {
+        // If we have an order id, mark order as paid
+        if (orderId) {
           const { error: updOrderErr } = await supabase
             .from('orders')
             .update({
@@ -107,8 +143,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             .eq('id', orderId);
 
           if (updOrderErr) {
-            console.error('Supabase update error (orders):', updOrderErr);
-            throw updOrderErr;
+            console.error('DB update error (orders):', updOrderErr);
+            return res.status(500).send('DB update error (orders)');
           }
         }
 
@@ -116,56 +152,57 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         break;
       }
 
+      // Fired by Checkout (recommended). We fetch the PI to reuse the same logic.
       case 'checkout.session.completed': {
         const cs = event.data.object as Stripe.Checkout.Session;
-        const orderId = (cs.metadata?.order_id as string) || null;
 
-        if (cs.payment_intent) {
-          const pi = await stripe.paymentIntents.retrieve(cs.payment_intent as string);
+        if (!cs.payment_intent) {
+          console.log('No payment_intent on checkout.session; skipping');
+          break;
+        }
 
-          const email =
-            pi.receipt_email ??
-            (pi.charges as any)?.data?.[0]?.billing_details?.email ??
-            cs.customer_details?.email ??
-            null;
+        const pi = await stripe.paymentIntents.retrieve(
+          cs.payment_intent as string
+        );
 
-          const amount = Number(pi.amount_received ?? pi.amount ?? 0);
-          const currency = pi.currency ?? 'gbp';
-          const status = pi.status ?? 'unknown';
+        const orderId: string | null =
+          (cs.metadata?.order_id as string) ||
+          (pi.metadata?.order_id as string) ||
+          null;
 
-          const { error: upsertPayErr } = await supabase
-            .from('payments')
-            .upsert(
-              {
-                pi_id: pi.id,
-                amount,
-                currency,
-                status,
-                email,
-                order_id: isUUID(orderId) ? orderId : null,
-              },
-              { onConflict: 'pi_id' }
-            );
+        // prefer charge/receipt email; fallback to customer_details
+        const email = safeEmailFromPI(pi, cs.customer_details?.email ?? null);
+        const amount = safeAmountFromPI(pi);
 
-          if (upsertPayErr) {
-            console.error('Supabase upsert error (payments):', upsertPayErr);
-            throw upsertPayErr;
-          }
+        const { error: upsertPayErr } = await supabase.from('payments').upsert(
+          {
+            pi_id: pi.id,
+            amount,
+            currency: pi.currency,
+            status: pi.status,
+            email,
+            order_id: orderId,
+          },
+          { onConflict: 'pi_id' }
+        );
+        if (upsertPayErr) {
+          console.error('DB upsert error (payments):', upsertPayErr);
+          return res.status(500).send('DB upsert error (payments)');
+        }
 
-          if (isUUID(orderId)) {
-            const { error: updOrderErr } = await supabase
-              .from('orders')
-              .update({
-                status: 'paid',
-                paid_at: new Date().toISOString(),
-                stripe_pi_id: pi.id,
-              })
-              .eq('id', orderId);
+        if (orderId) {
+          const { error: updOrderErr } = await supabase
+            .from('orders')
+            .update({
+              status: 'paid',
+              paid_at: new Date().toISOString(),
+              stripe_pi_id: pi.id,
+            })
+            .eq('id', orderId);
 
-            if (updOrderErr) {
-              console.error('Supabase update error (orders):', updOrderErr);
-              throw updOrderErr;
-            }
+          if (updOrderErr) {
+            console.error('DB update error (orders):', updOrderErr);
+            return res.status(500).send('DB update error (orders)');
           }
         }
 
@@ -174,16 +211,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       default:
-        console.log('Unhandled event type:', event.type);
+        console.log('Unhandled event:', event.type);
     }
 
     return res.status(200).json({ received: true });
   } catch (err: any) {
-    // letting Stripe retry by returning a 500
     console.error('Processing error:', err);
+    // Non-2xx lets Stripe retry
     return res.status(500).send('Webhook processing error');
   }
 }
-
 
 
