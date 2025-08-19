@@ -1,3 +1,4 @@
+// app/client-dashboard/page.tsx (or wherever your component lives)
 import { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -14,8 +15,15 @@ type OrderRow = {
   user_email: string;
   product: string;
   amount: number; // numeric
-  status: string; // e.g. 'paid','pending','failed'
+  status: string; // 'paid' | 'pending' | 'failed'
   created_at: string;
+};
+
+// Latest price view row
+type LatestPriceRow = {
+  fuel: "petrol" | "diesel";
+  total_price: number;     // £ per litre
+  price_date: string;      // ISO date (YYYY-MM-DD)
 };
 
 const supabase = createClient(
@@ -23,8 +31,20 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
+function money(n?: number) {
+  if (typeof n !== "number" || !isFinite(n)) return "—";
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 3,
+  }).format(n);
+}
+
 export default function ClientDashboard() {
   const [user, setUser] = useState<any>(null);
+
+  // Quotes / Orders (existing)
   const [quotes, setQuotes] = useState<QuoteRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loadingQuotes, setLoadingQuotes] = useState(true);
@@ -32,8 +52,16 @@ export default function ClientDashboard() {
   const [quotesErr, setQuotesErr] = useState<string | null>(null);
   const [ordersErr, setOrdersErr] = useState<string | null>(null);
 
+  // NEW: live prices
+  const [pricesLoading, setPricesLoading] = useState(true);
+  const [pricesErr, setPricesErr] = useState<string | null>(null);
+  const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
+  const [dieselPrice, setDieselPrice] = useState<number | null>(null);
+  const [priceDate, setPriceDate] = useState<string | null>(null); // same for both rows
+
   useEffect(() => {
     const init = async () => {
+      // 1) Auth
       const { data } = await supabase.auth.getUser();
       if (!data?.user) {
         window.location.href = "/login";
@@ -44,7 +72,7 @@ export default function ClientDashboard() {
       const isAdmin =
         (data.user.email || "").toLowerCase() === "fuelflow.queries@gmail.com";
 
-      // ---- QUOTES ----
+      // 2) Quotes (existing)
       setLoadingQuotes(true);
       setQuotesErr(null);
 
@@ -55,16 +83,18 @@ export default function ClientDashboard() {
 
       if (!isAdmin) quotesQuery = quotesQuery.eq("email", data.user.email);
 
-      const { data: quoteRows, error: quoteErr } = await quotesQuery;
-      if (quoteErr) {
-        setQuotesErr(quoteErr.message);
-        setQuotes([]);
-      } else {
-        setQuotes((quoteRows as QuoteRow[]) || []);
+      {
+        const { data: rows, error } = await quotesQuery;
+        if (error) {
+          setQuotesErr(error.message);
+          setQuotes([]);
+        } else {
+          setQuotes((rows as QuoteRow[]) || []);
+        }
+        setLoadingQuotes(false);
       }
-      setLoadingQuotes(false);
 
-      // ---- ORDERS ----
+      // 3) Orders (existing)
       setLoadingOrders(true);
       setOrdersErr(null);
 
@@ -75,14 +105,42 @@ export default function ClientDashboard() {
 
       if (!isAdmin) ordersQuery = ordersQuery.eq("user_email", data.user.email);
 
-      const { data: orderRows, error: orderErr } = await ordersQuery;
-      if (orderErr) {
-        setOrdersErr(orderErr.message);
-        setOrders([]);
-      } else {
-        setOrders((orderRows as OrderRow[]) || []);
+      {
+        const { data: rows, error } = await ordersQuery;
+        if (error) {
+          setOrdersErr(error.message);
+          setOrders([]);
+        } else {
+          setOrders((rows as OrderRow[]) || []);
+        }
+        setLoadingOrders(false);
       }
-      setLoadingOrders(false);
+
+      // 4) NEW: Latest fuel prices
+      setPricesLoading(true);
+      setPricesErr(null);
+      {
+        const { data: rows, error } = await supabase
+          .from("latest_daily_prices")
+          .select("fuel,total_price,price_date");
+
+        if (error) {
+          setPricesErr(error.message);
+          setPetrolPrice(null);
+          setDieselPrice(null);
+          setPriceDate(null);
+        } else {
+          const list = (rows as LatestPriceRow[]) || [];
+          const pet = list.find((r) => r.fuel === "petrol");
+          const die = list.find((r) => r.fuel === "diesel");
+          setPetrolPrice(pet?.total_price ?? null);
+          setDieselPrice(die?.total_price ?? null);
+          // The most recent of the two (or either if both same day)
+          const dates = list.map((r) => r.price_date).filter(Boolean);
+          setPriceDate(dates.sort().at(-1) ?? null);
+        }
+        setPricesLoading(false);
+      }
     };
 
     init();
@@ -102,7 +160,9 @@ export default function ClientDashboard() {
           </a>
           <button
             onClick={() =>
-              supabase.auth.signOut().then(() => (window.location.href = "/login"))
+              supabase.auth
+                .signOut()
+                .then(() => (window.location.href = "/login"))
             }
             className="bg-red-600 px-4 py-2 rounded transition
                        hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -117,7 +177,40 @@ export default function ClientDashboard() {
       </h2>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Quote Requests (renamed) */}
+        {/* Live Fuel Prices (NEW) */}
+        <div className="bg-gray-800 p-6 rounded-lg col-span-1 md:col-span-2">
+          <div className="flex items-baseline justify-between mb-2">
+            <h3 className="text-xl font-semibold">Today’s Pump Prices</h3>
+            <span className="text-gray-400 text-sm">
+              {pricesLoading
+                ? "Loading…"
+                : priceDate
+                ? `Effective: ${new Date(priceDate).toLocaleDateString("en-GB")}`
+                : ""}
+            </span>
+          </div>
+
+          {pricesErr && (
+            <p className="text-red-400 mb-2">Error: {pricesErr}</p>
+          )}
+
+          <ul className="space-y-2">
+            <li className="flex justify-between">
+              <span>Unleaded Petrol (95)</span>
+              <span className="text-yellow-400 font-bold">
+                {pricesLoading ? "…" : money(petrolPrice)}
+              </span>
+            </li>
+            <li className="flex justify-between">
+              <span>Diesel</span>
+              <span className="text-yellow-400 font-bold">
+                {pricesLoading ? "…" : money(dieselPrice)}
+              </span>
+            </li>
+          </ul>
+        </div>
+
+        {/* Quote Requests (existing) */}
         <div className="bg-gray-800 p-6 rounded-lg">
           <h3 className="text-xl font-semibold mb-4">Quote Requests</h3>
 
@@ -150,30 +243,21 @@ export default function ClientDashboard() {
           )}
         </div>
 
-        {/* Account Details */}
+        {/* Account Details (existing) */}
         <div className="bg-gray-800 p-6 rounded-lg">
           <h3 className="text-xl font-semibold mb-4">Account Details</h3>
-          <p><strong>Email:</strong> {user?.email}</p>
-          <p><strong>Company:</strong> test</p>
-          <p><strong>Contact:</strong> test</p>
+          <p>
+            <strong>Email:</strong> {user?.email}
+          </p>
+          <p>
+            <strong>Company:</strong> test
+          </p>
+          <p>
+            <strong>Contact:</strong> test
+          </p>
         </div>
 
-        {/* Contract Prices */}
-        <div className="bg-gray-800 p-6 rounded-lg col-span-1 md:col-span-2">
-          <h3 className="text-xl font-semibold mb-4">Your Contract Prices</h3>
-          <ul className="space-y-2">
-            <li className="flex justify-between">
-              <span>Unleaded Petrol (95)</span>
-              <span className="text-yellow-400 font-bold">£1.45</span>
-            </li>
-            <li className="flex justify-between">
-              <span>Diesel</span>
-              <span className="text-yellow-400 font-bold">£1.52</span>
-            </li>
-          </ul>
-        </div>
-
-        {/* NEW: Recent Orders */}
+        {/* Recent Orders (existing) */}
         <div className="bg-gray-800 p-6 rounded-lg col-span-1 md:col-span-2">
           <h3 className="text-xl font-semibold mb-4">Recent Orders</h3>
 
@@ -225,27 +309,8 @@ export default function ClientDashboard() {
             </div>
           )}
         </div>
-
-        {/* Billing */}
-        <div className="bg-gray-800 p-6 rounded-lg col-span-1 md:col-span-2">
-          <h3 className="text-xl font-semibold mb-4">Billing</h3>
-          <p>You have no outstanding payments.</p>
-          <div className="mt-4 flex gap-3">
-            <button
-              className="bg-yellow-500 px-4 py-2 rounded transition
-                         hover:bg-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-400"
-            >
-              Make a Payment
-            </button>
-            <button
-              className="bg-gray-600 px-4 py-2 rounded transition
-                         hover:bg-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-500"
-            >
-              View Invoices
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );
 }
+
