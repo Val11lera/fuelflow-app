@@ -1,9 +1,9 @@
 // src/pages/client-dashboard.tsx
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
 
-type Fuel = "petrol" | "diesel";
-
+/** ---- Types ---- */
 type QuoteRow = {
   id: string;
   email: string;
@@ -17,128 +17,52 @@ type OrderRow = {
   user_email: string;
   product: string;
   amount: number; // numeric
-  status: string; // 'paid'|'pending'|...
+  status: string; // e.g. 'paid','pending','failed'
   created_at: string;
 };
 
+type LatestPriceRow = {
+  fuel: "petrol" | "diesel";
+  price_date: string; // date
+  total_price: number; // numeric
+};
+
+/** ---- Supabase (browser) ---- */
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
-/** -------- helpers -------- */
-function toNum(v: unknown): number | null {
-  if (v == null) return null;
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function money(n: number | null) {
-  if (n == null) return "—";
-  try {
-    return new Intl.NumberFormat("en-GB", {
-      style: "currency",
-      currency: "GBP",
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(n);
-  } catch {
-    return `£${n.toFixed(2)}`;
-  }
-}
-
-/** Try the normalized view first (latest_price), then fallback to both table shapes */
-async function fetchLatestPrice(fuel: Fuel) {
-  // 1) Preferred: latest_price view, if you created it
-  {
-    const { data, error } = await supabase
-      .from("latest_price")
-      .select("fuel,total_price,ts")
-      .eq("fuel", fuel)
-      .limit(1)
-      .maybeSingle();
-
-    // If the view exists and returned a row, use it
-    if (!error && data) {
-      return {
-        fuel: (data as any).fuel as Fuel,
-        total_price: toNum((data as any).total_price),
-        ts: (data as any).ts as string,
-      };
-    }
-
-    // If the error is NOT "relation does not exist" (42P01), surface it
-    if (error && !(error as any)?.code?.toString()?.includes("42P01")) {
-      throw error;
-    }
-    // Otherwise silently fall through to table lookups
-  }
-
-  // 2) Newer schema: fuel_type + effective_at
-  {
-    const { data, error } = await supabase
-      .from("daily_prices")
-      .select("fuel_type,total_price,effective_at")
-      .eq("fuel_type", fuel)
-      .order("effective_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (!error && data) {
-      return {
-        fuel: (data as any).fuel_type as Fuel,
-        total_price: toNum((data as any).total_price),
-        ts: (data as any).effective_at as string,
-      };
-    }
-
-    // If the error wasn't about unknown column fuel_type, surface it
-    if (error && !(error as any)?.code?.toString()?.includes("42703")
-        && !String(error.message || "").includes("fuel_type")) {
-      throw error;
-    }
-  }
-
-  // 3) Older schema: fuel + price_date
-  {
-    const { data, error } = await supabase
-      .from("daily_prices")
-      .select("fuel,total_price,price_date")
-      .eq("fuel", fuel)
-      .order("price_date", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) throw error;
-    if (!data) return null;
-
-    return {
-      fuel: (data as any).fuel as Fuel,
-      total_price: toNum((data as any).total_price),
-      ts: (data as any).price_date as string,
-    };
-  }
+/** ---- Small helpers ---- */
+function money(n: number | null | undefined, currency = "GBP") {
+  if (n === null || n === undefined) return "—";
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(
+    n
+  );
 }
 
 export default function ClientDashboard() {
   const [user, setUser] = useState<any>(null);
 
-  // Quotes / Orders (keep your existing data)
+  // Quotes
   const [quotes, setQuotes] = useState<QuoteRow[]>([]);
-  const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loadingQuotes, setLoadingQuotes] = useState(true);
-  const [loadingOrders, setLoadingOrders] = useState(true);
   const [quotesErr, setQuotesErr] = useState<string | null>(null);
+
+  // Orders
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [loadingOrders, setLoadingOrders] = useState(true);
   const [ordersErr, setOrdersErr] = useState<string | null>(null);
 
   // Prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
-  const [pricesLoading, setPricesLoading] = useState(false);
+  const [pricesLoading, setPricesLoading] = useState(true);
   const [pricesErr, setPricesErr] = useState<string | null>(null);
 
   useEffect(() => {
-    (async () => {
+    const init = async () => {
+      // Require auth
       const { data } = await supabase.auth.getUser();
       if (!data?.user) {
         window.location.href = "/login";
@@ -147,115 +71,123 @@ export default function ClientDashboard() {
       setUser(data.user);
 
       const isAdmin =
-        (data.user.email || "").toLowerCase() === "fuelflow.queries@gmail.com";
+        (data.user.email || "").toLowerCase() ===
+        "fuelflow.queries@gmail.com";
 
       // ---- QUOTES ----
       setLoadingQuotes(true);
       setQuotesErr(null);
+      try {
+        let q = supabase
+          .from("quote_requests")
+          .select("id,email,full_name,message,created_at")
+          .order("created_at", { ascending: false });
 
-      let quotesQuery = supabase
-        .from("quote_requests")
-        .select("id,email,full_name,message,created_at")
-        .order("created_at", { ascending: false });
+        if (!isAdmin) q = q.eq("email", data.user.email);
 
-      if (!isAdmin) quotesQuery = quotesQuery.eq("email", data.user.email);
-
-      {
-        const { data: rows, error } = await quotesQuery;
-        if (error) {
-          setQuotesErr(error.message);
-          setQuotes([]);
-        } else {
-          setQuotes((rows as QuoteRow[]) || []);
-        }
+        const { data: rows, error } = await q;
+        if (error) throw error;
+        setQuotes((rows as QuoteRow[]) || []);
+      } catch (e: any) {
+        setQuotesErr(e.message ?? "Failed to load quotes");
+        setQuotes([]);
+      } finally {
+        setLoadingQuotes(false);
       }
-      setLoadingQuotes(false);
 
       // ---- ORDERS ----
       setLoadingOrders(true);
       setOrdersErr(null);
+      try {
+        let q = supabase
+          .from("orders")
+          .select("id,user_email,product,amount,status,created_at")
+          .order("created_at", { ascending: false });
 
-      let ordersQuery = supabase
-        .from("orders")
-        .select("id,user_email,product,amount,status,created_at")
-        .order("created_at", { ascending: false });
+        if (!isAdmin) q = q.eq("user_email", data.user.email);
 
-      if (!isAdmin) ordersQuery = ordersQuery.eq("user_email", data.user.email);
-
-      {
-        const { data: rows, error } = await ordersQuery;
-        if (error) {
-          setOrdersErr(error.message);
-          setOrders([]);
-        } else {
-          setOrders((rows as OrderRow[]) || []);
-        }
+        const { data: rows, error } = await q;
+        if (error) throw error;
+        setOrders((rows as OrderRow[]) || []);
+      } catch (e: any) {
+        setOrdersErr(e.message ?? "Failed to load orders");
+        setOrders([]);
+      } finally {
+        setLoadingOrders(false);
       }
-      setLoadingOrders(false);
 
-      // ---- PRICES (first load) ----
-      refreshPrices();
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      // ---- PRICES (from public.latest_daily_prices) ----
+      await fetchPrices();
+    };
+
+    init();
   }, []);
 
-  async function refreshPrices() {
+  const fetchPrices = async () => {
     setPricesLoading(true);
     setPricesErr(null);
     try {
-      const [p, d] = await Promise.all([
-        fetchLatestPrice("petrol"),
-        fetchLatestPrice("diesel"),
-      ]);
+      const { data: rows, error } = await supabase
+        .from("latest_daily_prices")
+        .select("fuel, price_date, total_price");
 
-      setPetrolPrice(p?.total_price ?? null);
-      setDieselPrice(d?.total_price ?? null);
+      if (error) throw error;
+
+      // Map to petrol/diesel
+      let petrol: number | null = null;
+      let diesel: number | null = null;
+      (rows as LatestPriceRow[] | null)?.forEach((r) => {
+        if (r.fuel === "petrol") petrol = r.total_price;
+        if (r.fuel === "diesel") diesel = r.total_price;
+      });
+
+      setPetrolPrice(petrol);
+      setDieselPrice(diesel);
     } catch (e: any) {
-      setPricesErr(e?.message || "Failed to fetch latest prices");
+      setPricesErr(e.message ?? "Failed to load prices");
       setPetrolPrice(null);
       setDieselPrice(null);
     } finally {
       setPricesLoading(false);
     }
-  }
+  };
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
-    <header className="flex justify-between items-center mb-8">
-  <h1 className="text-3xl font-bold text-yellow-400">FuelFlow</h1>
+      {/* Header with NEW Order button */}
+      <header className="flex justify-between items-center mb-8">
+        <h1 className="text-3xl font-bold text-yellow-400">FuelFlow</h1>
 
-  <div className="flex gap-3">
-    {/* NEW: Order button */}
-    <Link
-      href="/order"
-      className="bg-yellow-500 text-black px-4 py-2 rounded transition
-                 hover:bg-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-400"
-    >
-      Order Fuel
-    </Link>
+        <div className="flex gap-3">
+          <Link
+            href="/order"
+            className="bg-yellow-500 text-black px-4 py-2 rounded transition
+                       hover:bg-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+          >
+            Order Fuel
+          </Link>
 
-    {/* (Optional) Keep a quick link back to dashboard */}
-    <Link
-      href="/client-dashboard"
-      className="bg-gray-700 px-4 py-2 rounded transition
-                 hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-600"
-    >
-      Dashboard
-    </Link>
+          <Link
+            href="/client-dashboard"
+            className="bg-gray-700 px-4 py-2 rounded transition
+                       hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-600"
+          >
+            Dashboard
+          </Link>
 
-    {/* Logout stays the same */}
-    <button
-      onClick={() =>
-        supabase.auth.signOut().then(() => (window.location.href = "/login"))
-      }
-      className="bg-red-600 px-4 py-2 rounded transition
-                 hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-red-500"
-    >
-      Logout
-    </button>
-  </div>
-</header>
-
+          <button
+            onClick={() =>
+              supabase.auth
+                .signOut()
+                .then(() => (window.location.href = "/login"))
+            }
+            className="bg-red-600 px-4 py-2 rounded transition
+                       hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-red-500"
+          >
+            Logout
+          </button>
+        </div>
+      </header>
 
       <h2 className="text-2xl font-bold mb-4">
         Welcome Back, {user?.email || "Client"}!
@@ -298,28 +230,30 @@ export default function ClientDashboard() {
         {/* Account Details */}
         <div className="bg-gray-800 p-6 rounded-lg">
           <h3 className="text-xl font-semibold mb-4">Account Details</h3>
-          <p><strong>Email:</strong> {user?.email}</p>
-          <p><strong>Company:</strong> test</p>
-          <p><strong>Contact:</strong> test</p>
+          <p>
+            <strong>Email:</strong> {user?.email}
+          </p>
+          <p>
+            <strong>Company:</strong> test
+          </p>
+          <p>
+            <strong>Contact:</strong> test
+          </p>
         </div>
 
-        {/* Contract Prices */}
+        {/* Your Contract Prices */}
         <div className="bg-gray-800 p-6 rounded-lg col-span-1 md:col-span-2">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xl font-semibold mb-4">Your Contract Prices</h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-xl font-semibold">Your Contract Prices</h3>
             <div className="flex items-center gap-3">
               {pricesErr && (
-                <span className="text-sm text-red-400">
-                  {pricesErr}
-                </span>
+                <span className="text-red-400 text-sm">{pricesErr}</span>
               )}
               <button
-                onClick={refreshPrices}
+                onClick={fetchPrices}
                 className="bg-gray-700 px-3 py-1 rounded hover:bg-gray-600"
-                disabled={pricesLoading}
-                aria-busy={pricesLoading}
               >
-                {pricesLoading ? "Refreshing…" : "Refresh"}
+                Refresh
               </button>
             </div>
           </div>
@@ -328,18 +262,18 @@ export default function ClientDashboard() {
             <li className="flex justify-between">
               <span>Unleaded Petrol (95)</span>
               <span className="text-yellow-400 font-bold">
-                {money(petrolPrice)}
+                {pricesLoading ? "…" : money(petrolPrice)}
               </span>
             </li>
             <li className="flex justify-between">
               <span>Diesel</span>
               <span className="text-yellow-400 font-bold">
-                {money(dieselPrice)}
+                {pricesLoading ? "…" : money(dieselPrice)}
               </span>
             </li>
           </ul>
 
-          <p className="mt-3 text-sm text-gray-400">
+          <p className="text-gray-400 mt-4">
             Prices shown are the latest for each fuel.
           </p>
         </div>
@@ -375,7 +309,9 @@ export default function ClientDashboard() {
                       </td>
                       <td className="py-2 pr-4">{o.user_email}</td>
                       <td className="py-2 pr-4">{o.product}</td>
-                      <td className="py-2 pr-4">£{Number(o.amount).toFixed(2)}</td>
+                      <td className="py-2 pr-4">
+                        £{Number(o.amount).toFixed(2)}
+                      </td>
                       <td className="py-2 pr-4">
                         <span
                           className={`px-2 py-1 rounded text-xs ${
@@ -400,4 +336,5 @@ export default function ClientDashboard() {
     </div>
   );
 }
+
 
