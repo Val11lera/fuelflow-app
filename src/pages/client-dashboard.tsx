@@ -221,27 +221,41 @@ export default function ClientDashboard() {
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
-      <header className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold text-yellow-400">FuelFlow</h1>
-        <div className="flex gap-2">
-          <a
-            href="/client-dashboard"
-            className="bg-yellow-500 px-4 py-2 rounded transition
-                       hover:bg-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-400"
-          >
-            Dashboard
-          </a>
-          <button
-            onClick={() =>
-              supabase.auth.signOut().then(() => (window.location.href = "/login"))
-            }
-            className="bg-red-600 px-4 py-2 rounded transition
-                       hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-red-500"
-          >
-            Logout
-          </button>
-        </div>
-      </header>
+    <header className="flex justify-between items-center mb-8">
+  <h1 className="text-3xl font-bold text-yellow-400">FuelFlow</h1>
+
+  <div className="flex gap-3">
+    {/* NEW: Order button */}
+    <Link
+      href="/order"
+      className="bg-yellow-500 text-black px-4 py-2 rounded transition
+                 hover:bg-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+    >
+      Order Fuel
+    </Link>
+
+    {/* (Optional) Keep a quick link back to dashboard */}
+    <Link
+      href="/client-dashboard"
+      className="bg-gray-700 px-4 py-2 rounded transition
+                 hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-600"
+    >
+      Dashboard
+    </Link>
+
+    {/* Logout stays the same */}
+    <button
+      onClick={() =>
+        supabase.auth.signOut().then(() => (window.location.href = "/login"))
+      }
+      className="bg-red-600 px-4 py-2 rounded transition
+                 hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-red-500"
+    >
+      Logout
+    </button>
+  </div>
+</header>
+
 
       <h2 className="text-2xl font-bold mb-4">
         Welcome Back, {user?.email || "Client"}!
