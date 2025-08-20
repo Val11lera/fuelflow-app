@@ -1,141 +1,88 @@
 // src/pages/api/stripe/checkout/create.ts
-import type { NextApiRequest, NextApiResponse } from 'next';
-import Stripe from 'stripe';
-import { createClient } from '@supabase/supabase-js';
+import type { NextApiRequest, NextApiResponse } from "next";
+import Stripe from "stripe";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: '2024-06-20',
+  apiVersion: "2024-06-20",
 });
 
-const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL as string,
-  process.env.SUPABASE_SERVICE_ROLE_KEY as string
-);
-
-// Helper to format absolute URLs
-function baseUrl(req: NextApiRequest) {
-  const env = process.env.SITE_URL && process.env.SITE_URL.trim();
-  if (env) return env.replace(/\/+$/, '');
-  const proto =
-    (req.headers['x-forwarded-proto'] as string) ||
-    (req.headers['x-forwarded-protocol'] as string) ||
-    'http';
-  const host =
-    (req.headers['x-forwarded-host'] as string) ||
-    (req.headers['host'] as string) ||
-    'localhost:3000';
-  return `${proto}://${host}`;
-}
-
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).end('Method Not Allowed');
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ error: "Method Not Allowed" });
   }
 
   try {
     const {
-      userEmail,
-      fuel,          // 'petrol' | 'diesel'
-      litres,        // number
-      deliveryDate,  // optional ISO date string
-      name,
-      address,
+      fuel,            // "petrol" | "diesel"
+      litres,          // number/string
+      unit_price,      // price per litre in GBP, e.g. 4.66
+      delivery_date,   // "YYYY-MM-DD"
+      email,           // receipt email
+      full_name,
+      address_line1,
+      address_line2,
+      city,
       postcode,
-    } = req.body as {
-      userEmail: string;
-      fuel: 'petrol' | 'diesel';
-      litres: number;
-      deliveryDate?: string | null;
-      name?: string;
-      address?: string;
-      postcode?: string;
-    };
+    } = req.body ?? {};
 
-    if (!userEmail || !fuel || !litres || litres <= 0) {
-      return res.status(400).json({ error: 'Missing or invalid order fields' });
+    // Basic validation + coercion
+    const L = Number(litres);
+    const P = Number(unit_price);
+    if (!fuel || !["petrol", "diesel"].includes(String(fuel))) {
+      return res.status(400).json({ error: "Invalid fuel" });
     }
-
-    // 1) Get current unit price for the selected fuel
-    const { data: priceRow, error: priceErr } = await supabaseAdmin
-      .from('latest_daily_prices')
-      .select('fuel,total_price')
-      .eq('fuel', fuel)
-      .maybeSingle();
-
-    if (priceErr || !priceRow) {
-      return res.status(500).json({ error: 'Could not fetch unit price' });
+    if (!Number.isFinite(L) || L <= 0) {
+      return res.status(400).json({ error: "Invalid litres" });
     }
-
-    const unitPrice = Number(priceRow.total_price); // £ per litre
-    const total = unitPrice * litres;               // £
-    const totalPence = Math.round(total * 100);     // pence (integer)
-
-    // 2) Create a pending order row
-    const { data: order, error: orderErr } = await supabaseAdmin
-      .from('orders')
-      .insert({
-        user_email: userEmail,
-        fuel,
-        litres,
-        delivery_date: deliveryDate ?? null,
-        name: name ?? null,
-        address: address ?? null,
-        postcode: postcode ?? null,
-        unit_price: unitPrice,
-        total_amount_pence: totalPence,
-        status: 'pending',
-      })
-      .select('id')
-      .single();
-
-    if (orderErr || !order) {
-      return res.status(500).json({ error: 'Failed to create order' });
+    if (!Number.isFinite(P) || P <= 0) {
+      return res.status(400).json({ error: "Invalid unit price" });
     }
+    if (!email) return res.status(400).json({ error: "Missing email" });
 
-    // 3) Create Stripe Checkout Session
-    const success = `${baseUrl(req)}/checkout/success?orderId=${order.id}`;
-    const cancel = `${baseUrl(req)}/checkout/cancel?orderId=${order.id}`;
+    // Always compute the total on the server (pence)
+    const amountPence = Math.round(P * 100 * L);
+
+    const success = `${process.env.SITE_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`;
+    const cancel  = `${process.env.SITE_URL}/checkout/cancel`;
 
     const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      customer_email: userEmail,
+      mode: "payment",
+      customer_email: email,
+      success_url: success,
+      cancel_url: cancel,
       line_items: [
         {
           price_data: {
-            currency: 'gbp',
+            currency: "gbp",
             product_data: {
-              name: `Fuel order - ${fuel}`,
-              description: `${litres} litre(s) @ £${unitPrice.toFixed(2)}/L`,
+              name: `Fuel order — ${fuel} (${L}L @ £${P.toFixed(2)}/L)`,
+              description: delivery_date ? `Requested delivery: ${delivery_date}` : undefined,
             },
-            unit_amount: totalPence,
+            unit_amount: amountPence, // total in pence
           },
           quantity: 1,
         },
       ],
-      success_url: success,
-      cancel_url: cancel,
+      shipping_address_collection: { allowed_countries: ["GB"] },
       metadata: {
-        order_id: order.id,
-        fuel,
-        litres: String(litres),
-        unit_price: String(unitPrice),
-        email: userEmail,
-      },
-      payment_intent_data: {
-        metadata: {
-          order_id: order.id,
-          fuel,
-          litres: String(litres),
-          unit_price: String(unitPrice),
-          email: userEmail,
-        },
+        fuel: String(fuel),
+        litres: String(L),
+        unit_price: String(P),
+        delivery_date: delivery_date || "",
+        full_name: full_name || "",
+        address_line1: address_line1 || "",
+        address_line2: address_line2 || "",
+        city: city || "",
+        postcode: postcode || "",
       },
     });
 
-    return res.status(200).json({ url: session.url });
-  } catch (e: any) {
-    console.error('create checkout error', e);
-    return res.status(500).json({ error: 'Checkout creation failed' });
+    // 👇 IMPORTANT: return JSON, not a 303
+    return res.status(200).json({ url: session.url, session_id: session.id });
+  } catch (err: any) {
+    console.error("checkout/create error", err);
+    return res.status(500).json({ error: err?.message || "server error" });
   }
 }
+
