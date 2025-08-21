@@ -4,7 +4,6 @@ import { createClient } from "@supabase/supabase-js";
 
 type PriceRow = { fuel: "petrol" | "diesel"; total_price: number };
 
-/** Supabase client (browser) */
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
@@ -15,14 +14,17 @@ function money(n: number | null | undefined) {
   return `£${(n as number).toFixed(2)}`;
 }
 
+type AddrShape = "split" | "single" | "unknown";
+type MoneyShape = "pence" | "numeric" | "unknown";
+
 export default function OrderPage() {
   const [user, setUser] = useState<any>(null);
 
-  /** Prices */
-  const [petrolPrice, setPetrolPrice] = useState<number | null>(null); // £/L
-  const [dieselPrice, setDieselPrice] = useState<number | null>(null); // £/L
+  // prices
+  const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
+  const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
-  /** Form */
+  // form
   const [fuel, setFuel] = useState<"petrol" | "diesel">("diesel");
   const [litres, setLitres] = useState<string>("1000");
   const [deliveryDate, setDeliveryDate] = useState<string>("");
@@ -36,11 +38,15 @@ export default function OrderPage() {
 
   const [accepted, setAccepted] = useState<boolean>(true);
 
-  /** UI */
+  // UI
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [warn, setWarn] = useState<string | null>(null);
 
-  /** Derived totals */
+  // detected table shape
+  const [addrShape, setAddrShape] = useState<AddrShape>("unknown");
+  const [moneyShape, setMoneyShape] = useState<MoneyShape>("unknown");
+
   const unitPrice = useMemo(() => {
     const p = fuel === "petrol" ? petrolPrice : dieselPrice;
     return p ?? null;
@@ -52,7 +58,6 @@ export default function OrderPage() {
     return unitPrice * L;
   }, [unitPrice, litres]);
 
-  /** Load user + latest prices */
   useEffect(() => {
     (async () => {
       const { data: u } = await supabase.auth.getUser();
@@ -63,118 +68,64 @@ export default function OrderPage() {
       setUser(u.user);
       setEmail(u.user.email || "");
 
-      // Try latest_prices first (your project shows this view).
+      // prices (try latest_prices -> latest_daily_prices)
       let { data: lp, error: e1 } = await supabase
         .from("latest_prices")
         .select("fuel,total_price");
       if (e1 || !lp?.length) {
-        // Fallback to latest_daily_prices
         const { data: dp, error: e2 } = await supabase
           .from("latest_daily_prices")
           .select("fuel,total_price");
         if (!e2 && dp?.length) lp = dp as any;
       }
-
       if (lp && lp.length) {
         for (const r of lp as PriceRow[]) {
           if (r.fuel === "petrol") setPetrolPrice(Number(r.total_price));
           if (r.fuel === "diesel") setDieselPrice(Number(r.total_price));
         }
       }
+
+      // ==== Detect orders table shape (no DB migrations) ====
+
+      // Address shape
+      // If selecting a non-existing column errors, that's OK – we catch quietly.
+      let aShape: AddrShape = "unknown";
+      let r1 = await supabase.from("orders").select("address_line1").limit(0);
+      if (!r1.error) aShape = "split";
+      if (aShape === "unknown") {
+        let r2 = await supabase.from("orders").select("address").limit(0);
+        if (!r2.error) aShape = "single";
+      }
+      setAddrShape(aShape);
+
+      // Money shape
+      let mShape: MoneyShape = "unknown";
+      let m1 = await supabase
+        .from("orders")
+        .select("unit_price_pence,total_pence")
+        .limit(0);
+      if (!m1.error) mShape = "pence";
+      if (mShape === "unknown") {
+        let m2 = await supabase
+          .from("orders")
+          .select("unit_price,total_amount_pence")
+          .limit(0);
+        if (!m2.error) mShape = "numeric";
+      }
+      setMoneyShape(mShape);
+
+      if (aShape === "unknown" || mShape === "unknown") {
+        setWarn(
+          "Some order columns were not detected. We will save a minimal order record and continue to Stripe."
+        );
+      }
     })();
   }, []);
-
-  /** Insert that adapts to your current schema */
-  async function insertOrderWithFallbacks(base: {
-    user_email: string;
-    fuel: "petrol" | "diesel";
-    litres: number;
-    delivery_date: string | null; // ISO (YYYY-MM-DD)
-    name: string;
-    address_line1: string;
-    address_line2?: string | null;
-    city?: string | null;
-    postcode: string;
-    unit_price_GBP: number; // £/L
-    total_GBP: number; // £
-  }) {
-    // Attempt A: split-address + pence columns (modern)
-    const tryA = {
-      user_email: base.user_email,
-      fuel: base.fuel,
-      litres: base.litres,
-      delivery_date: base.delivery_date,
-      name: base.name,
-      address_line1: base.address_line1,
-      address_line2: base.address_line2 ?? null,
-      city: base.city ?? null,
-      postcode: base.postcode,
-      unit_price_pence: Math.round(base.unit_price_GBP * 100),
-      total_pence: Math.round(base.total_GBP * 100),
-      status: "ordered",
-    };
-
-    // Attempt B: split-address + (unit_price numeric) + (total_amount_pence)
-    const tryB = {
-      ...tryA,
-      unit_price: base.unit_price_GBP,
-      total_amount_pence: Math.round(base.total_GBP * 100),
-    } as any;
-    delete (tryB as any).unit_price_pence;
-    delete (tryB as any).total_pence;
-
-    // Attempt C: single address field + pence columns
-    const singleAddress =
-      [base.address_line1, base.address_line2, base.city]
-        .filter(Boolean)
-        .join(", ") || base.postcode;
-
-    const tryC = {
-      user_email: base.user_email,
-      fuel: base.fuel,
-      litres: base.litres,
-      delivery_date: base.delivery_date,
-      name: base.name,
-      address: singleAddress,
-      postcode: base.postcode,
-      unit_price_pence: Math.round(base.unit_price_GBP * 100),
-      total_pence: Math.round(base.total_GBP * 100),
-      status: "ordered",
-    };
-
-    // Attempt D: single address + (unit_price numeric) + (total_amount_pence)
-    const tryD = {
-      ...tryC,
-      unit_price: base.unit_price_GBP,
-      total_amount_pence: Math.round(base.total_GBP * 100),
-    } as any;
-    delete (tryD as any).unit_price_pence;
-    delete (tryD as any).total_pence;
-
-    // Try in order, stopping at the first that succeeds.
-    const attempts = [tryA, tryB, tryC, tryD];
-
-    let lastError: string | null = null;
-    for (const payload of attempts) {
-      const { data, error } = await supabase
-        .from("orders")
-        .insert(payload)
-        .select("id")
-        .single();
-
-      if (!error && data?.id) {
-        return data.id as string;
-      }
-      lastError = error?.message || "insert_failed";
-      // If the error is clearly a column-missing error, we continue to the next attempt.
-      // Otherwise we also continue — the next mapping might match the live schema.
-    }
-    throw new Error(lastError || "DB insert failed");
-  }
 
   async function handlePay() {
     try {
       setErr(null);
+      setWarn(null);
 
       if (!accepted) {
         setErr("Please agree to the Terms & Conditions.");
@@ -209,28 +160,59 @@ export default function OrderPage() {
 
       setBusy(true);
 
-      /** 1) Create order row (with schema fallbacks) */
-      const orderId = await insertOrderWithFallbacks({
+      // Build payload only with columns that exist
+      const baseCommon: any = {
         user_email: (user?.email || "").toLowerCase(),
         fuel,
         litres: L,
-        delivery_date: deliveryDate || null, // YYYY-MM-DD
+        delivery_date: deliveryDate, // YYYY-MM-DD
         name: fullName,
-        address_line1: addr1,
-        address_line2: addr2 || null,
-        city,
-        postcode,
-        unit_price_GBP: unitPrice,
-        total_GBP: unitPrice * L,
-      });
+        status: "ordered",
+      };
 
-      /** 2) Create Stripe Checkout session */
+      // address
+      if (addrShape === "split") {
+        baseCommon.address_line1 = addr1;
+        baseCommon.address_line2 = addr2 || null;
+        baseCommon.city = city;
+        baseCommon.postcode = postcode;
+      } else if (addrShape === "single") {
+        baseCommon.address = [addr1, addr2, city].filter(Boolean).join(", ");
+        baseCommon.postcode = postcode;
+      } else {
+        // unknown: store only what is safe
+        baseCommon.postcode = postcode;
+      }
+
+      // money
+      const totalGBP = unitPrice * L;
+      if (moneyShape === "pence") {
+        baseCommon.unit_price_pence = Math.round(unitPrice * 100);
+        baseCommon.total_pence = Math.round(totalGBP * 100);
+      } else if (moneyShape === "numeric") {
+        baseCommon.unit_price = unitPrice;
+        baseCommon.total_amount_pence = Math.round(totalGBP * 100);
+      } // unknown -> store nothing extra
+
+      // Insert (no unknown columns are sent)
+      const { data: created, error } = await supabase
+        .from("orders")
+        .insert(baseCommon)
+        .select("id")
+        .single();
+
+      if (error) {
+        throw new Error(error.message || "DB insert failed");
+      }
+      const orderId = created?.id as string;
+
+      // Stripe payload (can include rich details regardless of DB columns)
       const payload = {
         order_id: orderId,
         fuel,
         litres: L,
         unit_price: unitPrice,
-        total: unitPrice * L,
+        total: totalGBP,
         delivery_date: deliveryDate,
         email,
         full_name: fullName,
@@ -250,7 +232,7 @@ export default function OrderPage() {
         throw new Error(data?.error || `HTTP ${resp.status}`);
       }
 
-      window.location.href = data.url; // redirect to Stripe
+      window.location.href = data.url;
     } catch (e: any) {
       setBusy(false);
       setErr(e?.message || "Something went wrong.");
@@ -271,11 +253,15 @@ export default function OrderPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
           <div className="bg-gray-800 p-5 rounded-lg">
             <div className="text-sm text-gray-300">Petrol (95)</div>
-            <div className="text-3xl font-bold mt-2">{money(petrolPrice)}{" "}<span className="text-sm font-normal">/ litre</span></div>
+            <div className="text-3xl font-bold mt-2">
+              {money(petrolPrice)} <span className="text-sm font-normal">/ litre</span>
+            </div>
           </div>
           <div className="bg-gray-800 p-5 rounded-lg">
             <div className="text-sm text-gray-300">Diesel</div>
-            <div className="text-3xl font-bold mt-2">{money(dieselPrice)}{" "}<span className="text-sm font-normal">/ litre</span></div>
+            <div className="text-3xl font-bold mt-2">
+              {money(dieselPrice)} <span className="text-sm font-normal">/ litre</span>
+            </div>
           </div>
           <div className="bg-gray-800 p-5 rounded-lg">
             <div className="text-sm text-gray-300">Estimated Total</div>
@@ -283,18 +269,21 @@ export default function OrderPage() {
           </div>
         </div>
 
-        {/* Error */}
         {err && (
           <div className="mt-6 bg-red-700/80 border border-red-500 text-red-100 p-4 rounded">
             <p className="font-semibold">Please fix the following:</p>
             <p className="mt-1">{err}</p>
           </div>
         )}
+        {!err && warn && (
+          <div className="mt-6 bg-yellow-800/70 border border-yellow-500 text-yellow-100 p-4 rounded">
+            {warn}
+          </div>
+        )}
 
         {/* Form */}
         <div className="bg-gray-800 rounded-lg p-6 mt-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Fuel */}
             <div>
               <label className="block text-gray-300 mb-1">Fuel</label>
               <select
@@ -307,7 +296,6 @@ export default function OrderPage() {
               </select>
             </div>
 
-            {/* Litres */}
             <div>
               <label className="block text-gray-300 mb-1">Litres</label>
               <input
@@ -319,7 +307,6 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* Delivery date */}
             <div>
               <label className="block text-gray-300 mb-1">Delivery date</label>
               <input
@@ -330,7 +317,6 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* Email */}
             <div>
               <label className="block text-gray-300 mb-1">Your email (receipt)</label>
               <input
@@ -341,7 +327,6 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* Full name */}
             <div>
               <label className="block text-gray-300 mb-1">Full name</label>
               <input
@@ -351,7 +336,6 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* Address line 1 */}
             <div>
               <label className="block text-gray-300 mb-1">Address line 1</label>
               <input
@@ -361,7 +345,6 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* Address line 2 */}
             <div>
               <label className="block text-gray-300 mb-1">Address line 2</label>
               <input
@@ -371,7 +354,6 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* City */}
             <div>
               <label className="block text-gray-300 mb-1">City</label>
               <input
@@ -381,7 +363,6 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* Postcode */}
             <div>
               <label className="block text-gray-300 mb-1">Postcode</label>
               <input
@@ -392,7 +373,6 @@ export default function OrderPage() {
             </div>
           </div>
 
-          {/* Terms */}
           <div className="mt-4 flex items-center gap-2">
             <input
               id="terms"
@@ -410,7 +390,6 @@ export default function OrderPage() {
             </label>
           </div>
 
-          {/* Summary + CTA */}
           <div className="mt-6 flex items-center justify-between">
             <div className="text-gray-300">
               Unit price: <strong>{unitPrice ? `£${unitPrice.toFixed(3)}/L` : "—"}</strong>{" "}
