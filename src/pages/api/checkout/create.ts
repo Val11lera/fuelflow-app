@@ -1,141 +1,124 @@
 // src/pages/api/stripe/checkout/create.ts
-import type { NextApiRequest, NextApiResponse } from 'next';
-import Stripe from 'stripe';
-import { createClient } from '@supabase/supabase-js';
+import type { NextApiRequest, NextApiResponse } from "next";
+import Stripe from "stripe";
+import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: '2024-06-20',
+  apiVersion: "2024-06-20",
 });
 
-const supabaseAdmin = createClient(
+// Admin Supabase client (server-only)
+const supabase = createClient(
   process.env.SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
-// Helper to format absolute URLs
-function baseUrl(req: NextApiRequest) {
-  const env = process.env.SITE_URL && process.env.SITE_URL.trim();
-  if (env) return env.replace(/\/+$/, '');
+function getBaseUrl(req: NextApiRequest) {
   const proto =
-    (req.headers['x-forwarded-proto'] as string) ||
-    (req.headers['x-forwarded-protocol'] as string) ||
-    'http';
+    (req.headers["x-forwarded-proto"] as string) ||
+    (req.headers["x-forwarded-protocol"] as string) ||
+    "https";
   const host =
-    (req.headers['x-forwarded-host'] as string) ||
-    (req.headers['host'] as string) ||
-    'localhost:3000';
+    (req.headers["x-forwarded-host"] as string) ||
+    (req.headers["host"] as string) ||
+    "localhost:3000";
   return `${proto}://${host}`;
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).end('Method Not Allowed');
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).end("Method Not Allowed");
   }
 
   try {
     const {
-      userEmail,
-      fuel,          // 'petrol' | 'diesel'
-      litres,        // number
-      deliveryDate,  // optional ISO date string
-      name,
-      address,
+      fuel,                // "petrol" | "diesel"
+      litres,              // number (can be decimal)
+      unit_price,          // e.g. 0.4466 (GBP / litre)
+      total,               // total price in GBP, e.g. 440.00
+      delivery_date,       // "YYYY-MM-DD"
+      email,               // receipt email
+      full_name,
+      address_line1,
+      address_line2,
+      city,
       postcode,
-    } = req.body as {
-      userEmail: string;
-      fuel: 'petrol' | 'diesel';
-      litres: number;
-      deliveryDate?: string | null;
-      name?: string;
-      address?: string;
-      postcode?: string;
-    };
+    } = req.body ?? {};
 
-    if (!userEmail || !fuel || !litres || litres <= 0) {
-      return res.status(400).json({ error: 'Missing or invalid order fields' });
+    // --- validate ---
+    if (!email || !fuel || !["petrol", "diesel"].includes(String(fuel))) {
+      return res.status(400).json({ error: "Missing or invalid fuel/email" });
+    }
+    const litresNum = Number(litres);
+    const unit = Number(unit_price);
+    const totalPence =
+      Number.isFinite(Number(total))
+        ? Math.round(Number(total) * 100)
+        : Math.round(litresNum * unit * 100);
+
+    if (!Number.isFinite(litresNum) || litresNum <= 0) {
+      return res.status(400).json({ error: "Invalid litres" });
+    }
+    if (!Number.isFinite(totalPence) || totalPence <= 0) {
+      return res.status(400).json({ error: "Invalid total" });
     }
 
-    // 1) Get current unit price for the selected fuel
-    const { data: priceRow, error: priceErr } = await supabaseAdmin
-      .from('latest_daily_prices')
-      .select('fuel,total_price')
-      .eq('fuel', fuel)
-      .maybeSingle();
-
-    if (priceErr || !priceRow) {
-      return res.status(500).json({ error: 'Could not fetch unit price' });
-    }
-
-    const unitPrice = Number(priceRow.total_price); // £ per litre
-    const total = unitPrice * litres;               // £
-    const totalPence = Math.round(total * 100);     // pence (integer)
-
-    // 2) Create a pending order row
-    const { data: order, error: orderErr } = await supabaseAdmin
-      .from('orders')
+    // --- 1) create a pending order in your DB ---
+    const { data: orderRow, error: insErr } = await supabase
+      .from("orders")
       .insert({
-        user_email: userEmail,
+        user_email: email,
         fuel,
-        litres,
-        delivery_date: deliveryDate ?? null,
-        name: name ?? null,
-        address: address ?? null,
-        postcode: postcode ?? null,
-        unit_price: unitPrice,
-        total_amount_pence: totalPence,
-        status: 'pending',
+        litres: litresNum,
+        unit_price_pence: Math.round(unit * 100),
+        total_pence: totalPence,
+        delivery_date,
+        full_name,
+        address_line1,
+        address_line2,
+        city,
+        postcode,
+        status: "ordered",          // will be set to 'paid' by the webhook
       })
-      .select('id')
+      .select("id")
       .single();
 
-    if (orderErr || !order) {
-      return res.status(500).json({ error: 'Failed to create order' });
+    if (insErr || !orderRow) {
+      return res.status(500).json({ error: "DB insert failed", detail: insErr?.message });
     }
+    const orderId = orderRow.id as string;
 
-    // 3) Create Stripe Checkout Session
-    const success = `${baseUrl(req)}/checkout/success?orderId=${order.id}`;
-    const cancel = `${baseUrl(req)}/checkout/cancel?orderId=${order.id}`;
-
+    // --- 2) create Stripe Checkout session ---
+    const baseUrl = getBaseUrl(req);
+    // We charge the total as a single line item (quantity 1)
     const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      customer_email: userEmail,
+      mode: "payment",
+      customer_email: email, // ensures Checkout captures the email
       line_items: [
         {
           price_data: {
-            currency: 'gbp',
+            currency: "gbp",
             product_data: {
-              name: `Fuel order - ${fuel}`,
-              description: `${litres} litre(s) @ £${unitPrice.toFixed(2)}/L`,
+              name: `Fuel order — ${fuel} (${litresNum}L @ £${unit.toFixed(2)}/L)`,
             },
             unit_amount: totalPence,
           },
           quantity: 1,
         },
       ],
-      success_url: success,
-      cancel_url: cancel,
-      metadata: {
-        order_id: order.id,
-        fuel,
-        litres: String(litres),
-        unit_price: String(unitPrice),
-        email: userEmail,
-      },
+      success_url: `${baseUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/checkout/cancel`,
+      // attach order id everywhere so the webhook can join back
+      metadata: { order_id: orderId, email },
       payment_intent_data: {
-        metadata: {
-          order_id: order.id,
-          fuel,
-          litres: String(litres),
-          unit_price: String(unitPrice),
-          email: userEmail,
-        },
+        metadata: { order_id: orderId, email },
       },
     });
 
     return res.status(200).json({ url: session.url });
-  } catch (e: any) {
-    console.error('create checkout error', e);
-    return res.status(500).json({ error: 'Checkout creation failed' });
+  } catch (err: any) {
+    console.error("create-session error:", err);
+    return res.status(500).json({ error: err?.message || "create_session_failed" });
   }
 }
