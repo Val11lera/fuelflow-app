@@ -1,21 +1,20 @@
-// src/pages/order.tsx
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/** Fuels your app supports */
 type Fuel = "petrol" | "diesel";
-
-/** For probing your orders table shape (address) */
-type AddrShape = "split" | "single" | "unknown";
-/** For probing your orders table shape (money) */
 type MoneyShape = "pence" | "numeric" | "unknown";
 
-/** A typed row for any “prices” view/table we read */
-type PriceRow = {
-  fuel: Fuel;              // 'petrol' | 'diesel'
-  total_price: number;     // numeric in GBP/L
-  price_date?: string | null;
+/** What address columns (if any) are present in the orders table */
+type AddrCols = {
+  line1: boolean;
+  line2: boolean;
+  city: boolean;
+  postcode: boolean;
+  single: boolean; // “address” single text column
 };
+
+/** Row type for prices */
+type PriceRow = { fuel: Fuel; total_price: number; price_date?: string | null };
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -29,13 +28,9 @@ const fmt = new Intl.NumberFormat("en-GB", {
   maximumFractionDigits: 2,
 });
 
-/**
- * ======= FORCE SHAPE OVERRIDES =======
- * If you know your orders table shape, set these and we’ll skip probing.
- * e.g. set FORCE_ADDR_SHAPE = 'split', FORCE_MONEY_SHAPE = 'pence', FORCE_HAS_STATUS = true
- */
-const FORCE_ADDR_SHAPE: "split" | "single" | null = null;
+/** If you know your money shape already, set this to 'pence' or 'numeric' to skip probing */
 const FORCE_MONEY_SHAPE: "pence" | "numeric" | null = null;
+/** If you know you have a status column */
 const FORCE_HAS_STATUS: boolean | null = null;
 
 export default function OrderPage() {
@@ -61,23 +56,28 @@ export default function OrderPage() {
   const [err, setErr] = useState<string | null>(null);
   const [warn, setWarn] = useState<string | null>(null);
 
-  // schema “shape” (we keep detection minimal/safe)
-  const [addrShape, setAddrShape] = useState<AddrShape>("unknown");
+  // table shape
   const [moneyShape, setMoneyShape] = useState<MoneyShape>("unknown");
-  const [hasStatus, setHasStatus] = useState<boolean | null>(null);
+  const [hasStatus, setHasStatus] = useState<boolean>(false);
+  const [addrCols, setAddrCols] = useState<AddrCols>({
+    line1: false,
+    line2: false,
+    city: false,
+    postcode: false,
+    single: false,
+  });
 
-  // ---------- derived ----------
+  // derived
   const unitPrice = useMemo(
     () => (fuel === "petrol" ? petrolPrice ?? 0 : dieselPrice ?? 0),
     [fuel, petrolPrice, dieselPrice]
   );
-
   const litresNum = useMemo(() => Number(litres) || 0, [litres]);
   const totalGBP = useMemo(() => unitPrice * litresNum, [unitPrice, litresNum]);
 
-  // ---------- load auth + prices + (optionally) detect shape ----------
   useEffect(() => {
     (async () => {
+      // auth
       const { data } = await supabase.auth.getUser();
       if (!data?.user) {
         window.location.href = "/login";
@@ -86,31 +86,24 @@ export default function OrderPage() {
       setUser(data.user);
       setEmail(data.user.email || "");
 
-      /**
-       * Load prices with STRONG TYPING so we can index the map safely.
-       * We try latest_prices -> latest_daily_prices -> derive from daily_prices.
-       */
-      async function tryTable(
-        name: "latest_prices" | "latest_daily_prices"
-      ): Promise<Record<Fuel, number> | null> {
+      // prices
+      async function readPrices(name: "latest_prices" | "latest_daily_prices") {
         const { data, error } = await supabase
           .from(name)
           .select("fuel,total_price,price_date");
         if (error || !data?.length) return null;
-
         const rows = (data ?? []) as PriceRow[];
         const map: Record<Fuel, number> = { petrol: 0, diesel: 0 };
-
         for (const r of rows) {
-          const f: Fuel = r.fuel; // narrow before indexing
+          const f: Fuel = r.fuel;
           if (!map[f]) map[f] = Number(r.total_price);
         }
         return map.petrol || map.diesel ? map : null;
       }
 
       let map =
-        (await tryTable("latest_prices")) ||
-        (await tryTable("latest_daily_prices"));
+        (await readPrices("latest_prices")) ||
+        (await readPrices("latest_daily_prices"));
 
       if (!map) {
         // derive from recent daily_prices if needed
@@ -119,11 +112,9 @@ export default function OrderPage() {
           .select("fuel,total_price,price_date")
           .order("price_date", { ascending: false })
           .limit(100);
-
         if (!error && raw?.length) {
           const rows = (raw ?? []) as PriceRow[];
           const m: Record<Fuel, number> = { petrol: 0, diesel: 0 };
-
           for (const r of rows) {
             const f: Fuel = r.fuel;
             if (!m[f]) m[f] = Number(r.total_price);
@@ -131,59 +122,61 @@ export default function OrderPage() {
           if (m.petrol || m.diesel) map = m;
         }
       }
-
       if (map) {
         setPetrolPrice(map.petrol || null);
         setDieselPrice(map.diesel || null);
-        setErr(null);
       } else {
         setErr("Could not load latest prices.");
       }
 
-      // ----- shape detection (safe; does NOT touch delivery_date) -----
-      if (FORCE_ADDR_SHAPE) setAddrShape(FORCE_ADDR_SHAPE);
-      if (FORCE_MONEY_SHAPE) setMoneyShape(FORCE_MONEY_SHAPE);
-      if (FORCE_HAS_STATUS !== null) setHasStatus(FORCE_HAS_STATUS);
+      // ---------- probe orders shape (only columns we might write) ----------
+      const emailLower = (data.user.email || "").toLowerCase();
+      async function colExists(sel: string) {
+        const { error } = await supabase
+          .from("orders")
+          .select(sel)
+          .eq("user_email", emailLower)
+          .limit(0);
+        return !error;
+      }
 
-      if (!FORCE_ADDR_SHAPE || !FORCE_MONEY_SHAPE || FORCE_HAS_STATUS === null) {
-        const emailLower = (data.user.email || "").toLowerCase();
-
-        async function colExists(sel: string) {
-          // Selecting 0 rows still lets Supabase validate the column names.
-          const { error } = await supabase
-            .from("orders")
-            .select(sel)
-            .eq("user_email", emailLower)
-            .limit(0);
-          return !error;
-        }
-
-        if (!FORCE_ADDR_SHAPE) {
-          let a: AddrShape = "unknown";
-          if (await colExists("address_line1")) a = "split";
-          else if (await colExists("address")) a = "single";
-          setAddrShape(a);
-        }
-
-        if (!FORCE_MONEY_SHAPE) {
-          let m: MoneyShape = "unknown";
-          if (await colExists("unit_price_pence,total_pence")) m = "pence";
-          else if (await colExists("unit_price,total_amount_pence")) m = "numeric";
-          setMoneyShape(m);
-        }
-
-        if (FORCE_HAS_STATUS === null) {
-          setHasStatus(await colExists("status"));
+      // money
+      if (FORCE_MONEY_SHAPE) {
+        setMoneyShape(FORCE_MONEY_SHAPE);
+      } else {
+        if (await colExists("unit_price_pence,total_pence")) {
+          setMoneyShape("pence");
+        } else if (await colExists("unit_price,total_amount_pence")) {
+          setMoneyShape("numeric");
+        } else {
+          setMoneyShape("unknown");
         }
       }
 
-      // Show a soft warning if we still don't know shapes
+      // status
+      if (FORCE_HAS_STATUS !== null) {
+        setHasStatus(FORCE_HAS_STATUS);
+      } else {
+        setHasStatus(await colExists("status"));
+      }
+
+      // address columns (optional). We'll only use these if they exist.
+      const nextAddr: AddrCols = {
+        line1: await colExists("address_line1"),
+        line2: await colExists("address_line2"),
+        city: await colExists("city"),
+        postcode: await colExists("postcode"),
+        single: await colExists("address"), // single text column
+      };
+      setAddrCols(nextAddr);
+
+      // show soft warning if we won’t store address/delivery_date in DB
       if (
-        (FORCE_ADDR_SHAPE ?? "unknown") === "unknown" &&
-        (FORCE_MONEY_SHAPE ?? "unknown") === "unknown"
+        moneyShape === "unknown" ||
+        (!nextAddr.line1 && !nextAddr.single && !nextAddr.postcode)
       ) {
         setWarn(
-          "Some order columns were not detected. We will save a minimal order record and continue to Stripe."
+          "Some order fields (delivery date, address) are not stored in the database and will be attached to the Stripe payment only. Your order record will contain the product and totals."
         );
       } else {
         setWarn(null);
@@ -191,7 +184,6 @@ export default function OrderPage() {
     })();
   }, []);
 
-  // ---------- submit ----------
   async function handlePay() {
     try {
       setErr(null);
@@ -205,27 +197,15 @@ export default function OrderPage() {
 
       setBusy(true);
 
-      // Build minimal row (only columns we know will exist)
+      // ---- Build an insert that only includes columns that exist in your DB ----
+      // Per your schema screenshot: id, user_email, product, amount, unit_price_pence, total_pence, status, created_at, paid_at, stripe_pi_id
       const row: any = {
         user_email: (user?.email || "").toLowerCase(),
-        product: fuel, // your orders table uses `product` not `fuel`
-        amount: litresNum, // you keep a numeric amount column; litres stored here
+        product: fuel,           // diesel|petrol
+        amount: litresNum,       // litres (you use 'amount' numeric)
       };
 
-      // Address shape handling (store something sensible either way)
-      if (addrShape === "split") {
-        row.address_line1 = addr1;
-        row.address_line2 = addr2 || null;
-        row.city = city;
-        row.postcode = postcode;
-      } else if (addrShape === "single") {
-        row.address = [addr1, addr2, city].filter(Boolean).join(", ");
-        row.postcode = postcode;
-      } else {
-        row.postcode = postcode;
-      }
-
-      // Money shape handling (pence vs numeric)
+      // money columns
       if (moneyShape === "pence") {
         row.unit_price_pence = Math.round(unitPrice * 100);
         row.total_pence = Math.round(totalGBP * 100);
@@ -233,9 +213,20 @@ export default function OrderPage() {
         row.unit_price = unitPrice;
         row.total_amount_pence = Math.round(totalGBP * 100);
       }
+
       if (hasStatus) row.status = "ordered";
 
-      // Insert order
+      // OPTIONAL address — ONLY add if those columns actually exist
+      if (addrCols.line1) row.address_line1 = addr1;
+      if (addrCols.line2) row.address_line2 = addr2 || null;
+      if (addrCols.city) row.city = city;
+      if (addrCols.postcode) row.postcode = postcode;
+      if (!addrCols.line1 && addrCols.single) {
+        row.address = [addr1, addr2, city].filter(Boolean).join(", ");
+      }
+      // We do NOT add delivery_date here, since your table does not have it.
+      // It will be attached to Stripe metadata.
+
       const { data: created, error } = await supabase
         .from("orders")
         .insert(row)
@@ -245,7 +236,7 @@ export default function OrderPage() {
 
       const orderId = created?.id as string;
 
-      // Create Stripe Checkout with full metadata
+      // ---- Create Stripe Checkout; include all non-DB fields as metadata ----
       const payload = {
         order_id: orderId,
         fuel,
@@ -260,6 +251,7 @@ export default function OrderPage() {
         city,
         postcode,
       };
+
       const resp = await fetch("/api/stripe/checkout/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -276,16 +268,12 @@ export default function OrderPage() {
     }
   }
 
-  // ---------- UI ----------
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-5xl mx-auto">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-3xl font-bold text-yellow-400">Place an Order</h1>
-          <a
-            href="/client-dashboard"
-            className="text-gray-300 hover:text-white underline"
-          >
+          <a href="/client-dashboard" className="text-gray-300 hover:text-white underline">
             Back to Dashboard
           </a>
         </div>
@@ -351,11 +339,9 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* Delivery date (kept for metadata / webhook) */}
+            {/* Delivery date (metadata only) */}
             <div>
-              <label className="block text-sm text-gray-300 mb-1">
-                Delivery date
-              </label>
+              <label className="block text-sm text-gray-300 mb-1">Delivery date</label>
               <input
                 type="date"
                 value={deliveryDate}
@@ -366,9 +352,7 @@ export default function OrderPage() {
 
             {/* Email (receipt) */}
             <div>
-              <label className="block text-sm text-gray-300 mb-1">
-                Your email (receipt)
-              </label>
+              <label className="block text-sm text-gray-300 mb-1">Your email (receipt)</label>
               <input
                 type="email"
                 value={email}
@@ -389,9 +373,7 @@ export default function OrderPage() {
 
             {/* Address line 1 */}
             <div>
-              <label className="block text-sm text-gray-300 mb-1">
-                Address line 1
-              </label>
+              <label className="block text-sm text-gray-300 mb-1">Address line 1</label>
               <input
                 value={addr1}
                 onChange={(e) => setAddr1(e.target.value)}
@@ -401,9 +383,7 @@ export default function OrderPage() {
 
             {/* Address line 2 */}
             <div>
-              <label className="block text-sm text-gray-300 mb-1">
-                Address line 2
-              </label>
+              <label className="block text-sm text-gray-300 mb-1">Address line 2</label>
               <input
                 value={addr2}
                 onChange={(e) => setAddr2(e.target.value)}
