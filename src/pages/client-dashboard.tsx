@@ -31,19 +31,6 @@ type PaymentRow = {
   status: string;
 };
 
-// pseudo inside your client-dashboard page
-const { data, error } = await supabase
-  .from("orders")
-  .select("created_at,user_email,fuel,product,total_pence,unit_price_pence,status")
-  .eq("user_email", user.email.toLowerCase())
-  .order("created_at", { ascending: false })
-  .limit(10);
-
-// rendering helper
-function displayProduct(row: any) {
-  return row.fuel ?? row.product ?? "—";
-}
-
 function displayAmount(row: any) {
   if (typeof row.total_pence === "number") return (row.total_pence / 100).toFixed(2);
   // ultimate fallback
