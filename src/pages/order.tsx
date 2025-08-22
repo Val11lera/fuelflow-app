@@ -90,21 +90,23 @@ export default function OrderPage() {
 
       setBusy(true);
 
-      // 1) Create order row with the new fixed columns
-      const row = {
-        user_email: (user?.email || "").toLowerCase(),
-        fuel,
-        litres: litresNum,
-        name: fullName,
-        address_line1: addr1,
-        address_line2: addr2 || null,
-        city,
-        postcode,
-        delivery_date: deliveryDate || null,
-        unit_price_pence: Math.round(unitPrice * 100),
-        total_pence: Math.round(totalGBP * 100),
-        status: "ordered" as const,
-      };
+// 1) Create order row with the new fixed columns
+const row = {
+  user_email: (user?.email || "").toLowerCase(),
+  fuel,
+  product: fuel,                // <-- ADD THIS LINE
+  litres: litresNum,
+  name: fullName,
+  address_line1: addr1,
+  address_line2: addr2 || null,
+  city,
+  postcode,
+  delivery_date: deliveryDate || null,
+  unit_price_pence: Math.round(unitPrice * 100),
+  total_pence: Math.round(totalGBP * 100),
+  status: "ordered" as const,
+};
+
 
       const { data: created, error } = await supabase
         .from("orders")
