@@ -1,20 +1,8 @@
+// src/pages/order.tsx
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 type Fuel = "petrol" | "diesel";
-type MoneyShape = "pence" | "numeric" | "unknown";
-
-/** What address columns (if any) are present in the orders table */
-type AddrCols = {
-  line1: boolean;
-  line2: boolean;
-  city: boolean;
-  postcode: boolean;
-  single: boolean; // “address” single text column
-};
-
-/** Row type for prices */
-type PriceRow = { fuel: Fuel; total_price: number; price_date?: string | null };
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -24,60 +12,42 @@ const supabase = createClient(
 const fmt = new Intl.NumberFormat("en-GB", {
   style: "currency",
   currency: "GBP",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
 });
 
-/** If you know your money shape already, set this to 'pence' or 'numeric' to skip probing */
-const FORCE_MONEY_SHAPE: "pence" | "numeric" | null = null;
-/** If you know you have a status column */
-const FORCE_HAS_STATUS: boolean | null = null;
-
 export default function OrderPage() {
-  // auth / prices
   const [user, setUser] = useState<any>(null);
+
+  // Prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
-  // form
+  // Form
   const [fuel, setFuel] = useState<Fuel>("diesel");
   const [litres, setLitres] = useState<string>("1000");
   const [deliveryDate, setDeliveryDate] = useState<string>(""); // yyyy-mm-dd
   const [email, setEmail] = useState<string>("");
-  const [fullName, setFullName] = useState<string>("");
-  const [addr1, setAddr1] = useState<string>("");
-  const [addr2, setAddr2] = useState<string>("");
-  const [city, setCity] = useState<string>("");
-  const [postcode, setPostcode] = useState<string>("");
-  const [accepted, setAccepted] = useState<boolean>(false);
 
-  // ui state
+  const [fullName, setFullName] = useState("");
+  const [addr1, setAddr1] = useState("");
+  const [addr2, setAddr2] = useState("");
+  const [city, setCity] = useState("");
+  const [postcode, setPostcode] = useState("");
+
+  const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [warn, setWarn] = useState<string | null>(null);
 
-  // table shape
-  const [moneyShape, setMoneyShape] = useState<MoneyShape>("unknown");
-  const [hasStatus, setHasStatus] = useState<boolean>(false);
-  const [addrCols, setAddrCols] = useState<AddrCols>({
-    line1: false,
-    line2: false,
-    city: false,
-    postcode: false,
-    single: false,
-  });
-
-  // derived
+  // Derived
+  const litresNum = useMemo(() => Number(litres) || 0, [litres]);
   const unitPrice = useMemo(
     () => (fuel === "petrol" ? petrolPrice ?? 0 : dieselPrice ?? 0),
     [fuel, petrolPrice, dieselPrice]
   );
-  const litresNum = useMemo(() => Number(litres) || 0, [litres]);
   const totalGBP = useMemo(() => unitPrice * litresNum, [unitPrice, litresNum]);
 
+  // Load auth + prices
   useEffect(() => {
     (async () => {
-      // auth
       const { data } = await supabase.auth.getUser();
       if (!data?.user) {
         window.location.href = "/login";
@@ -86,100 +56,23 @@ export default function OrderPage() {
       setUser(data.user);
       setEmail(data.user.email || "");
 
-      // prices
-      async function readPrices(name: "latest_prices" | "latest_daily_prices") {
-        const { data, error } = await supabase
-          .from(name)
-          .select("fuel,total_price,price_date");
-        if (error || !data?.length) return null;
-        const rows = (data ?? []) as PriceRow[];
-        const map: Record<Fuel, number> = { petrol: 0, diesel: 0 };
-        for (const r of rows) {
-          const f: Fuel = r.fuel;
-          if (!map[f]) map[f] = Number(r.total_price);
+      // prices from latest_prices or latest_daily_prices
+      let { data: lp } = await supabase
+        .from("latest_prices")
+        .select("fuel,total_price");
+
+      if (!lp?.length) {
+        const { data: dp } = await supabase
+          .from("latest_daily_prices")
+          .select("fuel,total_price");
+        if (dp?.length) lp = dp as any;
+      }
+
+      if (lp?.length) {
+        for (const r of lp as { fuel: Fuel; total_price: number }[]) {
+          if (r.fuel === "petrol") setPetrolPrice(Number(r.total_price));
+          if (r.fuel === "diesel") setDieselPrice(Number(r.total_price));
         }
-        return map.petrol || map.diesel ? map : null;
-      }
-
-      let map =
-        (await readPrices("latest_prices")) ||
-        (await readPrices("latest_daily_prices"));
-
-      if (!map) {
-        // derive from recent daily_prices if needed
-        const { data: raw, error } = await supabase
-          .from("daily_prices")
-          .select("fuel,total_price,price_date")
-          .order("price_date", { ascending: false })
-          .limit(100);
-        if (!error && raw?.length) {
-          const rows = (raw ?? []) as PriceRow[];
-          const m: Record<Fuel, number> = { petrol: 0, diesel: 0 };
-          for (const r of rows) {
-            const f: Fuel = r.fuel;
-            if (!m[f]) m[f] = Number(r.total_price);
-          }
-          if (m.petrol || m.diesel) map = m;
-        }
-      }
-      if (map) {
-        setPetrolPrice(map.petrol || null);
-        setDieselPrice(map.diesel || null);
-      } else {
-        setErr("Could not load latest prices.");
-      }
-
-      // ---------- probe orders shape (only columns we might write) ----------
-      const emailLower = (data.user.email || "").toLowerCase();
-      async function colExists(sel: string) {
-        const { error } = await supabase
-          .from("orders")
-          .select(sel)
-          .eq("user_email", emailLower)
-          .limit(0);
-        return !error;
-      }
-
-      // money
-      if (FORCE_MONEY_SHAPE) {
-        setMoneyShape(FORCE_MONEY_SHAPE);
-      } else {
-        if (await colExists("unit_price_pence,total_pence")) {
-          setMoneyShape("pence");
-        } else if (await colExists("unit_price,total_amount_pence")) {
-          setMoneyShape("numeric");
-        } else {
-          setMoneyShape("unknown");
-        }
-      }
-
-      // status
-      if (FORCE_HAS_STATUS !== null) {
-        setHasStatus(FORCE_HAS_STATUS);
-      } else {
-        setHasStatus(await colExists("status"));
-      }
-
-      // address columns (optional). We'll only use these if they exist.
-      const nextAddr: AddrCols = {
-        line1: await colExists("address_line1"),
-        line2: await colExists("address_line2"),
-        city: await colExists("city"),
-        postcode: await colExists("postcode"),
-        single: await colExists("address"), // single text column
-      };
-      setAddrCols(nextAddr);
-
-      // show soft warning if we won’t store address/delivery_date in DB
-      if (
-        moneyShape === "unknown" ||
-        (!nextAddr.line1 && !nextAddr.single && !nextAddr.postcode)
-      ) {
-        setWarn(
-          "Some order fields (delivery date, address) are not stored in the database and will be attached to the Stripe payment only. Your order record will contain the product and totals."
-        );
-      } else {
-        setWarn(null);
       }
     })();
   }, []);
@@ -187,56 +80,42 @@ export default function OrderPage() {
   async function handlePay() {
     try {
       setErr(null);
+
       if (!accepted) throw new Error("Please agree to the Terms & Conditions.");
-      if (!unitPrice) throw new Error("Price unavailable for the selected fuel.");
+      if (!unitPrice) throw new Error("Price unavailable.");
       if (!litresNum || litresNum <= 0) throw new Error("Enter valid litres.");
       if (!email) throw new Error("Email is required.");
       if (!fullName) throw new Error("Full name is required.");
-      if (!addr1 || !city || !postcode)
-        throw new Error("Please complete your address.");
+      if (!addr1 || !city || !postcode) throw new Error("Please complete your address.");
 
       setBusy(true);
 
-      // ---- Build an insert that only includes columns that exist in your DB ----
-      // Per your schema screenshot: id, user_email, product, amount, unit_price_pence, total_pence, status, created_at, paid_at, stripe_pi_id
-      const row: any = {
+      // 1) Create order row with the new fixed columns
+      const row = {
         user_email: (user?.email || "").toLowerCase(),
-        product: fuel,           // diesel|petrol
-        amount: litresNum,       // litres (you use 'amount' numeric)
+        fuel,
+        litres: litresNum,
+        name: fullName,
+        address_line1: addr1,
+        address_line2: addr2 || null,
+        city,
+        postcode,
+        delivery_date: deliveryDate || null,
+        unit_price_pence: Math.round(unitPrice * 100),
+        total_pence: Math.round(totalGBP * 100),
+        status: "ordered" as const,
       };
-
-      // money columns
-      if (moneyShape === "pence") {
-        row.unit_price_pence = Math.round(unitPrice * 100);
-        row.total_pence = Math.round(totalGBP * 100);
-      } else if (moneyShape === "numeric") {
-        row.unit_price = unitPrice;
-        row.total_amount_pence = Math.round(totalGBP * 100);
-      }
-
-      if (hasStatus) row.status = "ordered";
-
-      // OPTIONAL address — ONLY add if those columns actually exist
-      if (addrCols.line1) row.address_line1 = addr1;
-      if (addrCols.line2) row.address_line2 = addr2 || null;
-      if (addrCols.city) row.city = city;
-      if (addrCols.postcode) row.postcode = postcode;
-      if (!addrCols.line1 && addrCols.single) {
-        row.address = [addr1, addr2, city].filter(Boolean).join(", ");
-      }
-      // We do NOT add delivery_date here, since your table does not have it.
-      // It will be attached to Stripe metadata.
 
       const { data: created, error } = await supabase
         .from("orders")
         .insert(row)
         .select("id")
         .single();
-      if (error) throw new Error(error.message || "DB insert failed");
 
+      if (error) throw new Error(error.message || "DB insert failed");
       const orderId = created?.id as string;
 
-      // ---- Create Stripe Checkout; include all non-DB fields as metadata ----
+      // 2) Start Stripe Checkout (send all details as metadata)
       const payload = {
         order_id: orderId,
         fuel,
@@ -258,9 +137,8 @@ export default function OrderPage() {
         body: JSON.stringify(payload),
       });
       const data = await resp.json();
-      if (!resp.ok || !data?.url) {
-        throw new Error(data?.error || `HTTP ${resp.status}`);
-      }
+      if (!resp.ok || !data?.url) throw new Error(data?.error || `HTTP ${resp.status}`);
+
       window.location.href = data.url;
     } catch (e: any) {
       setBusy(false);
@@ -269,49 +147,46 @@ export default function OrderPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-6">
+    <div className="min-h-screen bg-gray-900 text-white px-4 sm:px-6 py-6">
       <div className="max-w-5xl mx-auto">
-        <div className="flex justify-between items-center mb-6">
-          <h1 className="text-3xl font-bold text-yellow-400">Place an Order</h1>
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
+          <h1 className="text-2xl sm:text-3xl font-bold text-yellow-400">Place an Order</h1>
           <a href="/client-dashboard" className="text-gray-300 hover:text-white underline">
             Back to Dashboard
           </a>
         </div>
 
-        {/* price cards */}
+        {/* Price cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="bg-gray-800 p-5 rounded-xl">
             <p className="text-gray-400">Petrol (95)</p>
-            <p className="text-3xl font-bold mt-2">
+            <p className="text-2xl sm:text-3xl font-bold mt-2">
               {petrolPrice != null ? fmt.format(petrolPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </p>
           </div>
           <div className="bg-gray-800 p-5 rounded-xl">
             <p className="text-gray-400">Diesel</p>
-            <p className="text-3xl font-bold mt-2">
+            <p className="text-2xl sm:text-3xl font-bold mt-2">
               {dieselPrice != null ? fmt.format(dieselPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </p>
           </div>
           <div className="bg-gray-800 p-5 rounded-xl">
             <p className="text-gray-400">Estimated Total</p>
-            <p className="text-3xl font-bold mt-2">{fmt.format(totalGBP)}</p>
+            <p className="text-2xl sm:text-3xl font-bold mt-2">{fmt.format(totalGBP)}</p>
           </div>
         </div>
 
-        {warn && (
-          <div className="bg-amber-800/60 border border-amber-500 text-amber-100 p-4 rounded mb-6">
-            {warn}
-          </div>
-        )}
+        {/* Any error */}
         {err && (
           <div className="bg-red-800/60 border border-red-500 text-red-100 p-4 rounded mb-6">
             {err}
           </div>
         )}
 
-        {/* form */}
+        {/* Form */}
         <div className="bg-gray-800 rounded-xl p-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Fuel */}
@@ -339,7 +214,7 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* Delivery date (metadata only) */}
+            {/* Delivery date */}
             <div>
               <label className="block text-sm text-gray-300 mb-1">Delivery date</label>
               <input
@@ -350,7 +225,7 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* Email (receipt) */}
+            {/* Email */}
             <div>
               <label className="block text-sm text-gray-300 mb-1">Your email (receipt)</label>
               <input
@@ -371,7 +246,7 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* Address line 1 */}
+            {/* Address 1 */}
             <div>
               <label className="block text-sm text-gray-300 mb-1">Address line 1</label>
               <input
@@ -381,7 +256,7 @@ export default function OrderPage() {
               />
             </div>
 
-            {/* Address line 2 */}
+            {/* Address 2 */}
             <div>
               <label className="block text-sm text-gray-300 mb-1">Address line 2</label>
               <input
@@ -412,7 +287,7 @@ export default function OrderPage() {
             </div>
           </div>
 
-          {/* terms */}
+          {/* Terms */}
           <div className="mt-4 flex items-center gap-2">
             <input
               id="terms"
@@ -430,8 +305,8 @@ export default function OrderPage() {
             </label>
           </div>
 
-          {/* footer */}
-          <div className="mt-6 flex items-center justify-between text-gray-300">
+          {/* Footer */}
+          <div className="mt-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-gray-300">
             <div>
               Unit price: <strong>{fmt.format(unitPrice)}/L</strong> • Total:{" "}
               <strong>{fmt.format(totalGBP)}</strong>
@@ -449,5 +324,6 @@ export default function OrderPage() {
     </div>
   );
 }
+
 
 
