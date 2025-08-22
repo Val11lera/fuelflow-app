@@ -1,258 +1,367 @@
+// src/pages/order.tsx
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-type LatestPriceRow = { fuel: "petrol" | "diesel"; total_price: number };
+type Fuel = "petrol" | "diesel";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
-// --------- HARD MAPS TO YOUR SCHEMA ---------
-// Your table stores petrol/diesel in "product" (not "fuel")
-const ORDER_FUEL_COL: "product" = "product";
-// You do NOT have delivery_date or address columns; we’ll only pass those to Stripe metadata.
-// Money columns you *do* have:
-const USE_PENCE_COLUMNS = true; // unit_price_pence + total_pence
+const fmt = new Intl.NumberFormat("en-GB", {
+  style: "currency",
+  currency: "GBP",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+// ───────────────────────────────────────────────────────────────────────────────
+// IMPORTANT: Your orders table columns (from your screenshot):
+// id, user_email (text), product (text), unit_price_pence (int),
+// total_pence (int), amount (numeric), status (text),
+// stripe_pi_id (text), created_at, paid_at
+// ───────────────────────────────────────────────────────────────────────────────
 
 export default function OrderPage() {
+  // auth / prices
   const [userEmail, setUserEmail] = useState<string>("");
-  const [prices, setPrices] = useState<Record<"petrol" | "diesel", number>>({
-    petrol: 0,
-    diesel: 0,
-  });
+  const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
+  const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
   // form
-  const [fuel, setFuel] = useState<"petrol" | "diesel">("diesel");
-  const [litres, setLitres] = useState<number>(1000);
-  const [deliveryDate, setDeliveryDate] = useState<string>(""); // metadata only
-  const [fullName, setFullName] = useState("");
-  const [addr1, setAddr1] = useState("");
-  const [addr2, setAddr2] = useState("");
-  const [city, setCity] = useState("");
-  const [postcode, setPostcode] = useState("");
-  const [agreed, setAgreed] = useState(true);
+  const [fuel, setFuel] = useState<Fuel>("diesel");
+  const [litres, setLitres] = useState<string>("1000");
+  const [deliveryDate, setDeliveryDate] = useState<string>(""); // yyyy-mm-dd
+  const [email, setEmail] = useState<string>("");
 
-  const [banner, setBanner] = useState<{ tone: "warn" | "error"; msg: string } | null>(null);
-  const [loading, setLoading] = useState(false);
+  // address (kept for Stripe metadata only)
+  const [fullName, setFullName] = useState<string>("");
+  const [addr1, setAddr1] = useState<string>("");
+  const [addr2, setAddr2] = useState<string>("");
+  const [city, setCity] = useState<string>("");
+  const [postcode, setPostcode] = useState<string>("");
+  const [accepted, setAccepted] = useState<boolean>(false);
 
-  // Get current user + latest prices
+  // ui
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [warn, setWarn] = useState<string | null>(
+    "Some order fields (delivery date, address) are not stored in the database and will be attached to the Stripe payment only. Your order record will contain the product and totals."
+  );
+
+  // derived
+  const unitPrice = useMemo(
+    () => (fuel === "petrol" ? petrolPrice ?? 0 : dieselPrice ?? 0),
+    [fuel, petrolPrice, dieselPrice]
+  );
+  const litresNum = useMemo(() => Number(litres) || 0, [litres]);
+  const totalGBP = useMemo(() => unitPrice * litresNum, [unitPrice, litresNum]);
+
+  // -------- robust price loading + auth ----------
   useEffect(() => {
     (async () => {
-      const { data: u } = await supabase.auth.getUser();
-      setUserEmail(u.user?.email ?? "");
-
-      // Read from your latest prices view/table. Adjust name if needed.
-      const { data, error } = await supabase
-        .from("latest_prices") // OR latest_daily_prices depending on your project
-        .select("fuel,total_price");
-
-      if (error) {
-        setBanner({ tone: "error", msg: "Could not load latest prices." });
+      // auth
+      const { data } = await supabase.auth.getUser();
+      if (!data?.user) {
+        window.location.href = "/login";
         return;
       }
-      const map: any = { petrol: 0, diesel: 0 };
-      (data as LatestPriceRow[]).forEach((r) => (map[r.fuel] = Number(r.total_price)));
-      setPrices(map);
+      const emailLower = (data.user.email || "").toLowerCase();
+      setUserEmail(emailLower);
+      setEmail(data.user.email || "");
+
+      // prices: try latest_prices → latest_daily_prices → derive from daily_prices
+      async function tryTable(name: string) {
+        const { data, error } = await supabase
+          .from(name)
+          .select("fuel,total_price,price_date")
+          .limit(10);
+        if (error || !data?.length) return null;
+        const m: Record<"petrol" | "diesel", number> = { petrol: 0, diesel: 0 };
+        for (const r of data as any[]) {
+          if (r.fuel === "petrol" || r.fuel === "diesel") {
+            if (!m[r.fuel]) m[r.fuel] = Number(r.total_price);
+          }
+        }
+        return (m.petrol || m.diesel) ? m : null;
+      }
+
+      let map =
+        (await tryTable("latest_prices")) ||
+        (await tryTable("latest_daily_prices"));
+
+      if (!map) {
+        const { data: raw, error } = await supabase
+          .from("daily_prices")
+          .select("fuel,total_price,price_date")
+          .order("price_date", { ascending: false })
+          .limit(100);
+        if (!error && raw?.length) {
+          const m: Record<"petrol" | "diesel", number> = { petrol: 0, diesel: 0 };
+          for (const r of raw as any[]) {
+            if ((r.fuel === "petrol" || r.fuel === "diesel") && !m[r.fuel]) {
+              m[r.fuel] = Number(r.total_price);
+            }
+          }
+          if (m.petrol || m.diesel) map = m;
+        }
+      }
+
+      if (map) {
+        setPetrolPrice(map.petrol || null);
+        setDieselPrice(map.diesel || null);
+        setErr(null);
+      } else {
+        setErr("Could not load latest prices.");
+      }
     })();
   }, []);
 
-  const unitPrice = useMemo(() => prices[fuel] || 0, [prices, fuel]); // £/L
-  const estTotal = useMemo(() => unitPrice * (Number(litres) || 0), [unitPrice, litres]); // £
-
+  // ---------- submit ----------
   async function handlePay() {
-    setBanner(null);
-
-    if (!agreed) {
-      setBanner({ tone: "error", msg: "Please agree to the Terms & Conditions." });
-      return;
-    }
-
-    setLoading(true);
     try {
-      // Always read the authenticated user (RLS insert policy uses this)
-      const { data: u } = await supabase.auth.getUser();
-      if (!u.user?.email) {
-        setBanner({ tone: "error", msg: "You need to be logged in." });
-        setLoading(false);
-        return;
-      }
+      setErr(null);
 
-      const unit_pence = Math.round((unitPrice || 0) * 100);
-      const total_pence = Math.round(estTotal * 100);
+      if (!accepted) throw new Error("Please agree to the Terms & Conditions.");
+      if (unitPrice <= 0) throw new Error("Price unavailable. Please refresh and try again.");
+      if (!litresNum || litresNum <= 0) throw new Error("Enter valid litres.");
+      if (!email) throw new Error("Email is required.");
+      if (!fullName) throw new Error("Full name is required.");
+      if (!addr1 || !city || !postcode) throw new Error("Please complete your address.");
 
-      // Insert a MINIMAL order that matches your columns only
-      // Columns present: user_email, product, unit_price_pence, total_pence, amount, status
-      const insertRow: Record<string, any> = {
-        user_email: u.user.email,
-        [ORDER_FUEL_COL]: fuel,           // -> product: 'petrol' | 'diesel'
-        status: "pending",
+      setBusy(true);
+
+      // ---- Build MINIMAL row that matches your real table columns ----
+      const unit_price_pence = Math.round(unitPrice * 100);
+      const total_pence = Math.round(totalGBP * 100);
+
+      const row: any = {
+        user_email: userEmail,          // text
+        product: fuel,                  // text (store 'petrol' or 'diesel')
+        unit_price_pence,               // int
+        total_pence,                    // int
+        amount: totalGBP,               // numeric (£)
+        status: "ordered",              // text
       };
 
-      if (USE_PENCE_COLUMNS) {
-        insertRow.unit_price_pence = unit_pence;
-        insertRow.total_pence = total_pence;
-        // optional: keep "amount" (numeric £) updated as well for readability
-        insertRow.amount = total_pence / 100.0;
-      }
-
-      const { data: ins, error: insErr } = await supabase
+      // Insert order
+      const { data: created, error } = await supabase
         .from("orders")
-        .insert(insertRow)
+        .insert(row)
         .select("id")
         .single();
 
-      if (insErr) {
-        setBanner({ tone: "error", msg: `DB insert failed: ${insErr.message}` });
-        setLoading(false);
-        return;
-      }
+      if (error) throw new Error(error.message || "DB insert failed");
+      const orderId = created?.id as string;
 
-      // Now create Stripe Checkout on the server
+      // Create Stripe Checkout (we attach all extra fields to metadata)
+      const payload = {
+        order_id: orderId,
+        fuel,
+        litres: litresNum,
+        unit_price: unitPrice,
+        total: totalGBP,
+        delivery_date: deliveryDate || null,
+        email,
+        full_name: fullName,
+        address_line1: addr1,
+        address_line2: addr2 || "",
+        city,
+        postcode,
+      };
+
       const resp = await fetch("/api/stripe/checkout/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          order_id: ins!.id,
-          product: fuel,
-          litres: Number(litres) || 0,
-          unit_price_pence: unit_pence,
-          total_pence: total_pence,
-          customer_email: userEmail || u.user.email,
-          // metadata only (not stored in DB)
-          delivery_date: deliveryDate || null,
-          full_name: fullName || null,
-          address_line1: addr1 || null,
-          address_line2: addr2 || null,
-          city: city || null,
-          postcode: postcode || null,
-        }),
+        body: JSON.stringify(payload),
       });
-
       const data = await resp.json();
-      if (!resp.ok) {
+      if (!resp.ok || !data?.url) {
         throw new Error(data?.error || `HTTP ${resp.status}`);
       }
-
-      window.location.href = data.url; // Go to Stripe Checkout
+      window.location.href = data.url;
     } catch (e: any) {
-      setBanner({ tone: "error", msg: e?.message || "Something went wrong" });
-      setLoading(false);
+      setBusy(false);
+      setErr(e?.message || "Something went wrong.");
     }
   }
 
+  // ---------- UI ----------
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
-      <div className="max-w-5xl mx-auto space-y-6">
-        <h1 className="text-3xl font-bold text-yellow-400">Place an Order</h1>
-
-        {/* Top cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Card title="Petrol (95)" value={`£${prices.petrol.toFixed(2)} / litre`} />
-          <Card title="Diesel" value={`£${prices.diesel.toFixed(2)} / litre`} />
-          <Card title="Estimated Total" value={`£${estTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`} />
+      <div className="max-w-5xl mx-auto">
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-3xl font-bold text-yellow-400">Place an Order</h1>
+          <a href="/client-dashboard" className="text-gray-300 hover:text-white underline">
+            Back to Dashboard
+          </a>
         </div>
 
-        {/* Helpful info: we’re saving a minimal order record only */}
-        <div className="rounded bg-amber-900/50 border border-amber-500 text-amber-100 p-3">
-          Some order fields (delivery date, address) are not stored in the database and will be attached to
-          the Stripe payment only. Your order record will contain the product and totals.
+        {/* price cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div className="bg-gray-800 p-5 rounded-xl">
+            <p className="text-gray-400">Petrol (95)</p>
+            <p className="text-3xl font-bold mt-2">
+              {petrolPrice != null ? fmt.format(petrolPrice) : "—"}
+              <span className="text-base font-normal text-gray-300"> / litre</span>
+            </p>
+          </div>
+          <div className="bg-gray-800 p-5 rounded-xl">
+            <p className="text-gray-400">Diesel</p>
+            <p className="text-3xl font-bold mt-2">
+              {dieselPrice != null ? fmt.format(dieselPrice) : "—"}
+              <span className="text-base font-normal text-gray-300"> / litre</span>
+            </p>
+          </div>
+          <div className="bg-gray-800 p-5 rounded-xl">
+            <p className="text-gray-400">Estimated Total</p>
+            <p className="text-3xl font-bold mt-2">{fmt.format(totalGBP)}</p>
+          </div>
         </div>
 
-        {banner && (
-          <div
-            className={`rounded p-4 border ${
-              banner.tone === "error" ? "bg-red-900/60 border-red-500" : "bg-amber-900/60 border-amber-500"
-            }`}
-          >
-            {banner.msg}
+        {warn && (
+          <div className="bg-amber-800/60 border border-amber-500 text-amber-100 p-4 rounded mb-6">
+            {warn}
+          </div>
+        )}
+        {err && (
+          <div className="bg-red-800/60 border border-red-500 text-red-100 p-4 rounded mb-6">
+            {err}
           </div>
         )}
 
-        {/* Form */}
-        <div className="bg-gray-800 rounded p-6 space-y-6">
+        {/* form */}
+        <div className="bg-gray-800 rounded-xl p-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Labeled label="Fuel">
+            {/* Fuel */}
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Fuel</label>
               <select
                 value={fuel}
-                onChange={(e) => setFuel(e.target.value as any)}
-                className="w-full bg-gray-900 rounded p-2"
+                onChange={(e) => setFuel(e.target.value as Fuel)}
+                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
               >
-                <option value="petrol">Petrol (95)</option>
                 <option value="diesel">Diesel</option>
+                <option value="petrol">Petrol (95)</option>
               </select>
-            </Labeled>
+            </div>
 
-            <Labeled label="Litres">
+            {/* Litres */}
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Litres</label>
               <input
                 type="number"
                 min={1}
                 value={litres}
-                onChange={(e) => setLitres(Number(e.target.value))}
-                className="w-full bg-gray-900 rounded p-2"
+                onChange={(e) => setLitres(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
               />
-            </Labeled>
+            </div>
 
-            <Labeled label="Delivery date (metadata)">
+            {/* Delivery date (metadata only) */}
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Delivery date</label>
               <input
                 type="date"
                 value={deliveryDate}
                 onChange={(e) => setDeliveryDate(e.target.value)}
-                className="w-full bg-gray-900 rounded p-2"
+                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
               />
-            </Labeled>
+            </div>
 
-            <Labeled label="Your email (receipt)">
+            {/* Email (receipt) */}
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Your email (receipt)</label>
               <input
                 type="email"
-                value={userEmail}
-                onChange={(e) => setUserEmail(e.target.value)}
-                className="w-full bg-gray-900 rounded p-2"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
               />
-            </Labeled>
+            </div>
 
-            <Labeled label="Full name (metadata)">
-              <input value={fullName} onChange={(e) => setFullName(e.target.value)} className="w-full bg-gray-900 rounded p-2" />
-            </Labeled>
+            {/* Full name */}
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Full name</label>
+              <input
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
+              />
+            </div>
 
-            <Labeled label="Address line 1 (metadata)">
-              <input value={addr1} onChange={(e) => setAddr1(e.target.value)} className="w-full bg-gray-900 rounded p-2" />
-            </Labeled>
+            {/* Address line 1 */}
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Address line 1</label>
+              <input
+                value={addr1}
+                onChange={(e) => setAddr1(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
+              />
+            </div>
 
-            <Labeled label="Address line 2 (metadata)">
-              <input value={addr2} onChange={(e) => setAddr2(e.target.value)} className="w-full bg-gray-900 rounded p-2" />
-            </Labeled>
+            {/* Address line 2 */}
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Address line 2</label>
+              <input
+                value={addr2}
+                onChange={(e) => setAddr2(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
+              />
+            </div>
 
-            <Labeled label="City (metadata)">
-              <input value={city} onChange={(e) => setCity(e.target.value)} className="w-full bg-gray-900 rounded p-2" />
-            </Labeled>
+            {/* City */}
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">City</label>
+              <input
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
+              />
+            </div>
 
-            <Labeled label="Postcode (metadata)">
-              <input value={postcode} onChange={(e) => setPostcode(e.target.value)} className="w-full bg-gray-900 rounded p-2" />
-            </Labeled>
+            {/* Postcode */}
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Postcode</label>
+              <input
+                value={postcode}
+                onChange={(e) => setPostcode(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
+              />
+            </div>
           </div>
 
-          <div className="text-sm text-gray-300">
-            Unit price: <b>£{unitPrice.toFixed(2)}/L</b> • Total:{" "}
-            <b>£{estTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>
+          {/* terms */}
+          <div className="mt-4 flex items-center gap-2">
+            <input
+              id="terms"
+              type="checkbox"
+              checked={accepted}
+              onChange={(e) => setAccepted(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label htmlFor="terms" className="text-sm text-gray-300">
+              I agree to the{" "}
+              <a href="/terms" target="_blank" className="underline">
+                Terms &amp; Conditions
+              </a>
+              .
+            </label>
           </div>
 
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={agreed} onChange={() => setAgreed((v) => !v)} />
-            I agree to the&nbsp;
-            <a href="/terms" target="_blank" className="underline text-yellow-300">
-              Terms & Conditions
-            </a>
-            .
-          </label>
-
-          <div>
+          {/* footer */}
+          <div className="mt-6 flex items-center justify-between text-gray-300">
+            <div>
+              Unit price: <strong>{fmt.format(unitPrice)}/L</strong> • Total:{" "}
+              <strong>{fmt.format(totalGBP)}</strong>
+            </div>
             <button
+              disabled={busy}
               onClick={handlePay}
-              disabled={loading}
-              className="bg-yellow-500 hover:bg-yellow-400 text-black font-semibold px-5 py-2 rounded disabled:opacity-60"
+              className="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black font-medium px-5 py-2 rounded-lg"
             >
-              {loading ? "Preparing…" : "Pay with Stripe"}
+              {busy ? "Loading…" : "Pay with Stripe"}
             </button>
           </div>
         </div>
@@ -260,24 +369,5 @@ export default function OrderPage() {
     </div>
   );
 }
-
-function Card({ title, value }: { title: string; value: string }) {
-  return (
-    <div className="bg-gray-800 rounded p-5">
-      <div className="text-gray-300">{title}</div>
-      <div className="text-3xl font-bold mt-1">{value}</div>
-    </div>
-  );
-}
-
-function Labeled({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <div className="text-sm mb-1 text-gray-300">{label}</div>
-      {children}
-    </label>
-  );
-}
-
 
 
