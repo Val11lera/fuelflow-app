@@ -1,328 +1,237 @@
-// src/pages/client-dashboard.tsx
-import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/** ---- Types ---- */
-type QuoteRow = {
-  id: string;
-  email: string;
-  full_name: string | null;
-  message: string | null;
-  created_at: string;
-};
+type Fuel = "petrol" | "diesel";
 
-type OrderRow = {
-  id: string;
-  user_email: string;
-  product: string;
-  amount: number; // numeric
-  status: string; // e.g. 'paid','pending','failed'
-  created_at: string;
-};
-
-type LatestPriceRow = {
-  fuel: "petrol" | "diesel";
-  price_date: string; // date
-  total_price: number; // numeric
-};
-
-/** ---- Supabase (browser) ---- */
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
-/** ---- Small helpers ---- */
-function money(n: number | null | undefined, currency = "GBP") {
-  if (n === null || n === undefined) return "—";
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(
-    n
-  );
-}
+const gbp = new Intl.NumberFormat("en-GB", {
+  style: "currency",
+  currency: "GBP",
+});
+
+type OrderRow = {
+  id: string;
+  created_at: string;
+  user_email: string;
+  fuel: Fuel | string | null;
+  litres: number | null;
+  unit_price_pence: number | null;
+  total_pence: number | null;
+  status: string | null;
+};
+
+type PaymentRow = {
+  order_id: string | null;
+  amount: number; // pence from webhook (amount_received)
+  currency: string;
+  status: string;
+};
 
 export default function ClientDashboard() {
-  const [user, setUser] = useState<any>(null);
+  const [userEmail, setUserEmail] = useState<string>("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Quotes
-  const [quotes, setQuotes] = useState<QuoteRow[]>([]);
-  const [loadingQuotes, setLoadingQuotes] = useState(true);
-  const [quotesErr, setQuotesErr] = useState<string | null>(null);
-
-  // Orders
-  const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [loadingOrders, setLoadingOrders] = useState(true);
-  const [ordersErr, setOrdersErr] = useState<string | null>(null);
-
-  // Prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
-  const [pricesLoading, setPricesLoading] = useState(true);
-  const [pricesErr, setPricesErr] = useState<string | null>(null);
 
+  const [orders, setOrders] = useState<
+    (OrderRow & { amountGBP: number; paymentStatus?: string })[]
+  >([]);
+
+  // ---------- load profile + prices + orders ----------
   useEffect(() => {
-    const init = async () => {
-      // Require auth
-      const { data } = await supabase.auth.getUser();
-      if (!data?.user) {
-        window.location.href = "/login";
-        return;
-      }
-      setUser(data.user);
-
-      const isAdmin =
-        (data.user.email || "").toLowerCase() ===
-        "fuelflow.queries@gmail.com";
-
-      // ---- QUOTES ----
-      setLoadingQuotes(true);
-      setQuotesErr(null);
+    (async () => {
       try {
-        let q = supabase
-          .from("quote_requests")
-          .select("id,email,full_name,message,created_at")
-          .order("created_at", { ascending: false });
+        setLoading(true);
+        setError(null);
 
-        if (!isAdmin) q = q.eq("email", data.user.email);
+        // Auth
+        const { data: auth } = await supabase.auth.getUser();
+        if (!auth?.user) {
+          window.location.href = "/login";
+          return;
+        }
+        const emailLower = (auth.user.email || "").toLowerCase();
+        setUserEmail(emailLower);
 
-        const { data: rows, error } = await q;
-        if (error) throw error;
-        setQuotes((rows as QuoteRow[]) || []);
-      } catch (e: any) {
-        setQuotesErr(e.message ?? "Failed to load quotes");
-        setQuotes([]);
-      } finally {
-        setLoadingQuotes(false);
-      }
+        // Prices (for cards only; orders use stored totals/payments)
+        let { data: lp } = await supabase
+          .from("latest_prices")
+          .select("fuel,total_price");
+        if (!lp?.length) {
+          const { data: dp } = await supabase
+            .from("latest_daily_prices")
+            .select("fuel,total_price");
+          if (dp?.length) lp = dp as any;
+        }
+        if (lp?.length) {
+          for (const r of lp as { fuel: Fuel; total_price: number }[]) {
+            if (r.fuel === "petrol") setPetrolPrice(Number(r.total_price));
+            if (r.fuel === "diesel") setDieselPrice(Number(r.total_price));
+          }
+        }
 
-      // ---- ORDERS ----
-      setLoadingOrders(true);
-      setOrdersErr(null);
-      try {
-        let q = supabase
+        // Orders (new fields first)
+        const { data: rawOrders, error: ordErr } = await supabase
           .from("orders")
-          .select("id,user_email,product,amount,status,created_at")
-          .order("created_at", { ascending: false });
+          .select(
+            "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status"
+          )
+          .eq("user_email", emailLower)
+          .order("created_at", { ascending: false })
+          .limit(20);
 
-        if (!isAdmin) q = q.eq("user_email", data.user.email);
+        if (ordErr) throw ordErr;
 
-        const { data: rows, error } = await q;
-        if (error) throw error;
-        setOrders((rows as OrderRow[]) || []);
+        const ordersArr = (rawOrders || []) as OrderRow[];
+        const ids = ordersArr.map((o) => o.id).filter(Boolean);
+
+        // Map Stripe payments by order_id (for exact fallback)
+        let payMap = new Map<string, PaymentRow>();
+        if (ids.length) {
+          const { data: pays } = await supabase
+            .from("payments")
+            .select("order_id, amount, currency, status")
+            .in("order_id", ids);
+          (pays || []).forEach((p: any) => {
+            if (p.order_id) payMap.set(p.order_id, p);
+          });
+        }
+
+        const withTotals = ordersArr.map((o) => {
+          // exact total preference: orders.total_pence -> payments.amount -> estimate
+          const fromOrders = o.total_pence ?? null;
+          const fromPayments = payMap.get(o.id || "")?.amount ?? null;
+
+          let totalPence: number | null =
+            fromOrders ?? (fromPayments as number | null) ?? null;
+
+          // last-resort estimate (only used if neither is present)
+          if (totalPence == null) {
+            if (o.unit_price_pence != null && o.litres != null) {
+              totalPence = Math.round(o.unit_price_pence * o.litres);
+            }
+          }
+
+          const amountGBP = totalPence != null ? totalPence / 100 : 0;
+          return {
+            ...o,
+            amountGBP,
+            paymentStatus: payMap.get(o.id || "")?.status,
+          };
+        });
+
+        setOrders(withTotals);
       } catch (e: any) {
-        setOrdersErr(e.message ?? "Failed to load orders");
-        setOrders([]);
+        setError(e?.message || "Failed to load dashboard.");
       } finally {
-        setLoadingOrders(false);
+        setLoading(false);
       }
-
-      // ---- PRICES (from public.latest_daily_prices) ----
-      await fetchPrices();
-    };
-
-    init();
+    })();
   }, []);
 
-  const fetchPrices = async () => {
-    setPricesLoading(true);
-    setPricesErr(null);
-    try {
-      const { data: rows, error } = await supabase
-        .from("latest_daily_prices")
-        .select("fuel, price_date, total_price");
-
-      if (error) throw error;
-
-      // Map to petrol/diesel
-      let petrol: number | null = null;
-      let diesel: number | null = null;
-      (rows as LatestPriceRow[] | null)?.forEach((r) => {
-        if (r.fuel === "petrol") petrol = r.total_price;
-        if (r.fuel === "diesel") diesel = r.total_price;
-      });
-
-      setPetrolPrice(petrol);
-      setDieselPrice(diesel);
-    } catch (e: any) {
-      setPricesErr(e.message ?? "Failed to load prices");
-      setPetrolPrice(null);
-      setDieselPrice(null);
-    } finally {
-      setPricesLoading(false);
-    }
-  };
+  // quick refresh handler
+  async function refresh() {
+    // just re-run the effect
+    window.location.reload();
+  }
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-6">
-      {/* Header with NEW Order button */}
-      <header className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold text-yellow-400">FuelFlow</h1>
+    <div className="min-h-screen bg-gray-900 text-white p-4 md:p-6">
+      <div className="max-w-6xl mx-auto space-y-6">
+        <header className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+          <h1 className="text-2xl md:text-3xl font-bold text-yellow-400">
+            FuelFlow
+          </h1>
+          <div className="text-sm text-gray-300">
+            Welcome back, <span className="font-medium">{userEmail}</span>
+          </div>
+        </header>
 
-        <div className="flex gap-3">
-          <Link
-            href="/order"
-            className="bg-yellow-500 text-black px-4 py-2 rounded transition
-                       hover:bg-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-400"
-          >
-            Order Fuel
-          </Link>
-
-          <Link
-            href="/client-dashboard"
-            className="bg-gray-700 px-4 py-2 rounded transition
-                       hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-600"
-          >
-            Dashboard
-          </Link>
-
-          <button
-            onClick={() =>
-              supabase.auth
-                .signOut()
-                .then(() => (window.location.href = "/login"))
-            }
-            className="bg-red-600 px-4 py-2 rounded transition
-                       hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-red-500"
-          >
-            Logout
-          </button>
-        </div>
-      </header>
-
-      <h2 className="text-2xl font-bold mb-4">
-        Welcome Back, {user?.email || "Client"}!
-      </h2>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Quote Requests */}
-        <div className="bg-gray-800 p-6 rounded-lg">
-          <h3 className="text-xl font-semibold mb-4">Quote Requests</h3>
-
-          {loadingQuotes && <p className="text-gray-400">Loading…</p>}
-          {!loadingQuotes && quotesErr && (
-            <p className="text-red-400">Error: {quotesErr}</p>
-          )}
-          {!loadingQuotes && !quotesErr && quotes.length === 0 && (
-            <p className="text-gray-400">No quote requests yet.</p>
-          )}
-          {!loadingQuotes && !quotesErr && quotes.length > 0 && (
-            <ul className="divide-y divide-gray-700">
-              {quotes.map((q) => (
-                <li key={q.id} className="py-3">
-                  <div className="flex justify-between">
-                    <div className="pr-4">
-                      <p className="font-medium">
-                        {q.full_name || "—"}{" "}
-                        <span className="text-gray-400">({q.email})</span>
-                      </p>
-                      <p className="text-gray-300">{q.message || "—"}</p>
-                    </div>
-                    <div className="text-right text-gray-400 whitespace-nowrap">
-                      {new Date(q.created_at).toLocaleString()}
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* Account Details */}
-        <div className="bg-gray-800 p-6 rounded-lg">
-          <h3 className="text-xl font-semibold mb-4">Account Details</h3>
-          <p>
-            <strong>Email:</strong> {user?.email}
-          </p>
-          <p>
-            <strong>Company:</strong> test
-          </p>
-          <p>
-            <strong>Contact:</strong> test
-          </p>
-        </div>
-
-        {/* Your Contract Prices */}
-        <div className="bg-gray-800 p-6 rounded-lg col-span-1 md:col-span-2">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xl font-semibold">Your Contract Prices</h3>
-            <div className="flex items-center gap-3">
-              {pricesErr && (
-                <span className="text-red-400 text-sm">{pricesErr}</span>
-              )}
-              <button
-                onClick={fetchPrices}
-                className="bg-gray-700 px-3 py-1 rounded hover:bg-gray-600"
-              >
-                Refresh
-              </button>
+        {/* prices */}
+        <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <Card title="Petrol (95)">
+            <div className="text-3xl font-bold">
+              {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
+              <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
+          </Card>
+          <Card title="Diesel">
+            <div className="text-3xl font-bold">
+              {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
+              <span className="text-base font-normal text-gray-300"> / litre</span>
+            </div>
+          </Card>
+          <Card title="Actions">
+            <a
+              href="/order"
+              className="inline-flex items-center justify-center w-full bg-yellow-500 hover:bg-yellow-400 text-black font-medium px-4 py-2 rounded-lg"
+            >
+              Order Fuel
+            </a>
+          </Card>
+        </section>
+
+        {/* errors */}
+        {error && (
+          <div className="bg-red-800/60 border border-red-500 text-red-100 p-4 rounded">
+            {error}
+          </div>
+        )}
+
+        {/* recent orders */}
+        <section className="bg-gray-800 rounded-xl p-4 md:p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl md:text-2xl font-semibold">Recent Orders</h2>
+            <button
+              onClick={refresh}
+              className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+            >
+              Refresh
+            </button>
           </div>
 
-          <ul className="space-y-3">
-            <li className="flex justify-between">
-              <span>Unleaded Petrol (95)</span>
-              <span className="text-yellow-400 font-bold">
-                {pricesLoading ? "…" : money(petrolPrice)}
-              </span>
-            </li>
-            <li className="flex justify-between">
-              <span>Diesel</span>
-              <span className="text-yellow-400 font-bold">
-                {pricesLoading ? "…" : money(dieselPrice)}
-              </span>
-            </li>
-          </ul>
-
-          <p className="text-gray-400 mt-4">
-            Prices shown are the latest for each fuel.
-          </p>
-        </div>
-
-        {/* Recent Orders */}
-        <div className="bg-gray-800 p-6 rounded-lg col-span-1 md:col-span-2">
-          <h3 className="text-xl font-semibold mb-4">Recent Orders</h3>
-
-          {loadingOrders && <p className="text-gray-400">Loading…</p>}
-          {!loadingOrders && ordersErr && (
-            <p className="text-red-400">Error: {ordersErr}</p>
-          )}
-          {!loadingOrders && !ordersErr && orders.length === 0 && (
-            <p className="text-gray-400">No recent orders.</p>
-          )}
-          {!loadingOrders && !ordersErr && orders.length > 0 && (
+          {loading ? (
+            <div className="text-gray-300">Loading…</div>
+          ) : orders.length === 0 ? (
+            <div className="text-gray-400">No orders yet.</div>
+          ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-300">
+              <table className="w-full text-left text-sm">
+                <thead className="text-gray-300">
+                  <tr className="border-b border-gray-700">
                     <th className="py-2 pr-4">Date</th>
-                    <th className="py-2 pr-4">Customer</th>
                     <th className="py-2 pr-4">Product</th>
+                    <th className="py-2 pr-4">Litres</th>
                     <th className="py-2 pr-4">Amount</th>
                     <th className="py-2 pr-4">Status</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-700">
+                <tbody>
                   {orders.map((o) => (
-                    <tr key={o.id}>
-                      <td className="py-2 pr-4 whitespace-nowrap">
+                    <tr key={o.id} className="border-b border-gray-800">
+                      <td className="py-2 pr-4">
                         {new Date(o.created_at).toLocaleString()}
                       </td>
-                      <td className="py-2 pr-4">{o.user_email}</td>
-                      <td className="py-2 pr-4">{o.product}</td>
-                      <td className="py-2 pr-4">
-                        £{Number(o.amount).toFixed(2)}
+                      <td className="py-2 pr-4 capitalize">
+                        {(o.fuel as string) || "—"}
                       </td>
+                      <td className="py-2 pr-4">{o.litres ?? "—"}</td>
+                      <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
                       <td className="py-2 pr-4">
                         <span
-                          className={`px-2 py-1 rounded text-xs ${
-                            o.status === "paid"
-                              ? "bg-green-600"
-                              : o.status === "pending"
-                              ? "bg-yellow-600"
-                              : "bg-red-600"
+                          className={`inline-flex items-center rounded px-2 py-0.5 text-xs ${
+                            (o.status || "").toLowerCase() === "paid"
+                              ? "bg-green-600/70"
+                              : "bg-gray-600/70"
                           }`}
                         >
-                          {o.status}
+                          {(o.status || o.paymentStatus || "pending").toLowerCase()}
                         </span>
                       </td>
                     </tr>
@@ -331,10 +240,20 @@ export default function ClientDashboard() {
               </table>
             </div>
           )}
-        </div>
+        </section>
       </div>
     </div>
   );
 }
+
+function Card(props: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-gray-800 rounded-xl p-4 md:p-5">
+      <p className="text-gray-400">{props.title}</p>
+      <div className="mt-2">{props.children}</div>
+    </div>
+  );
+}
+
 
 
