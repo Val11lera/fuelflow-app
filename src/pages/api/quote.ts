@@ -4,10 +4,10 @@ import { Resend } from "resend";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY! // service role (server only)
+  process.env.SUPABASE_SERVICE_ROLE_KEY! // server-only service role
 );
 
-// optional email: route still works if API key is missing
+// Email is optional – route still works if these are not set
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 async function verifyHCaptcha(token: string, ip?: string) {
@@ -31,32 +31,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const { captchaToken, ...p } = req.body || {};
 
-    // 1) captcha
+    // 1) Captcha
     const remoteIp = (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || undefined;
     const captcha = await verifyHCaptcha(captchaToken, remoteIp);
     if (!captcha?.success) return res.status(400).json({ error: "Captcha failed." });
 
-    // 2) shape record
+    // 2) Prepare record
     const record = {
       customer_name: String(p.customer_name || "").trim(),
       email: String(p.email || "").trim().toLowerCase(),
       phone: String(p.phone || "").trim(),
       customer_type: p.customer_type === "business" ? "business" : "residential",
       company_name: p.company_name || null,
-
       postcode: String(p.postcode || "").trim().toUpperCase(),
       city: p.city || null,
-
       fuel: p.fuel === "petrol" ? "petrol" : "diesel",
       quantity_litres: Number(p.quantity_litres || 0),
-      urgency: ["asap", "this_week", "flexible"].includes(p.urgency) ? p.urgency : "flexible",
+      urgency: ["asap","this_week","flexible"].includes(p.urgency) ? p.urgency : "flexible",
       preferred_delivery: p.preferred_delivery || null,
-
       use_case: p.use_case || null,
       access_notes: p.access_notes || null,
       notes: p.notes || null,
       marketing_opt_in: !!p.marketing_opt_in,
-
       utm: {
         source: (req.query.utm_source as string) || null,
         medium: (req.query.utm_medium as string) || null,
@@ -73,14 +69,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "Missing required fields." });
     }
 
-    // 3) insert ticket
+    // 3) Insert into Supabase
     const { data, error } = await supabase.from("tickets").insert(record).select("id").single();
     if (error) throw error;
 
-    // 4) email confirmation (optional – won’t fail the request)
+    // 4) Send confirmation email (optional; errors won’t fail request)
     let emailSent = false;
     let emailError: string | null = null;
-
     if (resend && process.env.CONFIRMATION_FROM_EMAIL) {
       try {
         await resend.emails.send({
@@ -100,10 +95,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           `,
         });
         emailSent = true;
-        await supabase
-          .from("tickets")
-          .update({ email_confirmation_sent_at: new Date().toISOString() })
-          .eq("id", data.id);
+        await supabase.from("tickets").update({ email_confirmation_sent_at: new Date().toISOString() }).eq("id", data.id);
       } catch (e: any) {
         emailError = e?.message || "email failed";
       }
@@ -115,3 +107,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: "Server error." });
   }
 }
+
