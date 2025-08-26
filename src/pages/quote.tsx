@@ -288,6 +288,8 @@ export default function QuotePage() {
             <HCaptcha
               sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
               onVerify={setCaptchaToken}
+              onExpire={() => setCaptchaToken("")}
+              onClose={() => setCaptchaToken("")}
             />
             <button
               type="submit"
