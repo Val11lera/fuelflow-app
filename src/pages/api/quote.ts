@@ -1,18 +1,16 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
-// --- Guard: make sure env vars exist ---
+// ---- Env guards (fail fast with clear errors) ----
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  // Note: this runs at import time on the server
-  console.error("Missing Supabase env vars. Check NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
+  console.error("Missing Supabase envs. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
 }
 
 const supabase = createClient(SUPABASE_URL || "", SUPABASE_SERVICE_ROLE_KEY || "");
 
-// hCaptcha verify
+// ---- hCaptcha verify ----
 async function verifyHCaptcha(token: string, ip?: string) {
   const r = await fetch("https://hcaptcha.com/siteverify", {
     method: "POST",
@@ -23,10 +21,10 @@ async function verifyHCaptcha(token: string, ip?: string) {
       remoteip: ip || "",
     }),
   });
-  return r.json(); // { success: boolean, "error-codes"?: string[] }
+  return r.json(); // { success, "error-codes"? }
 }
 
-// Email via Resend HTTP API (optional)
+// ---- Email via Resend HTTP API (optional) ----
 async function sendConfirmationEmail(opts: {
   to: string;
   customer_name: string;
@@ -58,15 +56,21 @@ async function sendConfirmationEmail(opts: {
   });
 
   if (!resp.ok) {
-    const err = await resp.text().catch(() => "");
-    return { sent: false, error: err || `resend_http_${resp.status}` };
+    const errTxt = await resp.text().catch(() => "");
+    return { sent: false, error: errTxt || `resend_http_${resp.status}` };
   }
   return { sent: true };
 }
 
-// Helper to pick the best error message from Supabase/PostgREST
-function supabaseErrMsg(err: any) {
-  return err?.message || err?.details || err?.hint || err?.code || (typeof err === "string" ? err : JSON.stringify(err));
+// ---- error helpers ----
+function pickMsg(err: any) {
+  return (
+    err?.message ||
+    err?.details ||
+    err?.hint ||
+    err?.code ||
+    (typeof err === "string" ? err : JSON.stringify(err))
+  );
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -87,7 +91,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: `Captcha failed (${codes}). Check domain & secret.` });
     }
 
-    // 2) Shape record
+    // 2) Shape row to insert
     const record = {
       customer_name: String(p.customer_name || "").trim(),
       email: String(p.email || "").trim().toLowerCase(),
@@ -124,16 +128,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "Missing required fields." });
     }
 
-    // 3) Insert ticket
-    const { data, error } = await supabase
-      .from("tickets")
-      .insert(record)
-      .select("id")
-      .single();
+    // 3) Insert with extra diagnostics (no .single so we can inspect status)
+    const result = await supabase.from("tickets").insert(record).select("id");
+    const { data, error } = result as any;
 
     if (error) {
-      console.error("Supabase insert error:", error);
-      return res.status(500).json({ error: `Database error: ${supabaseErrMsg(error)}` });
+      // include status/statusText if present
+      const statusInfo = [
+        result?.status ? `status:${result.status}` : "",
+        result?.statusText ? `statusText:${result.statusText}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      console.error("Supabase insert error:", { error, status: result?.status, statusText: result?.statusText });
+      return res
+        .status(500)
+        .json({ error: `Database error: ${pickMsg(error)} ${statusInfo}`.trim() || "Database error (unknown)" });
+    }
+
+    // Defensive: make sure we got an ID
+    const id = Array.isArray(data) && data[0]?.id ? data[0].id : data?.id;
+    if (!id) {
+      console.error("Supabase insert returned no id:", { result });
+      return res.status(500).json({
+        error:
+          "Database error: insert returned no id. Check table name (public.tickets), RLS, and required columns/defaults.",
+      });
     }
 
     // 4) Email (optional)
@@ -147,21 +168,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
 
     if (emailResult.sent) {
-      await supabase
-        .from("tickets")
-        .update({ email_confirmation_sent_at: new Date().toISOString() })
-        .eq("id", data!.id);
+      await supabase.from("tickets").update({ email_confirmation_sent_at: new Date().toISOString() }).eq("id", id);
     }
 
-    return res.status(200).json({
-      ok: true,
-      id: data!.id,
-      emailSent: emailResult.sent,
-      emailError: emailResult.sent ? undefined : emailResult.error,
-    });
+    return res.status(200).json({ ok: true, id, emailSent: emailResult.sent, emailError: emailResult.sent ? undefined : emailResult.error });
   } catch (err: any) {
     console.error("API /api/quote fatal error:", err);
-    return res.status(500).json({ error: `Server error: ${supabaseErrMsg(err)}` });
+    return res.status(500).json({ error: `Server error: ${pickMsg(err)}` });
   }
 }
 
