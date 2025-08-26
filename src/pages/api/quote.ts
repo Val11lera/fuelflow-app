@@ -1,12 +1,13 @@
-// src/pages/api/quote.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
+// Supabase (server-only service role)
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+// hCaptcha verify
 async function verifyHCaptcha(token: string, ip?: string) {
   const r = await fetch("https://hcaptcha.com/siteverify", {
     method: "POST",
@@ -20,7 +21,8 @@ async function verifyHCaptcha(token: string, ip?: string) {
   return r.json();
 }
 
-// Send email via Resend HTTP API (no npm package). If API key/from are missing, we skip emailing.
+// Confirmation email via Resend HTTP API (no npm package)
+// If RESEND_API_KEY or CONFIRMATION_FROM_EMAIL is missing, we skip email.
 async function sendConfirmationEmail(opts: {
   to: string;
   customer_name: string;
@@ -67,19 +69,17 @@ async function sendConfirmationEmail(opts: {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
     const { captchaToken, ...p } = req.body || {};
+    const remoteIp = (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || undefined;
 
     // 1) Captcha
-    const remoteIp = (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || undefined;
     const captcha = await verifyHCaptcha(captchaToken, remoteIp);
-    if (!captcha?.success) return res.status(400).json({ error: "Captcha failed." });
+    if (!captcha?.success) return res.status(400).json({ error: "Captcha failed. Check hCaptcha domain & secret." });
 
-    // 2) Prepare record
+    // 2) Shape record
     const record = {
       customer_name: String(p.customer_name || "").trim(),
       email: String(p.email || "").trim().toLowerCase(),
@@ -116,11 +116,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "Missing required fields." });
     }
 
-    // 3) Insert into Supabase
+    // 3) Insert ticket
     const { data, error } = await supabase.from("tickets").insert(record).select("id").single();
-    if (error) throw error;
+    if (error) return res.status(500).json({ error: `Database error: ${error.message}` });
 
-    // 4) Email (optional; failure doesn't break the request)
+    // 4) Email (optional)
     const emailResult = await sendConfirmationEmail({
       to: record.email,
       customer_name: record.customer_name,
