@@ -1,11 +1,16 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
-// Supabase (server-only service role)
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// --- Guard: make sure env vars exist ---
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  // Note: this runs at import time on the server
+  console.error("Missing Supabase env vars. Check NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
+}
+
+const supabase = createClient(SUPABASE_URL || "", SUPABASE_SERVICE_ROLE_KEY || "");
 
 // hCaptcha verify
 async function verifyHCaptcha(token: string, ip?: string) {
@@ -15,14 +20,13 @@ async function verifyHCaptcha(token: string, ip?: string) {
     body: new URLSearchParams({
       secret: process.env.HCAPTCHA_SECRET_KEY || "",
       response: token || "",
-      remoteip: ip || "", // optional
+      remoteip: ip || "",
     }),
   });
-  return r.json(); // { success:boolean, "error-codes"?: string[] }
+  return r.json(); // { success: boolean, "error-codes"?: string[] }
 }
 
-// Confirmation email via Resend HTTP API (no npm package)
-// If RESEND_API_KEY or CONFIRMATION_FROM_EMAIL is missing, we skip email.
+// Email via Resend HTTP API (optional)
 async function sendConfirmationEmail(opts: {
   to: string;
   customer_name: string;
@@ -60,10 +64,19 @@ async function sendConfirmationEmail(opts: {
   return { sent: true };
 }
 
+// Helper to pick the best error message from Supabase/PostgREST
+function supabaseErrMsg(err: any) {
+  return err?.message || err?.details || err?.hint || err?.code || (typeof err === "string" ? err : JSON.stringify(err));
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      return res.status(500).json({ error: "Server misconfigured: Supabase env vars are missing." });
+    }
+
     const { captchaToken, ...p } = req.body || {};
     const remoteIp = (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || undefined;
 
@@ -112,8 +125,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // 3) Insert ticket
-    const { data, error } = await supabase.from("tickets").insert(record).select("id").single();
-    if (error) return res.status(500).json({ error: `Database error: ${error.message}` });
+    const { data, error } = await supabase
+      .from("tickets")
+      .insert(record)
+      .select("id")
+      .single();
+
+    if (error) {
+      console.error("Supabase insert error:", error);
+      return res.status(500).json({ error: `Database error: ${supabaseErrMsg(error)}` });
+    }
 
     // 4) Email (optional)
     const emailResult = await sendConfirmationEmail({
@@ -129,18 +150,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       await supabase
         .from("tickets")
         .update({ email_confirmation_sent_at: new Date().toISOString() })
-        .eq("id", data.id);
+        .eq("id", data!.id);
     }
 
     return res.status(200).json({
       ok: true,
-      id: data.id,
+      id: data!.id,
       emailSent: emailResult.sent,
       emailError: emailResult.sent ? undefined : emailResult.error,
     });
   } catch (err: any) {
-    console.error(err);
-    return res.status(500).json({ error: "Server error." });
+    console.error("API /api/quote fatal error:", err);
+    return res.status(500).json({ error: `Server error: ${supabaseErrMsg(err)}` });
   }
 }
 
