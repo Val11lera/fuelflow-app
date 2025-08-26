@@ -1,14 +1,11 @@
+// src/pages/api/quote.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
-import { Resend } from "resend";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY! // server-only service role
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
-
-// Email is optional – route still works if these are not set
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 async function verifyHCaptcha(token: string, ip?: string) {
   const r = await fetch("https://hcaptcha.com/siteverify", {
@@ -21,6 +18,52 @@ async function verifyHCaptcha(token: string, ip?: string) {
     }),
   });
   return r.json();
+}
+
+// Send email via Resend HTTP API (no npm package). If API key/from are missing, we skip emailing.
+async function sendConfirmationEmail(opts: {
+  to: string;
+  customer_name: string;
+  fuel: "diesel" | "petrol";
+  quantity_litres: number;
+  postcode: string;
+  preferred_delivery?: string | null;
+}) {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.CONFIRMATION_FROM_EMAIL;
+  if (!apiKey || !from) return { sent: false, error: "missing_email_env" };
+
+  const html = `
+    <p>Hi ${opts.customer_name},</p>
+    <p>Thanks for your enquiry. We've logged your request and will come back with pricing shortly.</p>
+    <ul>
+      <li><strong>Fuel:</strong> ${opts.fuel === "diesel" ? "Diesel" : "Petrol"}</li>
+      <li><strong>Quantity:</strong> ${opts.quantity_litres} L</li>
+      <li><strong>Postcode:</strong> ${opts.postcode}</li>
+      ${opts.preferred_delivery ? `<li><strong>Preferred delivery:</strong> ${opts.preferred_delivery}</li>` : ""}
+    </ul>
+    <p>— FuelFlow Team</p>
+  `;
+
+  const resp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: opts.to,
+      subject: "FuelFlow: your quote request has been received",
+      html,
+    }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.text().catch(() => "");
+    return { sent: false, error: err || `resend_http_${resp.status}` };
+  }
+  return { sent: true };
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -43,16 +86,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       phone: String(p.phone || "").trim(),
       customer_type: p.customer_type === "business" ? "business" : "residential",
       company_name: p.company_name || null,
+
       postcode: String(p.postcode || "").trim().toUpperCase(),
       city: p.city || null,
-      fuel: p.fuel === "petrol" ? "petrol" : "diesel",
+
+      fuel: (p.fuel === "petrol" ? "petrol" : "diesel") as "diesel" | "petrol",
       quantity_litres: Number(p.quantity_litres || 0),
-      urgency: ["asap","this_week","flexible"].includes(p.urgency) ? p.urgency : "flexible",
+      urgency: ["asap", "this_week", "flexible"].includes(p.urgency) ? p.urgency : "flexible",
       preferred_delivery: p.preferred_delivery || null,
+
       use_case: p.use_case || null,
       access_notes: p.access_notes || null,
       notes: p.notes || null,
       marketing_opt_in: !!p.marketing_opt_in,
+
       utm: {
         source: (req.query.utm_source as string) || null,
         medium: (req.query.utm_medium as string) || null,
@@ -73,38 +120,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { data, error } = await supabase.from("tickets").insert(record).select("id").single();
     if (error) throw error;
 
-    // 4) Send confirmation email (optional; errors won’t fail request)
-    let emailSent = false;
-    let emailError: string | null = null;
-    if (resend && process.env.CONFIRMATION_FROM_EMAIL) {
-      try {
-        await resend.emails.send({
-          from: process.env.CONFIRMATION_FROM_EMAIL!,
-          to: record.email,
-          subject: "FuelFlow: your quote request has been received",
-          html: `
-            <p>Hi ${record.customer_name},</p>
-            <p>Thanks for your enquiry. We've logged your request and will come back with pricing shortly.</p>
-            <ul>
-              <li><strong>Fuel:</strong> ${record.fuel === "diesel" ? "Diesel" : "Petrol"}</li>
-              <li><strong>Quantity:</strong> ${record.quantity_litres} L</li>
-              <li><strong>Postcode:</strong> ${record.postcode}</li>
-              ${record.preferred_delivery ? `<li><strong>Preferred delivery:</strong> ${record.preferred_delivery}</li>` : ""}
-            </ul>
-            <p>— FuelFlow Team</p>
-          `,
-        });
-        emailSent = true;
-        await supabase.from("tickets").update({ email_confirmation_sent_at: new Date().toISOString() }).eq("id", data.id);
-      } catch (e: any) {
-        emailError = e?.message || "email failed";
-      }
+    // 4) Email (optional; failure doesn't break the request)
+    const emailResult = await sendConfirmationEmail({
+      to: record.email,
+      customer_name: record.customer_name,
+      fuel: record.fuel,
+      quantity_litres: record.quantity_litres,
+      postcode: record.postcode,
+      preferred_delivery: record.preferred_delivery,
+    });
+
+    if (emailResult.sent) {
+      await supabase
+        .from("tickets")
+        .update({ email_confirmation_sent_at: new Date().toISOString() })
+        .eq("id", data.id);
     }
 
-    return res.status(200).json({ ok: true, id: data.id, emailSent, emailError: emailError || undefined });
+    return res.status(200).json({
+      ok: true,
+      id: data.id,
+      emailSent: emailResult.sent,
+      emailError: emailResult.sent ? undefined : emailResult.error,
+    });
   } catch (err: any) {
     console.error(err);
     return res.status(500).json({ error: "Server error." });
   }
 }
+
 
