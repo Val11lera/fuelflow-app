@@ -15,10 +15,10 @@ async function verifyHCaptcha(token: string, ip?: string) {
     body: new URLSearchParams({
       secret: process.env.HCAPTCHA_SECRET_KEY || "",
       response: token || "",
-      remoteip: ip || "",
+      remoteip: ip || "", // optional
     }),
   });
-  return r.json();
+  return r.json(); // { success:boolean, "error-codes"?: string[] }
 }
 
 // Confirmation email via Resend HTTP API (no npm package)
@@ -49,16 +49,8 @@ async function sendConfirmationEmail(opts: {
 
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: opts.to,
-      subject: "FuelFlow: your quote request has been received",
-      html,
-    }),
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from, to: opts.to, subject: "FuelFlow: your quote request has been received", html }),
   });
 
   if (!resp.ok) {
@@ -77,7 +69,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // 1) Captcha
     const captcha = await verifyHCaptcha(captchaToken, remoteIp);
-    if (!captcha?.success) return res.status(400).json({ error: "Captcha failed. Check hCaptcha domain & secret." });
+    if (!captcha?.success) {
+      const codes = Array.isArray(captcha?.["error-codes"]) ? captcha["error-codes"].join(", ") : "unknown";
+      return res.status(400).json({ error: `Captcha failed (${codes}). Check domain & secret.` });
+    }
 
     // 2) Shape record
     const record = {
@@ -148,5 +143,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: "Server error." });
   }
 }
-
 
