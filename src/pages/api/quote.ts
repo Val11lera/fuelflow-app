@@ -6,11 +6,10 @@ import { createClient } from "@supabase/supabase-js";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const DB_SCHEMA = process.env.DB_SCHEMA || "public";
-const TABLE = process.env.QUOTE_TABLE || "tickets"; // change with env if your table name differs
+const TABLE = process.env.QUOTE_TABLE || "tickets"; // change via env if needed
 
-// Log when misconfigured (won't crash build)
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("Missing Supabase envs. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (Production).");
+  console.error("Missing Supabase envs. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel.");
 }
 
 const supabase = createClient(SUPABASE_URL || "", SUPABASE_SERVICE_ROLE_KEY || "", {
@@ -34,7 +33,7 @@ async function verifyHCaptcha(token: string, ip?: string) {
   return r.json(); // { success:boolean, "error-codes"?:string[] }
 }
 
-/** Send confirmation via Resend HTTP API (supports test-mode override). */
+/** Send confirmation via Resend HTTP API (no test override). */
 async function sendConfirmationEmail(opts: {
   to: string;
   customer_name: string;
@@ -44,13 +43,10 @@ async function sendConfirmationEmail(opts: {
   preferred_delivery?: string | null;
 }) {
   const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.CONFIRMATION_FROM_EMAIL; // for quick test set to onboarding@resend.dev
-  const bcc = process.env.ORDERS_INBOX;             // optional internal BCC
-  const forceTo = process.env.RESEND_TEST_RECIPIENT; // <- while your Resend account is in testing
+  const from = process.env.CONFIRMATION_FROM_EMAIL; // e.g. FuelFlow <no-reply@fuelflow.co.uk>
+  const bcc = process.env.ORDERS_INBOX; // optional internal BCC
 
   if (!apiKey || !from) return { sent: false, error: "missing_email_env" };
-
-  const to = forceTo || opts.to;
 
   const html = `
     <p>Hi ${opts.customer_name},</p>
@@ -66,10 +62,10 @@ async function sendConfirmationEmail(opts: {
 
   const payload: any = {
     from,
-    to,
+    to: opts.to,
     subject: "FuelFlow: your quote request has been received",
     html,
-    reply_to: opts.to, // so you can reply directly to the customer
+    reply_to: opts.to,
   };
   if (bcc) payload.bcc = [bcc];
 
@@ -98,7 +94,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { captchaToken, ...p } = req.body || {};
     const remoteIp = (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || undefined;
 
-    // 0) Preflight: can we see the table?
+    // 0) Preflight: table reachable?
     const pre = await supabase.from(TABLE).select("id", { head: true, count: "exact" });
     if (pre.error) {
       console.error("Preflight table check failed:", { error: pre.error, status: pre.status, statusText: pre.statusText, schema: DB_SCHEMA, table: TABLE });
@@ -107,7 +103,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // 1) Captcha verify
+    // 1) Captcha
     const captcha = await verifyHCaptcha(captchaToken, remoteIp);
     if (!captcha?.success) {
       const codes = Array.isArray(captcha?.["error-codes"]) ? captcha["error-codes"].join(", ") : "unknown";
@@ -170,7 +166,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // 4) Send email, then write back the outcome
+    // 4) Email → write back outcome
     const emailResult = await sendConfirmationEmail({
       to: record.email,
       customer_name: record.customer_name,
@@ -190,7 +186,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         .eq("id", id);
     }
 
-    // 5) Respond to client
+    // 5) Response
     return res.status(200).json({
       ok: true,
       id,
