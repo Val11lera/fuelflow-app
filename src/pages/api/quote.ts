@@ -2,17 +2,15 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
-/** ========= CONFIG ========= */
+/** ========= ENV / CONFIG ========= */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const DB_SCHEMA = process.env.DB_SCHEMA || "public";
-const TABLE = process.env.QUOTE_TABLE || "tickets"; // change via env if your table has a different name
+const TABLE = process.env.QUOTE_TABLE || "tickets"; // change with env if your table name differs
 
-// fail fast logs (won't crash build)
+// Log when misconfigured (won't crash build)
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error(
-    "Missing Supabase envs. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel (Production)."
-  );
+  console.error("Missing Supabase envs. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (Production).");
 }
 
 const supabase = createClient(SUPABASE_URL || "", SUPABASE_SERVICE_ROLE_KEY || "", {
@@ -20,16 +18,8 @@ const supabase = createClient(SUPABASE_URL || "", SUPABASE_SERVICE_ROLE_KEY || "
 });
 
 /** ========= HELPERS ========= */
-
-function pickMsg(err: any) {
-  return (
-    err?.message ||
-    err?.details ||
-    err?.hint ||
-    err?.code ||
-    (typeof err === "string" ? err : JSON.stringify(err))
-  );
-}
+const pickMsg = (err: any) =>
+  err?.message || err?.details || err?.hint || err?.code || (typeof err === "string" ? err : JSON.stringify(err));
 
 async function verifyHCaptcha(token: string, ip?: string) {
   const r = await fetch("https://hcaptcha.com/siteverify", {
@@ -41,10 +31,10 @@ async function verifyHCaptcha(token: string, ip?: string) {
       remoteip: ip || "",
     }),
   });
-  return r.json(); // { success: boolean, "error-codes"?: string[] }
+  return r.json(); // { success:boolean, "error-codes"?:string[] }
 }
 
-/** Send confirmation via Resend HTTP API (no npm dep). */
+/** Send confirmation via Resend HTTP API (supports test-mode override). */
 async function sendConfirmationEmail(opts: {
   to: string;
   customer_name: string;
@@ -54,10 +44,13 @@ async function sendConfirmationEmail(opts: {
   preferred_delivery?: string | null;
 }) {
   const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.CONFIRMATION_FROM_EMAIL; // use onboarding@resend.dev for quick test
-  const bcc = process.env.ORDERS_INBOX; // optional internal BCC
+  const from = process.env.CONFIRMATION_FROM_EMAIL; // for quick test set to onboarding@resend.dev
+  const bcc = process.env.ORDERS_INBOX;             // optional internal BCC
+  const forceTo = process.env.RESEND_TEST_RECIPIENT; // <- while your Resend account is in testing
 
   if (!apiKey || !from) return { sent: false, error: "missing_email_env" };
+
+  const to = forceTo || opts.to;
 
   const html = `
     <p>Hi ${opts.customer_name},</p>
@@ -73,10 +66,10 @@ async function sendConfirmationEmail(opts: {
 
   const payload: any = {
     from,
-    to: opts.to,
+    to,
     subject: "FuelFlow: your quote request has been received",
     html,
-    reply_to: opts.to,
+    reply_to: opts.to, // so you can reply directly to the customer
   };
   if (bcc) payload.bcc = [bcc];
 
@@ -106,12 +99,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const remoteIp = (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || undefined;
 
     // 0) Preflight: can we see the table?
-    const pre = await supabase.from(TABLE).select("id", { count: "exact", head: true });
+    const pre = await supabase.from(TABLE).select("id", { head: true, count: "exact" });
     if (pre.error) {
       console.error("Preflight table check failed:", { error: pre.error, status: pre.status, statusText: pre.statusText, schema: DB_SCHEMA, table: TABLE });
       return res.status(500).json({
-        error: `Table "${DB_SCHEMA}.${TABLE}" not reachable: ${pickMsg(pre.error)} status:${pre.status} statusText:${pre.statusText}. ` +
-               `Check table/schema and NEXT_PUBLIC_SUPABASE_URL project.`,
+        error: `Table "${DB_SCHEMA}.${TABLE}" not reachable: ${pickMsg(pre.error)} status:${pre.status} statusText:${pre.statusText}.`,
       });
     }
 
@@ -178,7 +170,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // 4) EMAIL: send then WRITE BACK THE RESULT (this is “step 4”)
+    // 4) Send email, then write back the outcome
     const emailResult = await sendConfirmationEmail({
       to: record.email,
       customer_name: record.customer_name,
@@ -189,18 +181,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
 
     if (emailResult.sent) {
-      await supabase
-        .from(TABLE)
+      await supabase.from(TABLE)
         .update({ email_confirmation_sent_at: new Date().toISOString(), email_error: null })
         .eq("id", id);
     } else {
-      await supabase
-        .from(TABLE)
+      await supabase.from(TABLE)
         .update({ email_error: emailResult.error ?? "unknown" })
         .eq("id", id);
     }
 
-    // 5) Respond to client with flags
+    // 5) Respond to client
     return res.status(200).json({
       ok: true,
       id,
