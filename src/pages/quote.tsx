@@ -79,12 +79,11 @@ export default function QuotePage() {
       }
 
       const emailed = !!data?.emailSent;
-
       setMessage({
         type: "success",
         text: emailed
           ? "Thanks! Your enquiry has been logged. We’ve emailed you a confirmation."
-          : "Thanks! Your enquiry has been logged. (Note: the confirmation email could not be sent right now.)",
+          : "Thanks! Your enquiry has been logged. (Note: the confirmation email could not be sent.)",
       });
 
       setForm(initialState);
@@ -200,6 +199,5 @@ export default function QuotePage() {
     </div>
   );
 }
-
 
 
