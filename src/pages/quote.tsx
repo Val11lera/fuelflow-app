@@ -1,3 +1,4 @@
+// src/pages/quote.tsx
 import { useState } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 
@@ -12,7 +13,7 @@ type FormState = {
   fuel: "petrol" | "diesel";
   quantity_litres: string;
   urgency: "asap" | "this_week" | "flexible";
-  preferred_delivery?: string; // yyyy-mm-dd
+  preferred_delivery?: string;
   use_case?: string;
   access_notes?: string;
   notes?: string;
@@ -77,7 +78,15 @@ export default function QuotePage() {
         throw new Error(msg);
       }
 
-      setMessage({ type: "success", text: "Thanks! Your enquiry has been logged. We’ve emailed you a confirmation." });
+      const emailed = !!data?.emailSent;
+
+      setMessage({
+        type: "success",
+        text: emailed
+          ? "Thanks! Your enquiry has been logged. We’ve emailed you a confirmation."
+          : "Thanks! Your enquiry has been logged. (Note: the confirmation email could not be sent right now.)",
+      });
+
       setForm(initialState);
       setCaptchaToken("");
     } catch (err: any) {
@@ -101,7 +110,8 @@ export default function QuotePage() {
               <div><label className={label}>Full name *</label><input className={input} value={form.customer_name} onChange={(e)=>setForm({...form, customer_name:e.target.value})}/></div>
               <div><label className={label}>Email *</label><input type="email" className={input} value={form.email} onChange={(e)=>setForm({...form, email:e.target.value})}/></div>
               <div><label className={label}>Phone *</label><input className={input} value={form.phone} onChange={(e)=>setForm({...form, phone:e.target.value})}/></div>
-              <div><label className={label}>Customer type *</label>
+              <div>
+                <label className={label}>Customer type *</label>
                 <select className={input} value={form.customer_type} onChange={(e)=>setForm({...form, customer_type: e.target.value as any})}>
                   <option value="residential">Residential</option>
                   <option value="business">Business</option>
@@ -172,13 +182,17 @@ export default function QuotePage() {
             <button
               type="submit"
               disabled={submitting}
-              className="w-full bg-yellow-500 text-[#041F3E] py-3 rounded-xl font-semibold
+              className="w-full bg-yellow-500 text-[#041F3E] py-3 rounded-2xl font-semibold
                          hover:bg-yellow-400 active:bg-yellow-300 focus:outline-none focus:ring-2 focus:ring-yellow-300
                          disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
             >
               {submitting ? "Submitting..." : "Submit request"}
             </button>
-            {message && <p className={`text-center ${message.type === "success" ? "text-green-400" : "text-red-300"}`}>{message.text}</p>}
+            {message && (
+              <p className={`text-center ${message.type === "success" ? "text-green-400" : "text-red-300"}`}>
+                {message.text}
+              </p>
+            )}
             <p className="text-xs text-white/70 text-center">Protected by hCaptcha.</p>
           </div>
         </form>
