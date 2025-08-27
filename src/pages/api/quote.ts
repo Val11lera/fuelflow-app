@@ -1,16 +1,36 @@
+// src/pages/api/quote.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
-// ---- Env guards (fail fast with clear errors) ----
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+/** ========= CONFIG ========= */
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const DB_SCHEMA = process.env.DB_SCHEMA || "public";
+const TABLE = process.env.QUOTE_TABLE || "tickets"; // change via env if your table has a different name
+
+// fail fast logs (won't crash build)
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("Missing Supabase envs. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
+  console.error(
+    "Missing Supabase envs. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel (Production)."
+  );
 }
 
-const supabase = createClient(SUPABASE_URL || "", SUPABASE_SERVICE_ROLE_KEY || "");
+const supabase = createClient(SUPABASE_URL || "", SUPABASE_SERVICE_ROLE_KEY || "", {
+  db: { schema: DB_SCHEMA },
+});
 
-// ---- hCaptcha verify ----
+/** ========= HELPERS ========= */
+
+function pickMsg(err: any) {
+  return (
+    err?.message ||
+    err?.details ||
+    err?.hint ||
+    err?.code ||
+    (typeof err === "string" ? err : JSON.stringify(err))
+  );
+}
+
 async function verifyHCaptcha(token: string, ip?: string) {
   const r = await fetch("https://hcaptcha.com/siteverify", {
     method: "POST",
@@ -21,10 +41,10 @@ async function verifyHCaptcha(token: string, ip?: string) {
       remoteip: ip || "",
     }),
   });
-  return r.json(); // { success, "error-codes"? }
+  return r.json(); // { success: boolean, "error-codes"?: string[] }
 }
 
-// ---- Email via Resend HTTP API (optional) ----
+/** Send confirmation via Resend HTTP API (no npm dep). */
 async function sendConfirmationEmail(opts: {
   to: string;
   customer_name: string;
@@ -34,7 +54,9 @@ async function sendConfirmationEmail(opts: {
   preferred_delivery?: string | null;
 }) {
   const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.CONFIRMATION_FROM_EMAIL;
+  const from = process.env.CONFIRMATION_FROM_EMAIL; // use onboarding@resend.dev for quick test
+  const bcc = process.env.ORDERS_INBOX; // optional internal BCC
+
   if (!apiKey || !from) return { sent: false, error: "missing_email_env" };
 
   const html = `
@@ -49,10 +71,19 @@ async function sendConfirmationEmail(opts: {
     <p>— FuelFlow Team</p>
   `;
 
+  const payload: any = {
+    from,
+    to: opts.to,
+    subject: "FuelFlow: your quote request has been received",
+    html,
+    reply_to: opts.to,
+  };
+  if (bcc) payload.bcc = [bcc];
+
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to: opts.to, subject: "FuelFlow: your quote request has been received", html }),
+    body: JSON.stringify(payload),
   });
 
   if (!resp.ok) {
@@ -62,17 +93,7 @@ async function sendConfirmationEmail(opts: {
   return { sent: true };
 }
 
-// ---- error helpers ----
-function pickMsg(err: any) {
-  return (
-    err?.message ||
-    err?.details ||
-    err?.hint ||
-    err?.code ||
-    (typeof err === "string" ? err : JSON.stringify(err))
-  );
-}
-
+/** ========= API HANDLER ========= */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
@@ -84,14 +105,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { captchaToken, ...p } = req.body || {};
     const remoteIp = (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || undefined;
 
-    // 1) Captcha
+    // 0) Preflight: can we see the table?
+    const pre = await supabase.from(TABLE).select("id", { count: "exact", head: true });
+    if (pre.error) {
+      console.error("Preflight table check failed:", { error: pre.error, status: pre.status, statusText: pre.statusText, schema: DB_SCHEMA, table: TABLE });
+      return res.status(500).json({
+        error: `Table "${DB_SCHEMA}.${TABLE}" not reachable: ${pickMsg(pre.error)} status:${pre.status} statusText:${pre.statusText}. ` +
+               `Check table/schema and NEXT_PUBLIC_SUPABASE_URL project.`,
+      });
+    }
+
+    // 1) Captcha verify
     const captcha = await verifyHCaptcha(captchaToken, remoteIp);
     if (!captcha?.success) {
       const codes = Array.isArray(captcha?.["error-codes"]) ? captcha["error-codes"].join(", ") : "unknown";
       return res.status(400).json({ error: `Captcha failed (${codes}). Check domain & secret.` });
     }
 
-    // 2) Shape row to insert
+    // 2) Build record
     const record = {
       customer_name: String(p.customer_name || "").trim(),
       email: String(p.email || "").trim().toLowerCase(),
@@ -128,36 +159,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "Missing required fields." });
     }
 
-    // 3) Insert with extra diagnostics (no .single so we can inspect status)
-    const result = await supabase.from("tickets").insert(record).select("id");
+    // 3) Insert ticket
+    const result = await supabase.from(TABLE).insert(record).select("id");
     const { data, error } = result as any;
 
     if (error) {
-      // include status/statusText if present
-      const statusInfo = [
-        result?.status ? `status:${result.status}` : "",
-        result?.statusText ? `statusText:${result.statusText}` : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-
       console.error("Supabase insert error:", { error, status: result?.status, statusText: result?.statusText });
       return res
         .status(500)
-        .json({ error: `Database error: ${pickMsg(error)} ${statusInfo}`.trim() || "Database error (unknown)" });
+        .json({ error: `Database error: ${pickMsg(error)} status:${result?.status} statusText:${result?.statusText}` });
     }
 
-    // Defensive: make sure we got an ID
-    const id = Array.isArray(data) && data[0]?.id ? data[0].id : data?.id;
+    const id: string | undefined = Array.isArray(data) ? data[0]?.id : data?.id;
     if (!id) {
-      console.error("Supabase insert returned no id:", { result });
+      console.error("Insert returned no id:", result);
       return res.status(500).json({
-        error:
-          "Database error: insert returned no id. Check table name (public.tickets), RLS, and required columns/defaults.",
+        error: `Database error: insert returned no id. Verify table "${DB_SCHEMA}.${TABLE}" and column defaults.`,
       });
     }
 
-    // 4) Email (optional)
+    // 4) EMAIL: send then WRITE BACK THE RESULT (this is “step 4”)
     const emailResult = await sendConfirmationEmail({
       to: record.email,
       customer_name: record.customer_name,
@@ -168,10 +189,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
 
     if (emailResult.sent) {
-      await supabase.from("tickets").update({ email_confirmation_sent_at: new Date().toISOString() }).eq("id", id);
+      await supabase
+        .from(TABLE)
+        .update({ email_confirmation_sent_at: new Date().toISOString(), email_error: null })
+        .eq("id", id);
+    } else {
+      await supabase
+        .from(TABLE)
+        .update({ email_error: emailResult.error ?? "unknown" })
+        .eq("id", id);
     }
 
-    return res.status(200).json({ ok: true, id, emailSent: emailResult.sent, emailError: emailResult.sent ? undefined : emailResult.error });
+    // 5) Respond to client with flags
+    return res.status(200).json({
+      ok: true,
+      id,
+      emailSent: emailResult.sent,
+      emailError: emailResult.sent ? undefined : emailResult.error,
+    });
   } catch (err: any) {
     console.error("API /api/quote fatal error:", err);
     return res.status(500).json({ error: `Server error: ${pickMsg(err)}` });
