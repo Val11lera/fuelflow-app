@@ -18,8 +18,7 @@ const CLIENT_DASHBOARD_URL =
   process.env.CLIENT_DASHBOARD_URL || `${SITE_URL}/client-dashboard`;
 
 // If you uploaded public/logo-email.png, you can leave this unset.
-// If you want to force a fresh version, set EMAIL_LOGO_URL in Vercel, e.g.
-// https://dashboard.fuelflow.co.uk/logo-email.png?v=2
+// If you want to force refresh (cache-bust), set it to .../logo-email.png?v=2 in Vercel.
 const EMAIL_LOGO_URL =
   process.env.EMAIL_LOGO_URL || `${SITE_URL}/logo-email.png`;
 
@@ -121,11 +120,12 @@ function buildEmailHTML(o: {
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f7fb;">
     <tr><td align="center" style="padding:24px;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;background:#ffffff;border-radius:16px;overflow:hidden;">
-        <!-- header with logo -->
+        <!-- header with smaller logo -->
         <tr>
-          <td style="background:${brandBlue};padding:24px;">
-            <img src="${EMAIL_LOGO_URL}" alt="FuelFlow" width="160" height="40"
-                 style="display:block;border:0;outline:none;text-decoration:none;width:160px;height:40px;">
+          <td style="background:${brandBlue};padding:20px 24px;">
+            <img src="${EMAIL_LOGO_URL}" alt="FuelFlow"
+                 width="120" height="30"
+                 style="display:block;border:0;outline:none;text-decoration:none;width:120px;height:30px;max-width:120px;-ms-interpolation-mode:bicubic;">
           </td>
         </tr>
 
@@ -235,7 +235,6 @@ async function sendConfirmationEmail(opts: {
     html,
     text,
     ...(INTERNAL_BCC ? { bcc: [INTERNAL_BCC] } : {}),
-    // No `reply_to` so no-reply stays consistent
   };
 
   const resp = await fetch("https://api.resend.com/emails", {
