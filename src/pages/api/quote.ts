@@ -2,16 +2,34 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
-/** ========= ENV / CONFIG ========= */
+/** ========= ENV / CONFIG =========
+ * Required in Vercel (Production):
+ * - NEXT_PUBLIC_SUPABASE_URL
+ * - SUPABASE_SERVICE_ROLE_KEY
+ * - NEXT_PUBLIC_HCAPTCHA_SITEKEY
+ * - HCAPTCHA_SECRET_KEY
+ * - RESEND_API_KEY
+ * - CONFIRMATION_FROM_EMAIL  (e.g. FuelFlow <no-reply@mail.fuelflow.co.uk>)
+ *
+ * Optional (but recommended):
+ * - SITE_URL = https://dashboard.fuelflow.co.uk
+ * - CLIENT_DASHBOARD_URL = https://dashboard.fuelflow.co.uk/client-dashboard
+ * - EMAIL_LOGO_URL = absolute https logo url (otherwise /logo-email.png under SITE_URL)
+ * - ORDERS_INBOX = internal BCC (e.g. orders@fuelflow.co.uk)
+ * - DB_SCHEMA = public
+ * - QUOTE_TABLE = tickets
+ */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const DB_SCHEMA = process.env.DB_SCHEMA || "public";
-const TABLE = process.env.QUOTE_TABLE || "tickets"; // change via env if needed
+const TABLE = process.env.QUOTE_TABLE || "tickets";
 
 // Public URLs for links/images in emails
 const SITE_URL = process.env.SITE_URL || "https://dashboard.fuelflow.co.uk";
+const CLIENT_DASHBOARD_URL =
+  process.env.CLIENT_DASHBOARD_URL || `${SITE_URL}/client-dashboard`;
 const EMAIL_LOGO_URL =
-  process.env.EMAIL_LOGO_URL || `${SITE_URL}/logo-email.png`; // put /public/logo-email.png in your app
+  process.env.EMAIL_LOGO_URL || `${SITE_URL}/logo-email.png`;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error(
@@ -25,7 +43,7 @@ const supabase = createClient(
   { db: { schema: DB_SCHEMA } }
 );
 
-/** ========= SMALL HELPERS ========= */
+/** ========= HELPERS ========= */
 const msg = (e: any) =>
   e?.message || e?.details || e?.hint || e?.code || (typeof e === "string" ? e : JSON.stringify(e));
 
@@ -63,7 +81,7 @@ function buildQuoteEmailText(o: {
     o.preferred_delivery ? `Preferred delivery: ${o.preferred_delivery}` : ``,
     o.ticket_ref ? `Reference: ${o.ticket_ref}` : ``,
     ``,
-    `Manage or view your request: ${SITE_URL}`,
+    `Manage or view your request: ${CLIENT_DASHBOARD_URL}`,
     ``,
     `— FuelFlow Team`,
   ].filter(Boolean);
@@ -101,12 +119,15 @@ function buildQuoteEmailHTML(o: {
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f7fb;">
     <tr><td align="center" style="padding:24px;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;background:#ffffff;border-radius:16px;overflow:hidden;">
+        <!-- header with logo -->
         <tr>
           <td style="background:${brandBlue};padding:24px;">
-            <img src="${EMAIL_LOGO_URL}" alt="FuelFlow" height="40" style="display:block;border:0;outline:none;text-decoration:none;">
+            <img src="${EMAIL_LOGO_URL}" alt="FuelFlow" width="160" height="40"
+                 style="display:block;border:0;outline:none;text-decoration:none;width:160px;height:40px;">
           </td>
         </tr>
 
+        <!-- body -->
         <tr>
           <td style="padding:28px 24px 8px 24px;">
             <h1 style="margin:0 0 12px 0;font:700 22px system-ui,-apple-system,Segoe UI,Roboto,Arial;color:${textColor};">
@@ -118,6 +139,7 @@ function buildQuoteEmailHTML(o: {
           </td>
         </tr>
 
+        <!-- summary card -->
         <tr>
           <td style="padding:0 24px 8px 24px;">
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${panelBlue};border-radius:12px;">
@@ -151,13 +173,15 @@ function buildQuoteEmailHTML(o: {
           </td>
         </tr>
 
+        <!-- CTA -->
         <tr>
           <td style="padding:16px 24px 24px 24px;">
             <table role="presentation" cellpadding="0" cellspacing="0">
               <tr>
                 <td bgcolor="${brandYellow}" style="border-radius:10px;">
-                  <a href="${SITE_URL}" target="_blank" rel="noopener"
-                     style="display:inline-block;padding:12px 18px;border-radius:10px;background:${brandYellow};color:${brandBlue};text-decoration:none;font:600 14px system-ui,Segoe UI,Roboto,Arial;">
+                  <a href="${CLIENT_DASHBOARD_URL}" target="_blank" rel="noopener"
+                     style="display:inline-block;padding:12px 18px;border-radius:10px;background:${brandYellow};
+                            color:${brandBlue};text-decoration:none;font:600 14px system-ui,Segoe UI,Roboto,Arial;">
                     View your dashboard
                   </a>
                 </td>
@@ -279,7 +303,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     };
 
     if (!record.customer_name || !record.email || !record.phone || !record.postcode || !record.quantity_litres) {
-      return res.status(400).json({ error: "Missing required fields." });
+      return res.status(400).json({ error: "Please complete all required fields." });
     }
 
     // 3) Insert ticket
