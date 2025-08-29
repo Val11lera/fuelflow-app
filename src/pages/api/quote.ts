@@ -8,17 +8,26 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const DB_SCHEMA = process.env.DB_SCHEMA || "public";
 const TABLE = process.env.QUOTE_TABLE || "tickets"; // change via env if needed
 
+// Public URLs for links/images in emails
+const SITE_URL = process.env.SITE_URL || "https://dashboard.fuelflow.co.uk";
+const EMAIL_LOGO_URL =
+  process.env.EMAIL_LOGO_URL || `${SITE_URL}/logo-email.png`; // put /public/logo-email.png in your app
+
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("Missing Supabase envs. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel.");
+  console.error(
+    "Missing Supabase envs. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel."
+  );
 }
 
-const supabase = createClient(SUPABASE_URL || "", SUPABASE_SERVICE_ROLE_KEY || "", {
-  db: { schema: DB_SCHEMA },
-});
+const supabase = createClient(
+  SUPABASE_URL || "",
+  SUPABASE_SERVICE_ROLE_KEY || "",
+  { db: { schema: DB_SCHEMA } }
+);
 
-/** ========= HELPERS ========= */
-const pickMsg = (err: any) =>
-  err?.message || err?.details || err?.hint || err?.code || (typeof err === "string" ? err : JSON.stringify(err));
+/** ========= SMALL HELPERS ========= */
+const msg = (e: any) =>
+  e?.message || e?.details || e?.hint || e?.code || (typeof e === "string" ? e : JSON.stringify(e));
 
 async function verifyHCaptcha(token: string, ip?: string) {
   const r = await fetch("https://hcaptcha.com/siteverify", {
@@ -33,7 +42,141 @@ async function verifyHCaptcha(token: string, ip?: string) {
   return r.json(); // { success:boolean, "error-codes"?:string[] }
 }
 
-/** Send confirmation via Resend HTTP API (no test override). */
+/** ========= EMAIL CONTENT (HTML + TEXT) ========= */
+
+function buildQuoteEmailText(o: {
+  customer_name: string;
+  fuel: "diesel" | "petrol";
+  quantity_litres: number;
+  postcode: string;
+  preferred_delivery?: string | null;
+  ticket_ref?: string;
+}) {
+  const lines = [
+    `Hi ${o.customer_name},`,
+    ``,
+    `Thanks for your enquiry. We've logged your request and will come back with pricing shortly.`,
+    ``,
+    `Fuel: ${o.fuel === "diesel" ? "Diesel" : "Petrol"}`,
+    `Quantity: ${o.quantity_litres} L`,
+    `Postcode: ${o.postcode}`,
+    o.preferred_delivery ? `Preferred delivery: ${o.preferred_delivery}` : ``,
+    o.ticket_ref ? `Reference: ${o.ticket_ref}` : ``,
+    ``,
+    `Manage or view your request: ${SITE_URL}`,
+    ``,
+    `— FuelFlow Team`,
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+function buildQuoteEmailHTML(o: {
+  customer_name: string;
+  fuel: "diesel" | "petrol";
+  quantity_litres: number;
+  postcode: string;
+  preferred_delivery?: string | null;
+  ticket_ref?: string;
+}) {
+  const brandBlue = "#041F3E";
+  const panelBlue = "#0E2E57";
+  const brandYellow = "#F5B800";
+  const textColor = "#0B1220";
+  const niceFuel = o.fuel === "diesel" ? "Diesel" : "Petrol";
+  const preheader =
+    "We received your quote request — we’ll get back with pricing shortly.";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="format-detection" content="telephone=no, date=no, address=no, email=no">
+<title>FuelFlow — quote request received</title>
+</head>
+<body style="margin:0;padding:0;background:#f6f7fb;">
+  <!-- preheader (hidden) -->
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${preheader}</div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f7fb;">
+    <tr><td align="center" style="padding:24px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;background:#ffffff;border-radius:16px;overflow:hidden;">
+        <tr>
+          <td style="background:${brandBlue};padding:24px;">
+            <img src="${EMAIL_LOGO_URL}" alt="FuelFlow" height="40" style="display:block;border:0;outline:none;text-decoration:none;">
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:28px 24px 8px 24px;">
+            <h1 style="margin:0 0 12px 0;font:700 22px system-ui,-apple-system,Segoe UI,Roboto,Arial;color:${textColor};">
+              Thanks — your quote request is in!
+            </h1>
+            <p style="margin:0 0 20px 0;font:400 15px system-ui,-apple-system,Segoe UI,Roboto,Arial;color:#46556A;">
+              Hi ${o.customer_name}, we’ve logged your request and our team will come back with pricing shortly.
+            </p>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:0 24px 8px 24px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${panelBlue};border-radius:12px;">
+              <tr><td style="padding:20px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                  ${o.ticket_ref ? `
+                  <tr>
+                    <td style="font:600 12px system-ui,Segoe UI,Roboto,Arial;color:#A7B3C2;text-transform:uppercase;letter-spacing:.04em;padding:0 0 8px 0;">Reference</td>
+                    <td style="font:500 14px system-ui,Segoe UI,Roboto,Arial;color:#ffffff;padding:0 0 8px 0;" align="right">${o.ticket_ref}</td>
+                  </tr>` : ``}
+                  <tr>
+                    <td style="font:600 12px system-ui,Segoe UI,Roboto,Arial;color:#A7B3C2;text-transform:uppercase;letter-spacing:.04em;padding:6px 0;">Fuel</td>
+                    <td style="font:500 14px system-ui,Segoe UI,Roboto,Arial;color:#ffffff;padding:6px 0;" align="right">${niceFuel}</td>
+                  </tr>
+                  <tr>
+                    <td style="font:600 12px system-ui,Segoe UI,Roboto,Arial;color:#A7B3C2;text-transform:uppercase;letter-spacing:.04em;padding:6px 0;">Quantity</td>
+                    <td style="font:500 14px system-ui,Segoe UI,Roboto,Arial;color:#ffffff;padding:6px 0;" align="right">${o.quantity_litres.toLocaleString()} L</td>
+                  </tr>
+                  <tr>
+                    <td style="font:600 12px system-ui,Segoe UI,Roboto,Arial;color:#A7B3C2;text-transform:uppercase;letter-spacing:.04em;padding:6px 0;">Postcode</td>
+                    <td style="font:500 14px system-ui,Segoe UI,Roboto,Arial;color:#ffffff;padding:6px 0;" align="right">${o.postcode}</td>
+                  </tr>
+                  ${o.preferred_delivery ? `
+                  <tr>
+                    <td style="font:600 12px system-ui,Segoe UI,Roboto,Arial;color:#A7B3C2;text-transform:uppercase;letter-spacing:.04em;padding:6px 0;">Preferred delivery</td>
+                    <td style="font:500 14px system-ui,Segoe UI,Roboto,Arial;color:#ffffff;padding:6px 0;" align="right">${o.preferred_delivery}</td>
+                  </tr>` : ``}
+                </table>
+              </td></tr>
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:16px 24px 24px 24px;">
+            <table role="presentation" cellpadding="0" cellspacing="0">
+              <tr>
+                <td bgcolor="${brandYellow}" style="border-radius:10px;">
+                  <a href="${SITE_URL}" target="_blank" rel="noopener"
+                     style="display:inline-block;padding:12px 18px;border-radius:10px;background:${brandYellow};color:${brandBlue};text-decoration:none;font:600 14px system-ui,Segoe UI,Roboto,Arial;">
+                    View your dashboard
+                  </a>
+                </td>
+              </tr>
+            </table>
+            <p style="margin:14px 0 0 0;font:400 12px system-ui,Segoe UI,Roboto,Arial;color:#6B7A90;">
+              You’re receiving this because you requested a quote on FuelFlow. Need help? Reply to this email.
+            </p>
+          </td>
+        </tr>
+      </table>
+      <div style="height:24px;"></div>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+/** Send confirmation via Resend HTTP API */
 async function sendConfirmationEmail(opts: {
   to: string;
   customer_name: string;
@@ -41,30 +184,25 @@ async function sendConfirmationEmail(opts: {
   quantity_litres: number;
   postcode: string;
   preferred_delivery?: string | null;
+  ticket_ref?: string;
 }) {
   const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.CONFIRMATION_FROM_EMAIL; // e.g. FuelFlow <no-reply@fuelflow.co.uk>
+  const from = process.env.CONFIRMATION_FROM_EMAIL; // e.g. FuelFlow <no-reply@mail.fuelflow.co.uk>
   const bcc = process.env.ORDERS_INBOX; // optional internal BCC
 
   if (!apiKey || !from) return { sent: false, error: "missing_email_env" };
 
-  const html = `
-    <p>Hi ${opts.customer_name},</p>
-    <p>Thanks for your enquiry. We've logged your request and will come back with pricing shortly.</p>
-    <ul>
-      <li><strong>Fuel:</strong> ${opts.fuel === "diesel" ? "Diesel" : "Petrol"}</li>
-      <li><strong>Quantity:</strong> ${opts.quantity_litres} L</li>
-      <li><strong>Postcode:</strong> ${opts.postcode}</li>
-      ${opts.preferred_delivery ? `<li><strong>Preferred delivery:</strong> ${opts.preferred_delivery}</li>` : ""}
-    </ul>
-    <p>— FuelFlow Team</p>
-  `;
+  const html = buildQuoteEmailHTML(opts);
+  const text = buildQuoteEmailText(opts);
 
   const payload: any = {
     from,
     to: opts.to,
-    subject: "FuelFlow: your quote request has been received",
+    subject: opts.ticket_ref
+      ? `FuelFlow — quote request received (ref ${opts.ticket_ref})`
+      : `FuelFlow — quote request received`,
     html,
+    text,
     reply_to: opts.to,
   };
   if (bcc) payload.bcc = [bcc];
@@ -87,19 +225,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      return res.status(500).json({ error: "Server misconfigured: Supabase env vars are missing." });
-    }
-
     const { captchaToken, ...p } = req.body || {};
-    const remoteIp = (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || undefined;
+    const remoteIp =
+      (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || undefined;
 
-    // 0) Preflight: table reachable?
+    // 0) Table reachability
     const pre = await supabase.from(TABLE).select("id", { head: true, count: "exact" });
     if (pre.error) {
-      console.error("Preflight table check failed:", { error: pre.error, status: pre.status, statusText: pre.statusText, schema: DB_SCHEMA, table: TABLE });
+      console.error("Preflight table check failed:", pre.error);
       return res.status(500).json({
-        error: `Table "${DB_SCHEMA}.${TABLE}" not reachable: ${pickMsg(pre.error)} status:${pre.status} statusText:${pre.statusText}.`,
+        error: `Table "${DB_SCHEMA}.${TABLE}" not reachable: ${msg(pre.error)}`
       });
     }
 
@@ -107,10 +242,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const captcha = await verifyHCaptcha(captchaToken, remoteIp);
     if (!captcha?.success) {
       const codes = Array.isArray(captcha?.["error-codes"]) ? captcha["error-codes"].join(", ") : "unknown";
-      return res.status(400).json({ error: `Captcha failed (${codes}). Check domain & secret.` });
+      return res.status(400).json({ error: `Captcha failed (${codes}).` });
     }
 
-    // 2) Build record
+    // 2) Build insert record
     const record = {
       customer_name: String(p.customer_name || "").trim(),
       email: String(p.email || "").trim().toLowerCase(),
@@ -152,21 +287,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { data, error } = result as any;
 
     if (error) {
-      console.error("Supabase insert error:", { error, status: result?.status, statusText: result?.statusText });
-      return res
-        .status(500)
-        .json({ error: `Database error: ${pickMsg(error)} status:${result?.status} statusText:${result?.statusText}` });
+      console.error("Supabase insert error:", error);
+      return res.status(500).json({ error: `Database error: ${msg(error)}` });
     }
 
     const id: string | undefined = Array.isArray(data) ? data[0]?.id : data?.id;
-    if (!id) {
-      console.error("Insert returned no id:", result);
-      return res.status(500).json({
-        error: `Database error: insert returned no id. Verify table "${DB_SCHEMA}.${TABLE}" and column defaults.`,
-      });
-    }
+    if (!id) return res.status(500).json({ error: "Insert returned no id." });
 
-    // 4) Email → write back outcome
+    const ticketRef = id.slice(0, 8);
+
+    // 4) Send email and write back result
     const emailResult = await sendConfirmationEmail({
       to: record.email,
       customer_name: record.customer_name,
@@ -174,6 +304,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       quantity_litres: record.quantity_litres,
       postcode: record.postcode,
       preferred_delivery: record.preferred_delivery,
+      ticket_ref: ticketRef,
     });
 
     if (emailResult.sent) {
@@ -186,16 +317,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         .eq("id", id);
     }
 
-    // 5) Response
     return res.status(200).json({
       ok: true,
       id,
+      ticketRef,
       emailSent: emailResult.sent,
       emailError: emailResult.sent ? undefined : emailResult.error,
     });
-  } catch (err: any) {
-    console.error("API /api/quote fatal error:", err);
-    return res.status(500).json({ error: `Server error: ${pickMsg(err)}` });
+  } catch (e: any) {
+    console.error("API /api/quote fatal error:", e);
+    return res.status(500).json({ error: `Server error: ${msg(e)}` });
   }
 }
 
