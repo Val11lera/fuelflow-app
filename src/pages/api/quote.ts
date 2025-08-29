@@ -2,23 +2,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
-/** ========= ENV / CONFIG =========
- * Required in Vercel (Production):
- * - NEXT_PUBLIC_SUPABASE_URL
- * - SUPABASE_SERVICE_ROLE_KEY
- * - NEXT_PUBLIC_HCAPTCHA_SITEKEY
- * - HCAPTCHA_SECRET_KEY
- * - RESEND_API_KEY
- * - CONFIRMATION_FROM_EMAIL  (e.g. FuelFlow <no-reply@mail.fuelflow.co.uk>)
- *
- * Optional (but recommended):
- * - SITE_URL = https://dashboard.fuelflow.co.uk
- * - CLIENT_DASHBOARD_URL = https://dashboard.fuelflow.co.uk/client-dashboard
- * - EMAIL_LOGO_URL = absolute https logo url (otherwise /logo-email.png under SITE_URL)
- * - ORDERS_INBOX = internal BCC (e.g. orders@fuelflow.co.uk)
- * - DB_SCHEMA = public
- * - QUOTE_TABLE = tickets
- */
+/** ========= ENV / CONFIG ========= */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const DB_SCHEMA = process.env.DB_SCHEMA || "public";
@@ -31,10 +15,12 @@ const CLIENT_DASHBOARD_URL =
 const EMAIL_LOGO_URL =
   process.env.EMAIL_LOGO_URL || `${SITE_URL}/logo-email.png`;
 
+// Email identities
+const FROM_EMAIL = process.env.CONFIRMATION_FROM_EMAIL; // e.g. FuelFlow <no-reply@mail.fuelflow.co.uk>
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || process.env.ORDERS_INBOX || "support@fuelflow.co.uk";
+
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error(
-    "Missing Supabase envs. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel."
-  );
+  console.error("Missing Supabase envs (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY).");
 }
 
 const supabase = createClient(
@@ -57,7 +43,7 @@ async function verifyHCaptcha(token: string, ip?: string) {
       remoteip: ip || "",
     }),
   });
-  return r.json(); // { success:boolean, "error-codes"?:string[] }
+  return r.json(); // { success:boolean }
 }
 
 /** ========= EMAIL CONTENT (HTML + TEXT) ========= */
@@ -81,7 +67,8 @@ function buildQuoteEmailText(o: {
     o.preferred_delivery ? `Preferred delivery: ${o.preferred_delivery}` : ``,
     o.ticket_ref ? `Reference: ${o.ticket_ref}` : ``,
     ``,
-    `Manage or view your request: ${CLIENT_DASHBOARD_URL}`,
+    `View your dashboard: ${CLIENT_DASHBOARD_URL}`,
+    `Need help? Email ${SUPPORT_EMAIL}`,
     ``,
     `— FuelFlow Team`,
   ].filter(Boolean);
@@ -101,8 +88,7 @@ function buildQuoteEmailHTML(o: {
   const brandYellow = "#F5B800";
   const textColor = "#0B1220";
   const niceFuel = o.fuel === "diesel" ? "Diesel" : "Petrol";
-  const preheader =
-    "We received your quote request — we’ll get back with pricing shortly.";
+  const preheader = "We received your quote request — we’ll get back with pricing shortly.";
 
   return `<!doctype html>
 <html lang="en">
@@ -188,7 +174,7 @@ function buildQuoteEmailHTML(o: {
               </tr>
             </table>
             <p style="margin:14px 0 0 0;font:400 12px system-ui,Segoe UI,Roboto,Arial;color:#6B7A90;">
-              You’re receiving this because you requested a quote on FuelFlow. Need help? Reply to this email.
+              Need help? Email <a href="mailto:${SUPPORT_EMAIL}" style="color:#46556A;text-decoration:underline;">${SUPPORT_EMAIL}</a>.
             </p>
           </td>
         </tr>
@@ -200,7 +186,7 @@ function buildQuoteEmailHTML(o: {
 </html>`;
 }
 
-/** Send confirmation via Resend HTTP API */
+/** ========= SEND VIA RESEND ========= */
 async function sendConfirmationEmail(opts: {
   to: string;
   customer_name: string;
@@ -211,25 +197,25 @@ async function sendConfirmationEmail(opts: {
   ticket_ref?: string;
 }) {
   const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.CONFIRMATION_FROM_EMAIL; // e.g. FuelFlow <no-reply@mail.fuelflow.co.uk>
-  const bcc = process.env.ORDERS_INBOX; // optional internal BCC
 
-  if (!apiKey || !from) return { sent: false, error: "missing_email_env" };
+  if (!apiKey || !FROM_EMAIL) return { sent: false, error: "missing_email_env" };
 
   const html = buildQuoteEmailHTML(opts);
   const text = buildQuoteEmailText(opts);
 
   const payload: any = {
-    from,
+    from: FROM_EMAIL,
     to: opts.to,
     subject: opts.ticket_ref
       ? `FuelFlow — quote request received (ref ${opts.ticket_ref})`
       : `FuelFlow — quote request received`,
     html,
     text,
-    reply_to: opts.to,
+    // make sure replies go to your support inbox, not to the no-reply address
+    reply_to: SUPPORT_EMAIL,
+    // optional: internal BCC
+    ...(process.env.ORDERS_INBOX ? { bcc: [process.env.ORDERS_INBOX] } : {}),
   };
-  if (bcc) payload.bcc = [bcc];
 
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",
