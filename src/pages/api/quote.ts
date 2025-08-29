@@ -17,7 +17,7 @@ const EMAIL_LOGO_URL =
 
 // Email identities
 const FROM_EMAIL = process.env.CONFIRMATION_FROM_EMAIL; // e.g. FuelFlow <no-reply@mail.fuelflow.co.uk>
-const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || process.env.ORDERS_INBOX || "support@fuelflow.co.uk";
+const INTERNAL_BCC = process.env.ORDERS_INBOX || undefined; // optional internal copy
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error("Missing Supabase envs (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY).");
@@ -68,9 +68,8 @@ function buildQuoteEmailText(o: {
     o.ticket_ref ? `Reference: ${o.ticket_ref}` : ``,
     ``,
     `View your dashboard: ${CLIENT_DASHBOARD_URL}`,
-    `Need help? Email ${SUPPORT_EMAIL}`,
     ``,
-    `— FuelFlow Team`,
+    `© FuelFlow. You’re receiving this because you requested a quote.`,
   ].filter(Boolean);
   return lines.join("\n");
 }
@@ -89,6 +88,7 @@ function buildQuoteEmailHTML(o: {
   const textColor = "#0B1220";
   const niceFuel = o.fuel === "diesel" ? "Diesel" : "Petrol";
   const preheader = "We received your quote request — we’ll get back with pricing shortly.";
+  const year = new Date().getFullYear();
 
   return `<!doctype html>
 <html lang="en">
@@ -159,7 +159,7 @@ function buildQuoteEmailHTML(o: {
           </td>
         </tr>
 
-        <!-- CTA -->
+        <!-- CTA + footer -->
         <tr>
           <td style="padding:16px 24px 24px 24px;">
             <table role="presentation" cellpadding="0" cellspacing="0">
@@ -174,7 +174,7 @@ function buildQuoteEmailHTML(o: {
               </tr>
             </table>
             <p style="margin:14px 0 0 0;font:400 12px system-ui,Segoe UI,Roboto,Arial;color:#6B7A90;">
-              Need help? Email <a href="mailto:${SUPPORT_EMAIL}" style="color:#46556A;text-decoration:underline;">${SUPPORT_EMAIL}</a>.
+              © ${year} FuelFlow. You’re receiving this because you requested a quote.
             </p>
           </td>
         </tr>
@@ -197,7 +197,6 @@ async function sendConfirmationEmail(opts: {
   ticket_ref?: string;
 }) {
   const apiKey = process.env.RESEND_API_KEY;
-
   if (!apiKey || !FROM_EMAIL) return { sent: false, error: "missing_email_env" };
 
   const html = buildQuoteEmailHTML(opts);
@@ -211,10 +210,8 @@ async function sendConfirmationEmail(opts: {
       : `FuelFlow — quote request received`,
     html,
     text,
-    // make sure replies go to your support inbox, not to the no-reply address
-    reply_to: SUPPORT_EMAIL,
-    // optional: internal BCC
-    ...(process.env.ORDERS_INBOX ? { bcc: [process.env.ORDERS_INBOX] } : {}),
+    // No reply-to (keeps no-reply behavior consistent)
+    ...(INTERNAL_BCC ? { bcc: [INTERNAL_BCC] } : {}),
   };
 
   const resp = await fetch("https://api.resend.com/emails", {
@@ -239,7 +236,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const remoteIp =
       (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || undefined;
 
-    // 0) Table reachability
+    // 0) table reachability
     const pre = await supabase.from(TABLE).select("id", { head: true, count: "exact" });
     if (pre.error) {
       console.error("Preflight table check failed:", pre.error);
@@ -248,14 +245,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // 1) Captcha
+    // 1) captcha
     const captcha = await verifyHCaptcha(captchaToken, remoteIp);
     if (!captcha?.success) {
       const codes = Array.isArray(captcha?.["error-codes"]) ? captcha["error-codes"].join(", ") : "unknown";
       return res.status(400).json({ error: `Captcha failed (${codes}).` });
     }
 
-    // 2) Build insert record
+    // 2) build record
     const record = {
       customer_name: String(p.customer_name || "").trim(),
       email: String(p.email || "").trim().toLowerCase(),
@@ -292,7 +289,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "Please complete all required fields." });
     }
 
-    // 3) Insert ticket
+    // 3) insert
     const result = await supabase.from(TABLE).insert(record).select("id");
     const { data, error } = result as any;
 
@@ -306,7 +303,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const ticketRef = id.slice(0, 8);
 
-    // 4) Send email and write back result
+    // 4) send email and log result
     const emailResult = await sendConfirmationEmail({
       to: record.email,
       customer_name: record.customer_name,
