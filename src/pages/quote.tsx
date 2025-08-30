@@ -40,7 +40,7 @@ const initialState: FormState = {
 };
 
 // ── Brand config
-const LOGO_SRC = "/logo-email.png"; // place logo in /public/logo-email.png
+const LOGO_SRC = "/logo-email.png"; // ensure /public/logo-email.png exists
 const BRAND_NAVY = "#041F3E";
 const BRAND_NAVY_2 = "#0E2E57";
 
@@ -52,9 +52,9 @@ export default function QuotePage() {
 
   const label = "block text-sm font-medium mb-1";
   const input =
-    "w-full p-2 rounded-lg border border-white/15 bg-white/5 text-white placeholder-white/40 " +
-    "focus:outline-none focus:ring focus:ring-yellow-500/40 focus:border-yellow-400/60";
-  const grid = "grid grid-cols-1 md:grid-cols-2 gap-4";
+    "w-full p-3 rounded-xl border border-white/10 bg-white/5 text-white placeholder-white/40 " +
+    "focus:outline-none focus:ring focus:ring-yellow-500/40 focus:border-yellow-400/50";
+  const grid = "grid grid-cols-1 md:grid-cols-2 gap-5";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -82,7 +82,11 @@ export default function QuotePage() {
       try { data = raw ? JSON.parse(raw) : {}; } catch { data = { error: raw || "Non-JSON response" }; }
 
       if (!res.ok) {
-        const msg = data?.error || (res.status === 405 ? "POST /api/quote not found (405). Ensure src/pages/api/quote.ts exists." : `Request failed (${res.status})`);
+        const msg =
+          data?.error ||
+          (res.status === 405
+            ? "POST /api/quote not found (405). Ensure src/pages/api/quote.ts exists."
+            : `Request failed (${res.status})`);
         throw new Error(msg);
       }
 
@@ -104,37 +108,57 @@ export default function QuotePage() {
   }
 
   return (
-    <div className="min-h-screen text-white relative">
-      {/* BACKGROUND (brand gradients + subtle dotted overlay) */}
+    <div className="min-h-screen text-white relative overflow-hidden">
+      {/* ───────────────── BACKGROUND LAYERS ───────────────── */}
+      {/* Base gradient + vignettes */}
       <div
-        className="absolute inset-0 -z-20"
+        className="absolute inset-0 -z-30"
         style={{
           background: `
-            radial-gradient(1200px 600px at 70% -10%, rgba(14,46,87,0.85), transparent 60%),
-            radial-gradient(800px 400px at -10% 30%, rgba(14,46,87,0.7), transparent 55%),
+            radial-gradient(1200px 600px at 75% -10%, rgba(14,46,87,0.75), transparent 60%),
+            radial-gradient(800px 400px at -15% 25%, rgba(14,46,87,0.6), transparent 55%),
             linear-gradient(135deg, ${BRAND_NAVY} 0%, ${BRAND_NAVY_2} 60%, ${BRAND_NAVY} 100%)
           `,
         }}
       />
+      {/* Subtle dotted texture for depth */}
       <div
-        className="absolute inset-0 opacity-15 pointer-events-none -z-10"
+        className="absolute inset-0 -z-20 opacity-15"
         style={{
           backgroundImage:
             "radial-gradient(rgba(255,255,255,0.12) 1px, transparent 1px)",
-          backgroundSize: "26px 26px",
+          backgroundSize: "24px 24px",
           backgroundPosition: "0 0",
         }}
       />
+      {/* BIG centered logo watermark */}
+      <div
+        className="absolute -z-10 pointer-events-none"
+        style={{
+          top: "8vh",
+          left: "50%",
+          transform: "translateX(-50%)",
+          width: "min(70vw, 900px)",
+          height: "min(70vw, 900px)",
+          backgroundImage: `url(${LOGO_SRC})`,
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center",
+          backgroundSize: "contain",
+          opacity: 0.06,         // faint and classy
+          filter: "saturate(0.9)", // tame the colour for watermark
+        }}
+        aria-hidden
+      />
 
-      {/* HEADER (logo + title only) */}
-      <div className="mx-auto max-w-6xl px-4 pt-6 pb-2">
-        <div className="flex items-center gap-4">
+      {/* ───────────────── HEADER: logo + title (no menu) ───────────────── */}
+      <div className="mx-auto max-w-5xl px-4 pt-10 pb-4">
+        <div className="flex items-center gap-4 justify-center">
           <img
             src={LOGO_SRC}
             alt="FuelFlow"
-            width={140}
-            height={35}
-            className="h-9 w-auto object-contain"
+            width={136}
+            height={34}
+            className="h-9 w-auto object-contain drop-shadow-sm"
           />
           <h1 className="text-3xl md:text-4xl font-extrabold leading-tight">
             <span className="bg-gradient-to-r from-yellow-400 via-yellow-300 to-orange-400 bg-clip-text text-transparent">
@@ -142,18 +166,19 @@ export default function QuotePage() {
             </span>
           </h1>
         </div>
-        <p className="mt-3 text-white/80">
+        <p className="mt-3 text-center text-white/85">
           For non-registered customers. Registered users can order at live prices in the dashboard.
         </p>
       </div>
 
-      {/* FORM CARD */}
-      <main className="mx-auto max-w-6xl px-4 pb-12">
+      {/* ───────────────── FORM CARD ───────────────── */}
+      <main className="mx-auto max-w-5xl px-4 pb-14">
         <div className="relative">
-          <div className="absolute inset-0 blur-2xl rounded-3xl bg-yellow-500/10 -z-10" />
+          {/* glowing halo behind card */}
+          <div className="absolute inset-0 -z-10 blur-3xl rounded-[28px] bg-yellow-500/10" />
           <form
             onSubmit={onSubmit}
-            className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl shadow-2xl p-6 md:p-8 space-y-6"
+            className="bg-white/6 backdrop-blur-md border border-white/12 rounded-[22px] shadow-2xl p-6 md:p-8 space-y-7"
           >
             {/* Contact */}
             <section>
@@ -161,19 +186,39 @@ export default function QuotePage() {
               <div className={grid}>
                 <div>
                   <label className={label}>Full name *</label>
-                  <input className={input} value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} placeholder="Jane Smith" />
+                  <input
+                    className={input}
+                    value={form.customer_name}
+                    onChange={(e) => setForm({ ...form, customer_name: e.target.value })}
+                    placeholder="Jane Smith"
+                  />
                 </div>
                 <div>
                   <label className={label}>Email *</label>
-                  <input type="email" className={input} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="name@company.com" />
+                  <input
+                    type="email"
+                    className={input}
+                    value={form.email}
+                    onChange={(e) => setForm({ ...form, email: e.target.value })}
+                    placeholder="name@company.com"
+                  />
                 </div>
                 <div>
                   <label className={label}>Phone *</label>
-                  <input className={input} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="+44 7..." />
+                  <input
+                    className={input}
+                    value={form.phone}
+                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                    placeholder="+44 7..."
+                  />
                 </div>
                 <div>
                   <label className={label}>Customer type *</label>
-                  <select className={input} value={form.customer_type} onChange={(e) => setForm({ ...form, customer_type: e.target.value as any })}>
+                  <select
+                    className={input}
+                    value={form.customer_type}
+                    onChange={(e) => setForm({ ...form, customer_type: e.target.value as any })}
+                  >
                     <option value="residential">Residential</option>
                     <option value="business">Business</option>
                   </select>
@@ -181,7 +226,12 @@ export default function QuotePage() {
                 {form.customer_type === "business" && (
                   <div className="md:col-span-2">
                     <label className={label}>Company name</label>
-                    <input className={input} value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} placeholder="FuelFlow Ltd" />
+                    <input
+                      className={input}
+                      value={form.company_name}
+                      onChange={(e) => setForm({ ...form, company_name: e.target.value })}
+                      placeholder="FuelFlow Ltd"
+                    />
                   </div>
                 )}
               </div>
@@ -193,11 +243,21 @@ export default function QuotePage() {
               <div className={grid}>
                 <div>
                   <label className={label}>Postcode *</label>
-                  <input className={input} value={form.postcode} onChange={(e) => setForm({ ...form, postcode: e.target.value.toUpperCase() })} placeholder="SW1A 1AA" />
+                  <input
+                    className={input}
+                    value={form.postcode}
+                    onChange={(e) => setForm({ ...form, postcode: e.target.value.toUpperCase() })}
+                    placeholder="SW1A 1AA"
+                  />
                 </div>
                 <div>
                   <label className={label}>City/Town</label>
-                  <input className={input} value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} placeholder="London" />
+                  <input
+                    className={input}
+                    value={form.city}
+                    onChange={(e) => setForm({ ...form, city: e.target.value })}
+                    placeholder="London"
+                  />
                 </div>
               </div>
             </section>
@@ -208,18 +268,34 @@ export default function QuotePage() {
               <div className={grid}>
                 <div>
                   <label className={label}>Fuel *</label>
-                  <select className={input} value={form.fuel} onChange={(e) => setForm({ ...form, fuel: e.target.value as any })}>
+                  <select
+                    className={input}
+                    value={form.fuel}
+                    onChange={(e) => setForm({ ...form, fuel: e.target.value as any })}
+                  >
                     <option value="diesel">Diesel</option>
                     <option value="petrol">Petrol</option>
                   </select>
                 </div>
                 <div>
                   <label className={label}>Quantity (litres) *</label>
-                  <input type="number" min={1} step="1" className={input} value={form.quantity_litres} onChange={(e) => setForm({ ...form, quantity_litres: e.target.value })} placeholder="1000" />
+                  <input
+                    type="number"
+                    min={1}
+                    step="1"
+                    className={input}
+                    value={form.quantity_litres}
+                    onChange={(e) => setForm({ ...form, quantity_litres: e.target.value })}
+                    placeholder="1000"
+                  />
                 </div>
                 <div>
                   <label className={label}>Urgency</label>
-                  <select className={input} value={form.urgency} onChange={(e) => setForm({ ...form, urgency: e.target.value as any })}>
+                  <select
+                    className={input}
+                    value={form.urgency}
+                    onChange={(e) => setForm({ ...form, urgency: e.target.value as any })}
+                  >
                     <option value="asap">ASAP</option>
                     <option value="this_week">This week</option>
                     <option value="flexible">Flexible</option>
@@ -227,7 +303,12 @@ export default function QuotePage() {
                 </div>
                 <div>
                   <label className={label}>Preferred delivery date</label>
-                  <input type="date" className={input} value={form.preferred_delivery} onChange={(e) => setForm({ ...form, preferred_delivery: e.target.value })} />
+                  <input
+                    type="date"
+                    className={input}
+                    value={form.preferred_delivery}
+                    onChange={(e) => setForm({ ...form, preferred_delivery: e.target.value })}
+                  />
                 </div>
               </div>
             </section>
@@ -237,21 +318,42 @@ export default function QuotePage() {
               <div className={grid}>
                 <div>
                   <label className={label}>Use case</label>
-                  <input className={input} placeholder="vehicles, machinery, generators…" value={form.use_case} onChange={(e) => setForm({ ...form, use_case: e.target.value })} />
+                  <input
+                    className={input}
+                    placeholder="vehicles, machinery, generators…"
+                    value={form.use_case}
+                    onChange={(e) => setForm({ ...form, use_case: e.target.value })}
+                  />
                 </div>
                 <div>
                   <label className={label}>Access notes</label>
-                  <input className={input} placeholder="e.g., gate code 1234, height limit 3.5m" value={form.access_notes} onChange={(e) => setForm({ ...form, access_notes: e.target.value })} />
+                  <input
+                    className={input}
+                    placeholder="e.g., gate code 1234, height limit 3.5m"
+                    value={form.access_notes}
+                    onChange={(e) => setForm({ ...form, access_notes: e.target.value })}
+                  />
                 </div>
                 <div className="md:col-span-2">
                   <label className={label}>Notes</label>
-                  <textarea rows={3} className={input} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Anything else we should know?" />
+                  <textarea
+                    rows={3}
+                    className={input}
+                    value={form.notes}
+                    onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                    placeholder="Anything else we should know?"
+                  />
                 </div>
               </div>
             </section>
 
             <label className="flex items-center gap-3 text-sm">
-              <input type="checkbox" className="accent-yellow-500" checked={form.marketing_opt_in} onChange={(e) => setForm({ ...form, marketing_opt_in: e.target.checked })} />
+              <input
+                type="checkbox"
+                className="accent-yellow-500"
+                checked={form.marketing_opt_in}
+                onChange={(e) => setForm({ ...form, marketing_opt_in: e.target.checked })}
+              />
               I’d like occasional updates from FuelFlow.
             </label>
 
