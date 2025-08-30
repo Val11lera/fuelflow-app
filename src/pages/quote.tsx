@@ -2,7 +2,7 @@
 // src/pages/quote.tsx
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 
 /* ----------------------- Types & defaults ----------------------- */
@@ -128,6 +128,7 @@ function CTAButton({
 export default function QuotePage() {
   const [form, setForm] = useState<FormState>(initialState);
   const [captchaToken, setCaptchaToken] = useState("");
+  const [captchaError, setCaptchaError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -146,6 +147,15 @@ export default function QuotePage() {
   const monthlySaving   = useMemo(() => consumption * savingsPerLitre, [consumption, savingsPerLitre]);
   const annualSaving    = useMemo(() => monthlySaving * 12, [monthlySaving]);
   const paybackMonths   = useMemo(() => (monthlySaving > 0 ? tankPrice / monthlySaving : Infinity), [tankPrice, monthlySaving]);
+
+  // Detect mobile and switch hCaptcha size to compact
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const update = () => setIsMobile(window.matchMedia("(max-width: 640px)").matches);
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -195,7 +205,8 @@ export default function QuotePage() {
   }
 
   return (
-    <div className="min-h-screen text-white relative overflow-hidden">
+    // IMPORTANT: no overflow-hidden here (mobile hCaptcha needs to be able to open its overlay)
+    <div className="min-h-screen text-white relative overflow-x-hidden">
       {/* Background */}
       <div className="absolute inset-0 bg-[#041F3E]" />
       <div className="absolute inset-0 bg-gradient-to-b from-[#082246]/40 via-[#041F3E]/40 to-[#041F3E]" />
@@ -215,7 +226,7 @@ export default function QuotePage() {
           </h1>
         </div>
 
-        {/* Two big CTAs (previous look with buttons) */}
+        {/* Two big CTAs */}
         <div className="mb-8 grid grid-cols-1 md:grid-cols-2 gap-4">
           <CTAButton
             title="Who we are"
@@ -411,12 +422,28 @@ export default function QuotePage() {
           </label>
 
           <div className="mt-5 space-y-4">
-            <HCaptcha
-              sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
-              onVerify={setCaptchaToken}
-              onExpire={() => setCaptchaToken("")}
-              onClose={() => setCaptchaToken("")}
-            />
+            {/* hCaptcha: compact on mobile, higher z-index, dark theme */}
+            <div style={{ zIndex: 5, position: "relative" }}>
+              <HCaptcha
+                key={isMobile ? "compact" : "normal"}  // force re-render on size change
+                sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
+                size={isMobile ? "compact" : "normal"}
+                theme="dark"
+                onVerify={(token) => {
+                  setCaptchaError(null);
+                  setCaptchaToken(token);
+                }}
+                onExpire={() => setCaptchaToken("")}
+                onClose={() => setCaptchaToken("")}
+                onError={(e) => setCaptchaError(typeof e === "string" ? e : "Captcha error")}
+              />
+            </div>
+            {captchaError && (
+              <p className="text-sm text-red-300">
+                Captcha error: {captchaError}. Please refresh and try again.
+              </p>
+            )}
+
             <button
               type="submit"
               disabled={submitting}
@@ -432,7 +459,6 @@ export default function QuotePage() {
               </p>
             )}
 
-            {/* No VAT wording (per your request). Keep a simple disclaimer. */}
             <p className="text-xs text-white/70 text-center">
               Indicative only. Prices move with the market and are confirmed on order acceptance.
               Service subject to credit checks, site survey and safety compliance. See terms for full details.
@@ -469,7 +495,7 @@ export default function QuotePage() {
         </div>
       </Modal>
 
-      {/* Calculator modal (GBP, defaults: £1.35 and £1.26) */}
+      {/* Calculator modal (GBP) */}
       <Modal open={showCalc} onClose={() => setShowCalc(false)} title="Savings calculator">
         <div className={grid2}>
           <div>
@@ -573,5 +599,4 @@ export default function QuotePage() {
     </div>
   );
 }
-
 
