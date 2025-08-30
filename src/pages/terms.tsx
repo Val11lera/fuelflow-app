@@ -3,9 +3,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import HCaptcha from "@hcaptcha/react-hcaptcha";
 
-const VERSION = "v1.0";            // bump when you update terms
-const LAST_UPDATED = "29 Aug 2025"; // show on the page
+const VERSION = "v1.1";            // bump when you change terms text
+const LAST_UPDATED = "30 Aug 2025"; // show on the page
 
 export default function TermsPage() {
   const [checked, setChecked] = useState(false);
@@ -14,35 +15,36 @@ export default function TermsPage() {
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Optional metadata to store with acceptance (e.g., from email confirmation/quote)
+  // optional acceptance metadata
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
 
-  // Optional linking (e.g., /terms?ticket_id=abc&source=quote)
+  // deep-link metadata
   const [ticketId, setTicketId] = useState<string | null>(null);
   const [source, setSource] = useState<string | null>(null);
 
-  // track scroll near end of document to enable Accept button
+  // hCaptcha
+  const [captchaToken, setCaptchaToken] = useState<string>("");
+
   const endRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     setTicketId(params.get("ticket_id"));
     setSource(params.get("source"));
 
-    const observer = new IntersectionObserver(
+    const obs = new IntersectionObserver(
       (entries) => {
-        const visible = entries.some((e) => e.isIntersecting);
-        if (visible) setScrolledEnough(true);
+        if (entries.some((e) => e.isIntersecting)) setScrolledEnough(true);
       },
-      { rootMargin: "0px", threshold: 0.2 }
+      { threshold: 0.2 }
     );
-    if (endRef.current) observer.observe(endRef.current);
-    return () => observer.disconnect();
+    if (endRef.current) obs.observe(endRef.current);
+    return () => obs.disconnect();
   }, []);
 
   const acceptEnabled = useMemo(
-    () => checked && scrolledEnough && !submitting && !submitted,
-    [checked, scrolledEnough, submitting, submitted]
+    () => checked && scrolledEnough && !!captchaToken && !submitting && !submitted,
+    [checked, scrolledEnough, captchaToken, submitting, submitted]
   );
 
   async function onAccept() {
@@ -59,6 +61,7 @@ export default function TermsPage() {
           email: email || null,
           ticket_id: ticketId,
           source,
+          captchaToken,
         }),
       });
 
@@ -67,6 +70,7 @@ export default function TermsPage() {
         throw new Error(txt || `Failed (${res.status})`);
       }
       setSubmitted(true);
+      setCaptchaToken("");
     } catch (e: any) {
       setError(e?.message || "Something went wrong.");
     } finally {
@@ -132,7 +136,7 @@ export default function TermsPage() {
           </div>
         </div>
 
-        {/* 2-column layout */}
+        {/* two-column layout */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Content */}
           <article className="lg:col-span-8 rounded-2xl border border-white/10 bg-white/[0.05] p-6 md:p-8 shadow-2xl backdrop-blur-sm">
@@ -148,8 +152,8 @@ export default function TermsPage() {
                 <>
                   <h3 className="text-lg font-semibold mb-2">Accept these terms</h3>
                   <p className="text-sm text-white/80 mb-4">
-                    Please read the terms. You’ll need to scroll near the end and tick the box
-                    before accepting.
+                    Please read the terms. You’ll need to scroll near the end, pass hCaptcha and tick
+                    the box before accepting.
                   </p>
 
                   <div className="flex gap-2 mb-3">
@@ -187,12 +191,21 @@ export default function TermsPage() {
                     </div>
                   </div>
 
-                  {/* Status helper */}
                   {!scrolledEnough && (
                     <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.06] p-2 text-xs text-white/70">
                       Scroll to the end of the terms to enable the Accept button.
                     </div>
                   )}
+
+                  <div className="mb-3">
+                    <HCaptcha
+                      sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
+                      onVerify={(t) => setCaptchaToken(t)}
+                      onExpire={() => setCaptchaToken("")}
+                      onClose={() => setCaptchaToken("")}
+                      theme="dark"
+                    />
+                  </div>
 
                   {error && (
                     <div className="mb-3 rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">
@@ -210,8 +223,8 @@ export default function TermsPage() {
                   </button>
 
                   <p className="mt-3 text-xs text-white/60">
-                    By accepting, you enter into a binding agreement with FuelFlow for any current
-                    or future supply. IP and user-agent are recorded to evidence acceptance.
+                    By accepting, you enter into a binding agreement with FuelFlow. IP and user-agent
+                    are recorded to evidence acceptance.
                   </p>
                 </>
               ) : (
@@ -242,8 +255,8 @@ export default function TermsPage() {
 
       <footer className="relative z-10 border-t border-white/10 bg-white/[0.02] backdrop-blur-sm">
         <div className="mx-auto max-w-6xl px-5 py-4 text-xs text-white/60">
-          © {new Date().getFullYear()} FuelFlow. This template is provided for convenience
-          and does not constitute legal advice; please seek independent legal review.
+          © {new Date().getFullYear()} FuelFlow. This template is provided for convenience and does
+          not constitute legal advice; please seek solicitor review.
         </div>
       </footer>
     </div>
@@ -258,17 +271,18 @@ function TOC() {
     ["quotes", "2. Quotes, Pricing & Taxes"],
     ["orders", "3. Orders, Minimums & Credit"],
     ["delivery", "4. Delivery, Risk & Title"],
-    ["tanks", "5. Tanks, Safety & Site Access"],
-    ["quality", "6. Product Quality & Measurement"],
-    ["payment", "7. Invoicing & Payment"],
-    ["liability", "8. Liability, Limits & Indemnities"],
-    ["environment", "9. Environmental & Compliance"],
-    ["rental", "10. Rental Tanks (if applicable)"],
-    ["data", "11. Data Protection & Communications"],
-    ["termination", "12. Suspension & Termination"],
-    ["force", "13. Force Majeure"],
-    ["law", "14. Law & Jurisdiction"],
-    ["misc", "15. Miscellaneous"],
+    ["responsibilities", "5. Client Responsibilities (Services/Works)"],
+    ["tanks", "6. Tanks & Site Safety"],
+    ["quality", "7. Product Quality & Measurement"],
+    ["payment", "8. Invoicing, Payment & Remedies"],
+    ["liability", "9. Liability, Indemnities & Caps"],
+    ["environment", "10. Environmental & Compliance"],
+    ["rental", "11. Rental Tanks — Additional Terms"],
+    ["data", "12. Data Protection & Communications"],
+    ["suspension", "13. Suspension & Termination"],
+    ["force", "14. Force Majeure"],
+    ["law", "15. Law & Jurisdiction"],
+    ["misc", "16. Miscellaneous"],
   ] as const;
 
   return (
@@ -297,38 +311,40 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section id={id} className="prose prose-invert max-w-none prose-headings:scroll-mt-24">
+    <section id={id} className="prose prose-invert max-w-none prose-p:leading-relaxed">
       <h2 className="mt-8">{title}</h2>
-      <div className="prose-p:leading-relaxed">{children}</div>
+      <div>{children}</div>
     </section>
   );
 }
+
+/* ------------------- LEGAL BODY (expanded template) ------------------- */
 
 function LegalBody() {
   return (
     <div className="space-y-2 text-white/90">
       <p className="text-sm text-white/70">
-        These Terms & Conditions (the “Terms”) apply to the supply of fuels, equipment and related
-        services by FuelFlow (“Supplier”, “we”, “us”) to the customer (“Customer”, “you”). By placing
-        an order, opening an account, accepting delivery or clicking “Accept Terms”, you agree to be
-        bound by these Terms.
+        These Terms & Conditions (the “Terms”) govern the supply of fuel and any ancillary items by
+        FuelFlow (“Supplier”, “we”, “us”) to the customer (“Customer”, “you”). By placing an order,
+        opening an account, accepting delivery or clicking “Accept Terms”, you agree to be bound by
+        these Terms.
       </p>
 
       <Section id="scope" title="1. Scope & Definitions">
         <ul>
           <li>
-            <strong>Products</strong> means fuels and any ancillary items provided by us.
+            <strong>Supply Scope.</strong> FuelFlow supplies <em>fuel only</em>. Any installation,
+            commissioning, maintenance, repair, electrical or civil works, site preparation, spill
+            response equipment and ongoing site compliance are the Customer’s sole responsibility,
+            unless a separate, signed agreement expressly states FuelFlow will provide such services.
           </li>
           <li>
-            <strong>Services</strong> include transport, installation, maintenance, tank rental and
-            logistics support.
+            <strong>Products</strong> are fuels and any approved ancillary items we sell.{" "}
+            <strong>Services</strong> means any services we agree in writing to provide separately.
           </li>
           <li>
-            <strong>Business Day</strong> means Monday–Friday excluding public holidays in England.
-          </li>
-          <li>
-            These Terms prevail over your purchase terms unless expressly agreed in writing by an
-            authorised FuelFlow signatory.
+            These Terms take precedence over your terms unless an authorised FuelFlow signatory
+            agrees otherwise in writing.
           </li>
         </ul>
       </Section>
@@ -336,16 +352,16 @@ function LegalBody() {
       <Section id="quotes" title="2. Quotes, Pricing & Taxes">
         <ul>
           <li>
-            Prices are dynamic and depend on market conditions, delivery location, volume and credit
-            status. Quotes are invitations to treat and valid only for the time specified.
+            Prices are market-linked and may vary by delivery location, volume and credit status.
+            Quotes are invitations to treat and valid only for the period stated.
           </li>
           <li>
-            Unless we state otherwise, prices exclude duties and any applicable taxes or levies
-            (which will be added at the rate in force at the tax point).
+            Unless stated otherwise, prices exclude any applicable taxes, duties and levies (added at
+            the rate in force at the tax point).
           </li>
           <li>
-            Surcharges may apply for timed windows, out-of-hours deliveries, access constraints or
-            extraordinary events beyond our control.
+            Extra charges may apply for timed windows, out-of-hours deliveries, restricted access,
+            waiting time, aborted deliveries or special compliance requests.
           </li>
         </ul>
       </Section>
@@ -353,12 +369,13 @@ function LegalBody() {
       <Section id="orders" title="3. Orders, Minimums & Credit">
         <ul>
           <li>
-            Orders are subject to acceptance, stock availability, credit checks and site safety
-            verification. Minimum order volumes may apply (including for any free rental model).
+            Orders are subject to acceptance, stock availability, credit approval and site safety
+            verification. Minimum order volumes may apply (including where rental equipment is
+            offered).
           </li>
           <li>
-            We may require prepayment or security. We may cancel or suspend if credit limits are
-            exceeded or payments fall overdue.
+            We may require prepayment or security. We may cancel or suspend supply if credit limits
+            are exceeded or payments are overdue.
           </li>
         </ul>
       </Section>
@@ -366,164 +383,201 @@ function LegalBody() {
       <Section id="delivery" title="4. Delivery, Risk & Title">
         <ul>
           <li>
-            Delivery dates are estimates. Risk passes on physical delivery into your tank or other
-            agreed point. Title passes when we receive full cleared payment.
+            Delivery dates are estimates. Risk passes upon physical delivery into your tank or agreed
+            point. Title passes on receipt of full cleared payment.
           </li>
           <li>
-            You must ensure safe, unobstructed access for an appropriate vehicle, accurate tank
-            identification and that ullage is sufficient. Waiting time, aborts and diversions may be
-            chargeable.
+            You must ensure safe, unobstructed access, correct tank identification and sufficient
+            ullage. Waiting time, diversions and aborts may be chargeable.
           </li>
         </ul>
       </Section>
 
-      <Section id="tanks" title="5. Tanks, Safety & Site Access">
+      <Section
+        id="responsibilities"
+        title="5. Client Responsibilities (Services/Works are Customer’s Responsibility)"
+      >
         <ul>
           <li>
-            You are responsible for the integrity, compliance and maintenance of your tanks, pipework
-            and associated systems unless we supply and maintain them under a separate agreement.
+            Unless a separate signed contract states otherwise, <strong>you</strong> are solely
+            responsible for: tank installation and certification, hardstanding, electrical works,
+            bunding, overfill/alarm/sensor systems, permits, operator training, routine maintenance
+            and periodic inspection.
           </li>
           <li>
-            You must keep adequate spill response equipment on site and ensure competent persons
-            supervise deliveries.
+            You must ensure competent persons supervise all deliveries and that your site complies
+            with current law, standards and manufacturer guidance.
+          </li>
+          <li>
+            Any advice we give is for general guidance only and does not shift legal responsibility
+            from you as site operator.
           </li>
         </ul>
       </Section>
 
-      <Section id="quality" title="6. Product Quality & Measurement">
+      <Section id="tanks" title="6. Tanks & Site Safety">
         <ul>
           <li>
-            Product meets the applicable British or OEM specification when it leaves our custody.
-            Sampling must be performed in accordance with industry practice. We will not be liable
-            for contamination or degradation arising after delivery.
+            You are responsible for the integrity and compliance of your tanks, pipework and associated
+            systems unless we supply and maintain equipment under a separate written agreement.
           </li>
           <li>
-            Quantities are determined by tanker meters or calibrated dip; reasonable tolerances
-            apply.
+            You must keep appropriate spill response equipment on site and maintain a current spill
+            plan. We may refuse/suspend delivery if the site is unsafe or non-compliant.
           </li>
         </ul>
       </Section>
 
-      <Section id="payment" title="7. Invoicing & Payment">
+      <Section id="quality" title="7. Product Quality & Measurement">
         <ul>
           <li>
-            Unless otherwise agreed in writing, payment is due by the date shown on the invoice.
-            Interest may be charged on overdue sums at 4% per annum above Barclays Bank plc base
-            rate, accruing daily.
+            Product conforms to the applicable specification when it leaves our custody. We are not
+            responsible for contamination, degradation or loss occurring after delivery.
           </li>
           <li>
-            We may set-off amounts owed by you against sums due to you.
+            Quantities are determined by tanker meters or calibrated dip; reasonable tolerances apply.
           </li>
         </ul>
       </Section>
 
-      <Section id="liability" title="8. Liability, Limits & Indemnities">
+      <Section id="payment" title="8. Invoicing, Payment & Remedies">
         <ul>
           <li>
-            Nothing limits liability for death/personal injury caused by negligence, fraud or any
-            other liability that cannot be lawfully excluded.
+            Unless otherwise agreed in writing, payment is due by the date stated on the invoice.
+            Interest accrues daily on overdue sums at 4% per annum above Barclays Bank plc base rate.
           </li>
           <li>
-            Subject to the foregoing, we are not liable for loss of profit, business, goodwill,
-            interruption, or any indirect or consequential loss.
+            We may withhold or suspend deliveries, adjust credit limits, charge collection costs and
+            exercise a lien over goods until amounts due are paid in full.
           </li>
           <li>
-            Our aggregate liability arising out of each order shall not exceed the price paid for the
-            relevant order.
-          </li>
-          <li>
-            You indemnify us against claims, costs and losses arising from your breach, unsafe site
-            conditions, or environmental incidents caused by your acts/omissions.
+            You agree to reimburse our reasonable costs (including legal fees) incurred in recovering
+            overdue sums, repossessing rental equipment, or enforcing these Terms.
           </li>
         </ul>
       </Section>
 
-      <Section id="environment" title="9. Environmental & Compliance">
+      <Section id="liability" title="9. Liability, Indemnities & Caps">
         <ul>
           <li>
-            You must comply with all laws, permits and industry standards relating to fuel storage and
-            handling and promptly notify us of incidents. We may suspend supply if we consider a site
-            unsafe or non-compliant.
+            Nothing excludes liability for death/personal injury caused by negligence, fraud, or any
+            liability that cannot lawfully be excluded.
           </li>
           <li>
-            We may operate sustainability initiatives (e.g., tree planting) on a discretionary basis;
-            such initiatives do not alter your legal responsibilities.
+            Subject to the foregoing, we are not liable for loss of profit, revenue, use, contracts,
+            goodwill, business interruption, or any indirect/consequential loss.
+          </li>
+          <li>
+            Our total aggregate liability arising from or in connection with each order is limited to
+            the price paid for that order.
+          </li>
+          <li>
+            You indemnify us against claims, losses and costs arising from your breach, unsafe or
+            non-compliant site conditions, contamination after delivery, or environmental incidents
+            caused by your acts/omissions.
           </li>
         </ul>
       </Section>
 
-      <Section id="rental" title="10. Rental Tanks (if applicable)">
+      <Section id="environment" title="10. Environmental & Compliance">
         <ul>
           <li>
-            If we provide a rental tank, it remains our property. You must insure it for full
-            replacement value and use it only for approved products. You must not move or modify it
-            without consent.
+            You must comply with all laws, permits and industry codes relating to storage and handling,
+            and immediately notify us of incidents. We may suspend supply if we consider a site unsafe.
           </li>
           <li>
-            Rental is conditional on minimum monthly volumes (as notified). If minimums are not met,
-            we may charge the rental fee or remove the tank.
-          </li>
-          <li>
-            On termination, you must give us safe access to uplift the tank and any residual product.
+            Any sustainability initiatives we run (e.g., tree planting) are discretionary and do not
+            alter your legal responsibilities.
           </li>
         </ul>
       </Section>
 
-      <Section id="data" title="11. Data Protection & Communications">
+      <Section id="rental" title="11. Rental Tanks — Additional Terms">
         <ul>
           <li>
-            We process personal data in accordance with our Privacy Notice. Operational emails,
-            service updates and safety notices form part of the service.
+            Rental tanks remain our property at all times. You must insure them for full replacement
+            value and follow our usage instructions. You may not move or modify rental equipment
+            without our written consent.
           </li>
           <li>
-            For marketing emails you can opt-in and unsubscribe at any time.
+            Where a “free rental” model is offered, it is conditional on minimum monthly volumes as
+            notified by us. If minimums are not met, we may charge the rental fee, recover our costs
+            and/or remove equipment.
+          </li>
+          <li>
+            On termination or breach, we may enter the site during business hours (or at other safe,
+            agreed times) to repossess rental equipment and any residual product. You shall pay
+            reasonable costs of uplift, cleaning and remediation. Our rights here are in addition to
+            any other remedies (including a claim for damages).
           </li>
         </ul>
       </Section>
 
-      <Section id="termination" title="12. Suspension & Termination">
+      <Section id="data" title="12. Data Protection & Communications">
         <ul>
           <li>
-            We may suspend or terminate supply for non-payment, credit concerns, safety issues or
-            breach of these Terms. You remain liable for sums due.
+            We process personal data in accordance with our Privacy Notice. Operational communications
+            (service updates, safety notices) form part of the service.
+          </li>
+          <li>
+            For marketing emails, you can opt-in and unsubscribe at any time.
           </li>
         </ul>
       </Section>
 
-      <Section id="force" title="13. Force Majeure">
+      <Section id="suspension" title="13. Suspension & Termination">
+        <ul>
+          <li>
+            We may suspend or terminate supply immediately for non-payment, credit concerns, safety
+            issues, suspected illegality or material breach. You remain liable for all sums due.
+          </li>
+          <li>
+            Upon termination, accrued rights and remedies survive, including our right to recover
+            equipment and costs.
+          </li>
+        </ul>
+      </Section>
+
+      <Section id="force" title="14. Force Majeure">
         <p>
           Neither party is liable for failure or delay caused by events beyond its reasonable control,
           including but not limited to shortages, strikes, extreme weather, acts of God, war or
-          governmental action.
+          governmental action. Obligations are suspended for the duration of the event.
         </p>
       </Section>
 
-      <Section id="law" title="14. Law & Jurisdiction">
+      <Section id="law" title="15. Law & Jurisdiction">
         <p>
-          These Terms and any dispute or claim (including non-contractual disputes) shall be governed
-          by the laws of England and Wales. The courts of England and Wales shall have exclusive
-          jurisdiction.
+          These Terms and any dispute (including non-contractual disputes) are governed by the laws
+          of England and Wales. The courts of England and Wales shall have exclusive jurisdiction.
         </p>
       </Section>
 
-      <Section id="misc" title="15. Miscellaneous">
+      <Section id="misc" title="16. Miscellaneous">
         <ul>
           <li>
-            Entire Agreement: these Terms together with any order confirmation and written variations
-            constitute the entire agreement.
+            Entire Agreement: these Terms, together with any order confirmation and signed variations,
+            constitute the entire agreement and supersede prior discussions.
           </li>
           <li>
-            Variation: changes are effective only if signed by an authorised FuelFlow signatory.
+            Variation: effective only if signed by an authorised FuelFlow signatory.
           </li>
           <li>
-            Severance: if a term is held invalid, the remainder remains in force.
+            Assignment: you may not assign without our consent; we may assign to an affiliate.
           </li>
           <li>
-            Assignment: you may not assign without our consent.
+            Severance: if a provision is held invalid, the remainder remains in force.
           </li>
           <li>
-            Third-party rights: no person other than the parties has rights under the Contracts
+            Waiver: a failure to enforce is not a waiver.
+          </li>
+          <li>
+            Third-party Rights: no person other than the parties has rights under the Contracts
             (Rights of Third Parties) Act 1999.
+          </li>
+          <li>
+            E-sign / Evidence: your electronic acceptance, IP, user-agent, time stamp and version are
+            admissible as evidence of acceptance.
           </li>
         </ul>
       </Section>
