@@ -1,9 +1,7 @@
 // src/pages/order.tsx
 // src/pages/order.tsx
-// src/pages/order.tsx
-// src/pages/order.tsx
-// src/pages/order.tsx
-// src/pages/order.tsx
+"use client";
+
 import { useEffect, useMemo, useState } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 
@@ -238,9 +236,7 @@ export default function OrderPage() {
       </section>
 
       {/* ROI modal */}
-      {showROI && (
-        <RoiModal option={showROI} onClose={() => setShowROI(null)} />
-      )}
+      {showROI && <RoiModal option={showROI} onClose={() => setShowROI(null)} />}
 
       {/* Contract modal */}
       {showContract && (
@@ -497,7 +493,7 @@ function ContractModal({
           city,
           postcode,
 
-          option,
+          option, // 'buy' | 'rent'
           tank_size_litres: tankSize,
           monthly_consumption_litres: monthlyConsumption,
 
@@ -520,7 +516,6 @@ function ContractModal({
       if (!res.ok) throw new Error(data?.error || "Failed to save contract.");
       setMsg({ type: "ok", text: "Contract signed and saved." });
       onSigned();
-      // close after a short moment
       setTimeout(onClose, 900);
     } catch (e: any) {
       setMsg({ type: "err", text: e.message || "Failed to save contract." });
@@ -666,8 +661,6 @@ function ContractModal({
     </div>
   );
 }
-
-
 
 
 
