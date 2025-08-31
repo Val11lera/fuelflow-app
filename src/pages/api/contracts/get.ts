@@ -1,18 +1,41 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import supabase from "@/lib/supabaseAdmin";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "GET") return res.status(405).end();
+type Ok = { ok: true; accepted: boolean; id?: string; accepted_at?: string };
+type Fail = { ok: false; error: string };
 
-  const id = (req.query.id as string) || "";
-  if (!id) return res.status(400).json({ error: "id required" });
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse<Ok | Fail>
+) {
+  if (req.method !== "GET") {
+    return res.status(405).json({ ok: false, error: "Method Not Allowed" });
+  }
+  const { email, version } = req.query as { email?: string; version?: string };
 
-  const { data, error } = await supabase
-    .from("contracts")
-    .select("*")
-    .eq("id", id)
-    .single();
+  if (!email || !version) {
+    return res.status(400).json({ ok: false, error: "Missing email/version" });
+  }
 
-  if (error) return res.status(404).json({ error: error.message });
-  return res.status(200).json({ contract: data });
+  try {
+    const { data, error } = await supabase
+      .from("terms_acceptances")
+      .select("id, accepted_at")
+      .eq("email", email)
+      .eq("version", version)
+      .order("accepted_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (!data) return res.status(200).json({ ok: true, accepted: false });
+
+    return res
+      .status(200)
+      .json({ ok: true, accepted: true, id: data.id, accepted_at: data.accepted_at });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e?.message || "Server error" });
+  }
 }
+
