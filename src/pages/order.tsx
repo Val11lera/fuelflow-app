@@ -20,22 +20,19 @@ const supabase =
 
 const card =
   "rounded-2xl border border-white/10 bg-white/5 backdrop-blur px-5 py-4 shadow transition";
-const cardSelected =
-  "ring-2 ring-yellow-400 border-yellow-400 bg-white/10";
-const pill =
-  "inline-flex items-center text-xs font-medium px-2 py-1 rounded-full";
+const cardSelected = "ring-2 ring-yellow-400 border-yellow-400 bg-white/10";
+const pill = "inline-flex items-center text-xs font-medium px-2 py-1 rounded-full";
 const button =
   "rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
 const buttonPrimary =
   "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
-const buttonGhost =
-  "bg-white/10 hover:bg-white/15 text-white border border-white/10";
+const buttonGhost = "bg-white/10 hover:bg-white/15 text-white border border-white/10";
 const input =
   "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30";
 const label = "block text-sm font-medium text-white/80 mb-1";
 
 function GBP(n: number) {
-  if (isNaN(n)) return "—";
+  if (!Number.isFinite(n)) return "—";
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
     currency: "GBP",
@@ -48,11 +45,11 @@ export default function OrderPage() {
   const router = useRouter();
   const qp = useSearchParams();
 
-  // pricing tiles (top)
+  // pricing tiles (illustrative)
   const [fuel, setFuel] = useState<Fuel>("diesel");
   const [litres, setLitres] = useState<number>(1000);
-  const unitPricePetrol = 0.46; // tiles only (illustrative)
-  const unitPriceDiesel = 0.49; // tiles only (illustrative)
+  const unitPricePetrol = 0.46;
+  const unitPriceDiesel = 0.49;
 
   // contact & delivery
   const [email, setEmail] = useState("");
@@ -102,7 +99,6 @@ export default function OrderPage() {
     const emailParam = qp.get("email");
     if (acceptedParam === "1" && emailParam) {
       localStorage.setItem(`terms:${termsVersion}:${emailParam}`, "1");
-      // force a re-check for the current email
       if (emailParam === email) {
         void checkAccepted(emailParam);
       }
@@ -119,29 +115,21 @@ export default function OrderPage() {
   async function checkAccepted(e: string) {
     setCheckingTerms(true);
     try {
-      // quick local cache
       const cached = localStorage.getItem(`terms:${termsVersion}:${e}`);
-      if (cached === "1") {
-        setAccepted(true);
-      }
+      if (cached === "1") setAccepted(true);
 
       if (!supabase) return;
 
       const { data, error } = await supabase
         .from("terms_acceptances")
-        .select("id, email, accepted_at, version")
+        .select("id, accepted_at, version")
         .eq("email", e)
         .eq("version", termsVersion)
         .order("accepted_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (error) {
-        console.warn("terms check error", error.message);
-        return;
-      }
-
-      if (data) {
+      if (!error && data) {
         setAccepted(true);
         setAcceptanceId(data.id);
         localStorage.setItem(`terms:${termsVersion}:${e}`, "1");
@@ -170,7 +158,6 @@ export default function OrderPage() {
     setTankOption(type);
     setShowROI(true);
   }
-
   function openContractWith(type: TankOption) {
     setTankOption(type);
     setShowContract(true);
@@ -239,9 +226,7 @@ export default function OrderPage() {
             height={28}
             className="opacity-90"
           />
-          <div className="ml-2 text-2xl md:text-3xl font-bold">
-            Place an Order
-          </div>
+          <div className="ml-2 text-2xl md:text-3xl font-bold">Place an Order</div>
           <div className="ml-auto">
             <Link href="/client-dashboard" className="text-white/70 hover:text-white">
               Back to Dashboard
@@ -252,17 +237,11 @@ export default function OrderPage() {
         {/* Buy vs Rent selector + actions */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           {/* BUY */}
-          <div
-            className={`${card} ${
-              tankOption === "buy" ? cardSelected : ""
-            }`}
-          >
+          <div className={`${card} ${tankOption === "buy" ? cardSelected : ""}`}>
             <div className="flex items-center justify-between">
               <h3 className="text-xl font-semibold">Buy a Fuel Tank</h3>
               {tankOption === "buy" ? (
-                <span className={`${pill} bg-yellow-500/20 text-yellow-300`}>
-                  Selected
-                </span>
+                <span className={`${pill} bg-yellow-500/20 text-yellow-300`}>Selected</span>
               ) : (
                 <button
                   className={`${pill} ${buttonGhost} border-none`}
@@ -288,17 +267,11 @@ export default function OrderPage() {
           </div>
 
           {/* RENT */}
-          <div
-            className={`${card} ${
-              tankOption === "rent" ? cardSelected : ""
-            }`}
-          >
+          <div className={`${card} ${tankOption === "rent" ? cardSelected : ""}`}>
             <div className="flex items-center justify-between">
               <h3 className="text-xl font-semibold">Rent a Fuel Tank</h3>
               {tankOption === "rent" ? (
-                <span className={`${pill} bg-yellow-500/20 text-yellow-300`}>
-                  Selected
-                </span>
+                <span className={`${pill} bg-yellow-500/20 text-yellow-300`}>Selected</span>
               ) : (
                 <button
                   className={`${pill} ${buttonGhost} border-none`}
@@ -309,9 +282,9 @@ export default function OrderPage() {
               )}
             </div>
             <ul className="mt-3 space-y-2 text-white/70 text-sm">
-              <li>✔ Flexible rental plans (short & long term).</li>
-              <li>✔ Maintenance & support included.</li>
-              <li>✔ Ideal for temp sites & events.</li>
+              <li>✔ Flexible rental plans (short &amp; long term).</li>
+              <li>✔ Maintenance &amp; support included.</li>
+              <li>✔ Ideal for temp sites &amp; events.</li>
             </ul>
             <div className="mt-4 flex gap-3">
               <button className={`${button} ${buttonGhost}`} onClick={() => openRoiWith("rent")}>
@@ -336,16 +309,10 @@ export default function OrderPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className={label}>Fuel</label>
-              <div className="relative">
-                <select
-                  className={input}
-                  value={fuel}
-                  onChange={(e) => setFuel(e.target.value as Fuel)}
-                >
-                  <option value="diesel">Diesel</option>
-                  <option value="petrol">Petrol</option>
-                </select>
-              </div>
+              <select className={input} value={fuel} onChange={(e) => setFuel(e.target.value as Fuel)}>
+                <option value="diesel">Diesel</option>
+                <option value="petrol">Petrol</option>
+              </select>
             </div>
 
             <div>
@@ -382,47 +349,27 @@ export default function OrderPage() {
 
             <div className="md:col-span-2">
               <label className={label}>Full name</label>
-              <input
-                className={input}
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-              />
+              <input className={input} value={fullName} onChange={(e) => setFullName(e.target.value)} />
             </div>
 
             <div>
               <label className={label}>Address line 1</label>
-              <input
-                className={input}
-                value={address1}
-                onChange={(e) => setAddress1(e.target.value)}
-              />
+              <input className={input} value={address1} onChange={(e) => setAddress1(e.target.value)} />
             </div>
 
             <div>
               <label className={label}>Address line 2</label>
-              <input
-                className={input}
-                value={address2}
-                onChange={(e) => setAddress2(e.target.value)}
-              />
+              <input className={input} value={address2} onChange={(e) => setAddress2(e.target.value)} />
             </div>
 
             <div>
               <label className={label}>Postcode</label>
-              <input
-                className={input}
-                value={postcode}
-                onChange={(e) => setPostcode(e.target.value)}
-              />
+              <input className={input} value={postcode} onChange={(e) => setPostcode(e.target.value)} />
             </div>
 
             <div>
               <label className={label}>City</label>
-              <input
-                className={input}
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
-              />
+              <input className={input} value={city} onChange={(e) => setCity(e.target.value)} />
             </div>
 
             {/* contract requirement notice */}
@@ -432,13 +379,11 @@ export default function OrderPage() {
                 Click <b>Start Contract</b> in the panel above (buy or rent).
               </span>
               {contractSaved ? (
-                <span className="ml-2 text-green-300">
-                  Draft saved (ID: {contractSaved})
-                </span>
+                <span className="ml-2 text-green-300">Draft saved (ID: {contractSaved})</span>
               ) : null}
             </div>
 
-            {/* terms acceptance */}
+            {/* terms acceptance (read-only; handled on /terms) */}
             <div className="md:col-span-2 mt-2 flex items-center gap-2">
               <input
                 id="terms"
@@ -544,7 +489,13 @@ export default function OrderPage() {
             <button className={`${button} ${buttonGhost}`} onClick={() => setShowROI(false)}>
               Close
             </button>
-            <button className={`${button} ${buttonPrimary}`} onClick={() => { setShowROI(false); setShowContract(true); }}>
+            <button
+              className={`${button} ${buttonPrimary}`}
+              onClick={() => {
+                setShowROI(false);
+                setShowContract(true);
+              }}
+            >
               Continue to Contract
             </button>
           </div>
@@ -553,12 +504,14 @@ export default function OrderPage() {
 
       {/* Contract modal */}
       {showContract && (
-        <Modal onClose={() => setShowContract(false)} title={`Start ${tankOption === "buy" ? "Buy" : "Rent"} Contract`}>
+        <Modal
+          onClose={() => setShowContract(false)}
+          title={`Start ${tankOption === "buy" ? "Buy" : "Rent"} Contract`}
+        >
           <EstimateBanner />
           <p className="text-white/80 text-sm mb-4">
-            Below figures are estimates and change with market pricing. For{" "}
-            <b>rental</b> contracts, supply is{" "}
-            <b>subject to verification</b> (credit checks, minimum volume, site survey).
+            Below figures are estimates and change with market pricing. For <b>rental</b> contracts,
+            supply is <b>subject to verification</b> (credit checks, minimum volume, site survey).
             Invoices are issued regularly; late payment interest may apply.
           </p>
 
@@ -586,9 +539,7 @@ export default function OrderPage() {
                 type="number"
                 min={0}
                 value={monthlyConsumptionL}
-                onChange={(e) =>
-                  setMonthlyConsumptionL(Number(e.target.value))
-                }
+                onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))}
               />
             </div>
             <div>
@@ -686,11 +637,7 @@ function Modal({
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div
-        className="absolute inset-0 bg-black/60"
-        onClick={onClose}
-        aria-hidden="true"
-      />
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} aria-hidden="true" />
       <div className="relative w-[95%] max-w-3xl rounded-2xl bg-[#0B274B] border border-white/10 p-5 shadow-xl">
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">{title}</h3>
@@ -707,6 +654,7 @@ function Modal({
     </div>
   );
 }
+
 
 
 
