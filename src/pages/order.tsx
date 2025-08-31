@@ -1,10 +1,11 @@
 // src/pages/order.tsx
 // src/pages/order.tsx
+// src/pages/order.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
 
 type TankOption = "none" | "buy" | "rent";
@@ -24,15 +25,14 @@ const cardSelected = "ring-2 ring-yellow-400 border-yellow-400 bg-white/10";
 const pill = "inline-flex items-center text-xs font-medium px-2 py-1 rounded-full";
 const button =
   "rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
-const buttonPrimary =
-  "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
+const buttonPrimary = "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
 const buttonGhost = "bg-white/10 hover:bg-white/15 text-white border border-white/10";
 const input =
   "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30";
 const label = "block text-sm font-medium text-white/80 mb-1";
 
 function GBP(n: number) {
-  if (!Number.isFinite(n)) return "—";
+  if (isNaN(n)) return "—";
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
     currency: "GBP",
@@ -42,7 +42,6 @@ function GBP(n: number) {
 }
 
 export default function OrderPage() {
-  const router = useRouter();
   const qp = useSearchParams();
 
   // pricing tiles (illustrative)
@@ -116,20 +115,27 @@ export default function OrderPage() {
     setCheckingTerms(true);
     try {
       const cached = localStorage.getItem(`terms:${termsVersion}:${e}`);
-      if (cached === "1") setAccepted(true);
+      if (cached === "1") {
+        setAccepted(true);
+      }
 
       if (!supabase) return;
 
       const { data, error } = await supabase
         .from("terms_acceptances")
-        .select("id, accepted_at, version")
+        .select("id, email, accepted_at, version")
         .eq("email", e)
         .eq("version", termsVersion)
         .order("accepted_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (!error && data) {
+      if (error) {
+        console.warn("terms check error", error.message);
+        return;
+      }
+
+      if (data) {
         setAccepted(true);
         setAcceptanceId(data.id);
         localStorage.setItem(`terms:${termsVersion}:${e}`, "1");
@@ -158,6 +164,7 @@ export default function OrderPage() {
     setTankOption(type);
     setShowROI(true);
   }
+
   function openContractWith(type: TankOption) {
     setTankOption(type);
     setShowContract(true);
@@ -172,14 +179,17 @@ export default function OrderPage() {
       const { data, error } = await supabase
         .from("contracts")
         .insert({
-          contract_type: tankOption === "buy" ? "buy" : "rent",
+          // IMPORTANT: we store both fields
+          contract_type: tankOption,       // 'buy' | 'rent' (for reporting)
+          status: "draft",
           customer_name: fullName || null,
           email: email || null,
           address_line1: address1 || null,
           address_line2: address2 || null,
           city: city || null,
           postcode: postcode || null,
-          tank_option: tankOption,
+
+          tank_option: tankOption,         // also persisted for the ROI UI
           tank_size_l: tankSizeL || null,
           monthly_consumption_l: monthlyConsumptionL || null,
           market_price_gbp_l: marketPrice || null,
@@ -187,9 +197,9 @@ export default function OrderPage() {
           fuelflow_price_gbp_l: fuelflowPrice || null,
           est_monthly_savings_gbp: estMonthlySavings || null,
           capex_required_gbp: capexRequired || null,
+
           terms_version: termsVersion,
-          status: "draft",
-         ...(acceptanceId ? { acceptance_id: acceptanceId } : {}),
+          acceptance_id: acceptanceId || null,
         })
         .select("id")
         .single();
@@ -226,7 +236,9 @@ export default function OrderPage() {
             height={28}
             className="opacity-90"
           />
-          <div className="ml-2 text-2xl md:text-3xl font-bold">Place an Order</div>
+          <div className="ml-2 text-2xl md:text-3xl font-bold">
+            Place an Order
+          </div>
           <div className="ml-auto">
             <Link href="/client-dashboard" className="text-white/70 hover:text-white">
               Back to Dashboard
@@ -243,10 +255,7 @@ export default function OrderPage() {
               {tankOption === "buy" ? (
                 <span className={`${pill} bg-yellow-500/20 text-yellow-300`}>Selected</span>
               ) : (
-                <button
-                  className={`${pill} ${buttonGhost} border-none`}
-                  onClick={() => setTankOption("buy")}
-                >
+                <button className={`${pill} ${buttonGhost} border-none`} onClick={() => setTankOption("buy")}>
                   Select
                 </button>
               )}
@@ -273,18 +282,15 @@ export default function OrderPage() {
               {tankOption === "rent" ? (
                 <span className={`${pill} bg-yellow-500/20 text-yellow-300`}>Selected</span>
               ) : (
-                <button
-                  className={`${pill} ${buttonGhost} border-none`}
-                  onClick={() => setTankOption("rent")}
-                >
+                <button className={`${pill} ${buttonGhost} border-none`} onClick={() => setTankOption("rent")}>
                   Select
                 </button>
               )}
             </div>
             <ul className="mt-3 space-y-2 text-white/70 text-sm">
-              <li>✔ Flexible rental plans (short &amp; long term).</li>
-              <li>✔ Maintenance &amp; support included.</li>
-              <li>✔ Ideal for temp sites &amp; events.</li>
+              <li>✔ Flexible rental plans (short & long term).</li>
+              <li>✔ Maintenance & support included.</li>
+              <li>✔ Ideal for temp sites & events.</li>
             </ul>
             <div className="mt-4 flex gap-3">
               <button className={`${button} ${buttonGhost}`} onClick={() => openRoiWith("rent")}>
@@ -317,34 +323,17 @@ export default function OrderPage() {
 
             <div>
               <label className={label}>Litres</label>
-              <input
-                className={input}
-                type="number"
-                min={1}
-                value={litres}
-                onChange={(e) => setLitres(Number(e.target.value))}
-              />
+              <input className={input} type="number" min={1} value={litres} onChange={(e) => setLitres(Number(e.target.value))} />
             </div>
 
             <div>
               <label className={label}>Delivery date</label>
-              <input
-                className={input}
-                type="date"
-                value={deliveryDate}
-                onChange={(e) => setDeliveryDate(e.target.value)}
-              />
+              <input className={input} type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} />
             </div>
 
             <div>
               <label className={label}>Your email (receipt)</label>
-              <input
-                className={input}
-                type="email"
-                placeholder="name@company.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
+              <input className={input} type="email" placeholder="name@company.com" value={email} onChange={(e) => setEmail(e.target.value)} />
             </div>
 
             <div className="md:col-span-2">
@@ -378,29 +367,15 @@ export default function OrderPage() {
               <span className="text-white/80">
                 Click <b>Start Contract</b> in the panel above (buy or rent).
               </span>
-              {contractSaved ? (
-                <span className="ml-2 text-green-300">Draft saved (ID: {contractSaved})</span>
-              ) : null}
+              {contractSaved ? <span className="ml-2 text-green-300">Draft saved (ID: {contractSaved})</span> : null}
             </div>
 
-            {/* terms acceptance (read-only; handled on /terms) */}
+            {/* terms acceptance */}
             <div className="md:col-span-2 mt-2 flex items-center gap-2">
-              <input
-                id="terms"
-                type="checkbox"
-                className="h-4 w-4 accent-yellow-500"
-                checked={accepted}
-                onChange={() => {}}
-                disabled
-                aria-describedby="termsHelp"
-              />
+              <input id="terms" type="checkbox" className="h-4 w-4 accent-yellow-500" checked={accepted} onChange={() => {}} disabled aria-describedby="termsHelp" />
               <label htmlFor="terms" className="text-sm">
                 I agree to the{" "}
-                <button
-                  type="button"
-                  onClick={openTerms}
-                  className="underline text-yellow-300 hover:text-yellow-200"
-                >
+                <button type="button" onClick={openTerms} className="underline text-yellow-300 hover:text-yellow-200">
                   Terms &amp; Conditions
                 </button>
                 .
@@ -408,18 +383,13 @@ export default function OrderPage() {
             </div>
             {!accepted && (
               <p id="termsHelp" className="md:col-span-2 text-sm text-red-300">
-                You must read and accept the Terms first. Click the link above.{" "}
-                {checkingTerms ? "Checking…" : ""}
+                You must read and accept the Terms first. Click the link above. {checkingTerms ? "Checking…" : ""}
               </p>
             )}
 
             {/* pay */}
             <div className="md:col-span-2 mt-3">
-              <button
-                className={`${button} ${buttonPrimary} w-full md:w-auto`}
-                disabled={payDisabled}
-                onClick={() => alert("Stripe flow would start here")}
-              >
+              <button className={`${button} ${buttonPrimary} w-full md:w-auto`} disabled={payDisabled} onClick={() => alert("Stripe flow would start here")}>
                 Pay with Stripe
               </button>
             </div>
@@ -434,68 +404,33 @@ export default function OrderPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 my-4">
             <div>
               <label className={label}>Tank size (L)</label>
-              <input
-                className={input}
-                type="number"
-                min={0}
-                value={tankSizeL}
-                onChange={(e) => setTankSizeL(Number(e.target.value))}
-              />
+              <input className={input} type="number" min={0} value={tankSizeL} onChange={(e) => setTankSizeL(Number(e.target.value))} />
             </div>
             <div>
               <label className={label}>Monthly consumption (L)</label>
-              <input
-                className={input}
-                type="number"
-                min={0}
-                value={monthlyConsumptionL}
-                onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))}
-              />
+              <input className={input} type="number" min={0} value={monthlyConsumptionL} onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))} />
             </div>
             <div>
               <label className={label}>Market price (GBP/L)</label>
-              <input
-                className={input}
-                type="number"
-                min={0}
-                step="0.01"
-                value={marketPrice}
-                onChange={(e) => setMarketPrice(Number(e.target.value))}
-              />
+              <input className={input} type="number" min={0} step="0.01" value={marketPrice} onChange={(e) => setMarketPrice(Number(e.target.value))} />
             </div>
             <div>
               <label className={label}>FuelFlow cheaper by (GBP/L)</label>
-              <input
-                className={input}
-                type="number"
-                min={0}
-                step="0.01"
-                value={cheaperBy}
-                onChange={(e) => setCheaperBy(Number(e.target.value))}
-              />
+              <input className={input} type="number" min={0} step="0.01" value={cheaperBy} onChange={(e) => setCheaperBy(Number(e.target.value))} />
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Metric title="FuelFlow price" value={`${GBP(fuelflowPrice)} / L`} />
             <Metric title="Est. monthly savings" value={GBP(estMonthlySavings)} />
-            <Metric
-              title="Capex required"
-              value={tankOption === "rent" ? `${GBP(0)} (rental)` : GBP(capexRequired)}
-            />
+            <Metric title="Capex required" value={tankOption === "rent" ? `${GBP(0)} (rental)` : GBP(capexRequired)} />
           </div>
 
           <div className="mt-6 flex justify-end gap-3">
             <button className={`${button} ${buttonGhost}`} onClick={() => setShowROI(false)}>
               Close
             </button>
-            <button
-              className={`${button} ${buttonPrimary}`}
-              onClick={() => {
-                setShowROI(false);
-                setShowContract(true);
-              }}
-            >
+            <button className={`${button} ${buttonPrimary}`} onClick={() => { setShowROI(false); setShowContract(true); }}>
               Continue to Contract
             </button>
           </div>
@@ -504,15 +439,11 @@ export default function OrderPage() {
 
       {/* Contract modal */}
       {showContract && (
-        <Modal
-          onClose={() => setShowContract(false)}
-          title={`Start ${tankOption === "buy" ? "Buy" : "Rent"} Contract`}
-        >
+        <Modal onClose={() => setShowContract(false)} title={`Start ${tankOption === "buy" ? "Buy" : "Rent"} Contract`}>
           <EstimateBanner />
           <p className="text-white/80 text-sm mb-4">
-            Below figures are estimates and change with market pricing. For <b>rental</b> contracts,
-            supply is <b>subject to verification</b> (credit checks, minimum volume, site survey).
-            Invoices are issued regularly; late payment interest may apply.
+            Below figures are estimates and change with market pricing. For <b>rental</b> contracts, supply is <b>subject to verification</b> (credit checks, minimum
+            volume, site survey). Invoices are issued regularly; late payment interest may apply.
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
@@ -524,45 +455,19 @@ export default function OrderPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className={label}>Tank size (L)</label>
-              <input
-                className={input}
-                type="number"
-                min={0}
-                value={tankSizeL}
-                onChange={(e) => setTankSizeL(Number(e.target.value))}
-              />
+              <input className={input} type="number" min={0} value={tankSizeL} onChange={(e) => setTankSizeL(Number(e.target.value))} />
             </div>
             <div>
               <label className={label}>Monthly consumption (L)</label>
-              <input
-                className={input}
-                type="number"
-                min={0}
-                value={monthlyConsumptionL}
-                onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))}
-              />
+              <input className={input} type="number" min={0} value={monthlyConsumptionL} onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))} />
             </div>
             <div>
               <label className={label}>Market price (GBP/L)</label>
-              <input
-                className={input}
-                type="number"
-                min={0}
-                step="0.01"
-                value={marketPrice}
-                onChange={(e) => setMarketPrice(Number(e.target.value))}
-              />
+              <input className={input} type="number" min={0} step="0.01" value={marketPrice} onChange={(e) => setMarketPrice(Number(e.target.value))} />
             </div>
             <div>
               <label className={label}>FuelFlow cheaper by (GBP/L)</label>
-              <input
-                className={input}
-                type="number"
-                min={0}
-                step="0.01"
-                value={cheaperBy}
-                onChange={(e) => setCheaperBy(Number(e.target.value))}
-              />
+              <input className={input} type="number" min={0} step="0.01" value={cheaperBy} onChange={(e) => setCheaperBy(Number(e.target.value))} />
             </div>
           </div>
 
@@ -570,19 +475,11 @@ export default function OrderPage() {
             <button className={`${button} ${buttonGhost}`} onClick={() => setShowContract(false)}>
               Cancel
             </button>
-            <button
-              className={`${button} ${buttonPrimary}`}
-              disabled={savingContract}
-              onClick={saveContract}
-            >
+            <button className={`${button} ${buttonPrimary}`} disabled={savingContract} onClick={saveContract}>
               {savingContract ? "Saving…" : "Save Draft Contract"}
             </button>
           </div>
-          {contractSaved && (
-            <p className="mt-3 text-green-300 text-sm">
-              Draft saved (ID: {contractSaved}). You can proceed to payment once Terms are accepted.
-            </p>
-          )}
+          {contractSaved && <p className="mt-3 text-green-300 text-sm">Draft saved (ID: {contractSaved}). You can proceed to payment once Terms are accepted.</p>}
         </Modal>
       )}
 
@@ -641,11 +538,7 @@ function Modal({
       <div className="relative w-[95%] max-w-3xl rounded-2xl bg-[#0B274B] border border-white/10 p-5 shadow-xl">
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">{title}</h3>
-          <button
-            aria-label="Close"
-            className="rounded-lg p-2 text-white/70 hover:bg-white/10"
-            onClick={onClose}
-          >
+          <button aria-label="Close" className="rounded-lg p-2 text-white/70 hover:bg-white/10" onClick={onClose}>
             ✕
           </button>
         </div>
@@ -654,6 +547,7 @@ function Modal({
     </div>
   );
 }
+
 
 
 
