@@ -1,51 +1,55 @@
+// src/pages/api/contracts/draft.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import supabase from "@/lib/supabaseAdmin";
+import { supabaseAdmin } from "@/lib/supabaseAdmin"; // ⬅ change to named import
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "POST") return res.status(405).end();
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ error: "Method Not Allowed" });
+  }
+
+  const {
+    option, // "buy" | "rent"
+    full_name, email,
+    address1, address2, city, postcode,
+    tank_size_litres, monthly_consumption_litres,
+    market_price_per_litre, fuelflow_price_per_litre,
+    est_monthly_savings, est_payback_months,
+    terms_version, signature_name,
+  } = (req.body || {}) as Record<string, any>;
 
   try {
-    const {
-      customer_email,
-      customer_name,
-      type,                     // 'buy' | 'rent'
-      tank_size_l,
-      monthly_consumption_l,
-      market_price_gbppl,
-      cheaper_by_gbppl
-    } = req.body || {};
-
-    if (!type || tank_size_l == null || monthly_consumption_l == null || market_price_gbppl == null || cheaper_by_gbppl == null) {
-      return res.status(400).json({ error: "Missing required fields." });
-    }
-
-    const fuelflow_price = Number(market_price_gbppl) - Number(cheaper_by_gbppl);
-    const est_saving = Number(cheaper_by_gbppl) * Number(monthly_consumption_l);
-    const capex = type === "buy" ? 12000 : 0;
-
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from("contracts")
-      .insert([{
-        customer_email: customer_email || null,
-        customer_name: customer_name || null,
-        type,
-        tank_size_l: Number(tank_size_l),
-        monthly_consumption_l: Number(monthly_consumption_l),
-        market_price_gbppl: Number(market_price_gbppl),
-        cheaper_by_gbppl: Number(cheaper_by_gbppl),
-        fuelflow_price_gbppl: fuelflow_price,
-        est_monthly_saving_gbp: est_saving,
-        capex_required_gbp: capex,
+      .insert({
+        contract_type: option === "buy" ? "buy" : "rent",
         status: "draft",
-        terms_version: "v1.1"
-      }])
-      .select("id, fuelflow_price_gbppl, est_monthly_saving_gbp, capex_required_gbp")
+        customer_name: full_name || null,
+        email: email || null,
+        address_line1: address1 || null,
+        address_line2: address2 || null,
+        city: city || null,
+        postcode: postcode || null,
+
+        tank_option: option || null,
+        tank_size_l: tank_size_litres ?? null,
+        monthly_consumption_l: monthly_consumption_litres ?? null,
+
+        market_price_gbp_l: market_price_per_litre ?? null,
+        fuelflow_price_gbp_l: fuelflow_price_per_litre ?? null,
+        est_monthly_savings_gbp: est_monthly_savings ?? null,
+        est_payback_months: est_payback_months ?? null,
+
+        terms_version: terms_version || "v1",
+        signature_name: signature_name || null,
+      })
+      .select("id")
       .single();
 
-    if (error) return res.status(500).json({ error: error.message });
-
-    return res.status(200).json({ ok: true, contract: data });
+    if (error) throw error;
+    return res.status(200).json({ id: data.id });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message || "Server error" });
+    return res.status(500).json({ error: e.message || "Failed to save draft" });
   }
 }
+
