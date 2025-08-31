@@ -1,393 +1,422 @@
 // src/pages/order.tsx
+// src/pages/order.tsx
 import { useEffect, useMemo, useState } from "react";
-import { createClient, PostgrestError } from "@supabase/supabase-js";
 
-type Fuel = "petrol" | "diesel";
+/* ----------------------------- Utilities ----------------------------- */
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
-);
+function fmtGBP(n: number) {
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+    minimumFractionDigits: 2,
+  }).format(n);
+}
 
-const fmt = new Intl.NumberFormat("en-GB", {
-  style: "currency",
-  currency: "GBP",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
+const TERMS_LS_KEY = "ff_terms_accepted_v2";
+
+/* --------------------------- Page Component -------------------------- */
 
 export default function OrderPage() {
-  // auth + prices
-  const [user, setUser] = useState<any>(null);
-  const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
-  const [dieselPrice, setDieselPrice] = useState<number | null>(null);
+  // Pricing & form state (adjust these as needed)
+  const [fuel, setFuel] = useState<"diesel" | "petrol">("diesel");
+  const [litres, setLitres] = useState<number>(1000);
+  const unitPetrol = 0.46; // example
+  const unitDiesel = 0.49; // example
+  const unitPrice = useMemo(() => (fuel === "diesel" ? unitDiesel : unitPetrol), [fuel]);
+  const total = useMemo(() => litres * unitPrice, [litres, unitPrice]);
 
-  // form
-  const [fuel, setFuel] = useState<Fuel>("diesel");
-  const [litres, setLitres] = useState<string>("1000");
-  const [deliveryDate, setDeliveryDate] = useState<string>(""); // yyyy-mm-dd
-  const [email, setEmail] = useState<string>("");
+  // Terms acceptance flow
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
 
-  const [fullName, setFullName] = useState<string>("");
-  const [addr1, setAddr1] = useState<string>("");
-  const [addr2, setAddr2] = useState<string>("");
-  const [city, setCity] = useState<string>("");
-  const [postcode, setPostcode] = useState<string>("");
-  const [accepted, setAccepted] = useState<boolean>(false);
-
-  // ui state
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [warn, setWarn] = useState<string | null>(null);
-
-  // ---------- derived ----------
-  const unitPrice = useMemo(
-    () => (fuel === "petrol" ? petrolPrice ?? 0 : dieselPrice ?? 0),
-    [fuel, petrolPrice, dieselPrice]
-  );
-  const litresNum = useMemo(() => Number(litres) || 0, [litres]);
-  const totalGBP = useMemo(() => unitPrice * litresNum, [unitPrice, litresNum]);
-
-  // ---------- load auth + prices ----------
+  // Load persisted acceptance
   useEffect(() => {
-    (async () => {
-      const { data } = await supabase.auth.getUser();
-      if (!data?.user) {
-        window.location.href = "/login";
-        return;
-      }
-      setUser(data.user);
-      setEmail(data.user.email || "");
-
-      // Prices: try latest_prices then latest_daily_prices
-      let { data: lp } = await supabase
-        .from("latest_prices")
-        .select("fuel,total_price");
-      if (!lp?.length) {
-        const { data: dp } = await supabase
-          .from("latest_daily_prices")
-          .select("fuel,total_price");
-        if (dp?.length) lp = dp as any;
-      }
-      if (lp?.length) {
-        for (const r of lp as { fuel: Fuel; total_price: number }[]) {
-          if (r.fuel === "petrol") setPetrolPrice(Number(r.total_price));
-          if (r.fuel === "diesel") setDieselPrice(Number(r.total_price));
-        }
-      }
-    })();
-  }, []);
-
-  // ---- helper: insert with graceful fallback if some columns are missing
-  async function insertOrder(rowFull: Record<string, any>) {
-    // 1) Try full insert
-    let res = await supabase
-      .from("orders")
-      .insert(rowFull)
-      .select("id")
-      .single();
-
-    if (!res.error) return res.data;
-
-    const msg = (res.error as PostgrestError)?.message || "";
-    const looksLikeMissingColumn =
-      msg.includes("column") && msg.includes("does not exist");
-
-    if (!looksLikeMissingColumn) throw res.error;
-
-    // 2) Retry with a minimal set of guaranteed columns
-    const minimal = {
-      user_email: rowFull.user_email,
-      fuel: rowFull.fuel,
-      product: rowFull.product, // legacy/compat required by your table
-      litres: rowFull.litres,
-      unit_price_pence: rowFull.unit_price_pence,
-      total_pence: rowFull.total_pence,
-      amount: rowFull.amount, // GBP numeric, NOT NULL
-      status: "ordered",
-    };
-
-    const res2 = await supabase
-      .from("orders")
-      .insert(minimal)
-      .select("id")
-      .single();
-
-    if (res2.error) throw res2.error;
-
-    setWarn(
-      "Some order fields (delivery date, address) are not stored in the database and will be attached to the Stripe payment only. Your order record will contain the product and totals."
-    );
-    return res2.data;
-  }
-
-  // ---------- submit ----------
-  async function handlePay() {
     try {
-      setErr(null);
+      setAcceptedTerms(localStorage.getItem(TERMS_LS_KEY) === "1");
+    } catch {}
+  }, []);
+  // Persist on change
+  useEffect(() => {
+    try {
+      localStorage.setItem(TERMS_LS_KEY, acceptedTerms ? "1" : "0");
+    } catch {}
+  }, [acceptedTerms]);
 
-      if (!accepted) throw new Error("Please agree to the Terms & Conditions.");
-      if (!unitPrice) throw new Error("Price unavailable for the selected fuel.");
-      if (!litresNum || litresNum <= 0) throw new Error("Enter valid litres.");
-      if (!email) throw new Error("Email is required.");
-      if (!fullName) throw new Error("Full name is required.");
-      if (!addr1 || !city || !postcode)
-        throw new Error("Please complete your address.");
+  const payDisabled = !acceptedTerms;
 
-      setBusy(true);
-
-      // --- compute amounts
-      const unit_price_pence = Math.round(unitPrice * 100);
-      const total_pence = unit_price_pence * litresNum;
-      const amount = +(total_pence / 100).toFixed(2); // GBP numeric (for NOT NULL)
-
-      // --- full row we *want* to store
-      const row: Record<string, any> = {
-        user_email: (user?.email || "").toLowerCase(),
-        fuel,
-        product: fuel, // your table still uses 'product' (NOT NULL) -> mirror fuel
-        litres: litresNum,
-        name: fullName,
-
-        address_line1: addr1,
-        address_line2: addr2 || null,
-        city,
-        postcode,
-        delivery_date: deliveryDate || null,
-
-        unit_price_pence,
-        total_pence,
-        amount, // GBP numeric, NOT NULL
-        status: "ordered",
-      };
-
-      // Insert (with graceful fallback if some columns are missing)
-      const created = await insertOrder(row);
-      const orderId = created?.id as string;
-
-      // Create Stripe Checkout (attach all details as metadata)
-      const payload = {
-        order_id: orderId,
-        fuel,
-        litres: litresNum,
-        unit_price: unitPrice,
-        total: totalGBP,
-        delivery_date: deliveryDate || null,
-        email,
-        full_name: fullName,
-        address_line1: addr1,
-        address_line2: addr2 || "",
-        city,
-        postcode,
-      };
-
-      const resp = await fetch("/api/stripe/checkout/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await resp.json();
-      if (!resp.ok || !data?.url) {
-        throw new Error(data?.error || `HTTP ${resp.status}`);
-      }
-      window.location.href = data.url;
-    } catch (e: any) {
-      setBusy(false);
-      setErr(e?.message || "Something went wrong.");
-    }
+  function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!acceptedTerms) return;
+    // TODO: hand off to Stripe or your API here.
+    alert("Proceeding to payment… (wire your Stripe/API here)");
   }
 
-  // ---------- UI ----------
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-4 md:p-6">
-      <div className="max-w-5xl mx-auto">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-6">
-          <h1 className="text-3xl font-bold text-yellow-400">Place an Order</h1>
-          <a
-            href="/client-dashboard"
-            className="text-gray-300 hover:text-white underline self-start md:self-auto"
-          >
-            Back to Dashboard
-          </a>
+    <main className="min-h-screen bg-[#071B33] text-white">
+      {/* Header bar (right-aligned back link) */}
+      <div className="mx-auto flex w-full max-w-6xl items-center justify-end px-4 pt-6">
+        <a href="/client-dashboard" className="text-sm text-white/80 hover:text-white">
+          Back to Dashboard
+        </a>
+      </div>
+
+      {/* Main container */}
+      <section className="mx-auto w-full max-w-6xl px-4">
+        <h1 className="mt-2 text-3xl font-bold">Place an Order</h1>
+
+        {/* Price cards */}
+        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+          <Card title="Petrol (95)" value={`${fmtGBP(unitPetrol)} `} suffix="/ litre" />
+          <Card title="Diesel" value={`${fmtGBP(unitDiesel)} `} suffix="/ litre" />
+          <Card title="Estimated Total" value={fmtGBP(total)} />
         </div>
 
-        {/* price cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <div className="bg-gray-800 p-5 rounded-xl">
-            <p className="text-gray-400">Petrol (95)</p>
-            <p className="text-3xl font-bold mt-2">
-              {petrolPrice != null ? fmt.format(petrolPrice) : "—"}
-              <span className="text-base font-normal text-gray-300"> / litre</span>
-            </p>
-          </div>
-          <div className="bg-gray-800 p-5 rounded-xl">
-            <p className="text-gray-400">Diesel</p>
-            <p className="text-3xl font-bold mt-2">
-              {dieselPrice != null ? fmt.format(dieselPrice) : "—"}
-              <span className="text-base font-normal text-gray-300"> / litre</span>
-            </p>
-          </div>
-          <div className="bg-gray-800 p-5 rounded-xl">
-            <p className="text-gray-400">Estimated Total</p>
-            <p className="text-3xl font-bold mt-2">{fmt.format(totalGBP)}</p>
-          </div>
-        </div>
-
-        {warn && (
-          <div className="bg-amber-800/60 border border-amber-500 text-amber-100 p-4 rounded mb-6">
-            {warn}
-          </div>
-        )}
-        {err && (
-          <div className="bg-red-800/60 border border-red-500 text-red-100 p-4 rounded mb-6">
-            {err}
-          </div>
-        )}
-
-        {/* form */}
-        <div className="bg-gray-800 rounded-xl p-4 md:p-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Fuel */}
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Fuel</label>
+        {/* Order form */}
+        <form onSubmit={onSubmit} className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-5">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Field label="Fuel">
               <select
                 value={fuel}
-                onChange={(e) => setFuel(e.target.value as Fuel)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
+                onChange={(e) => setFuel(e.target.value as "diesel" | "petrol")}
+                className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
               >
                 <option value="diesel">Diesel</option>
                 <option value="petrol">Petrol (95)</option>
               </select>
-            </div>
+            </Field>
 
-            {/* Litres */}
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Litres</label>
+            <Field label="Litres">
               <input
                 type="number"
                 min={1}
                 value={litres}
-                onChange={(e) => setLitres(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
+                onChange={(e) => setLitres(parseInt(e.target.value || "0", 10))}
+                className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
               />
-            </div>
+            </Field>
 
-            {/* Delivery date */}
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">
-                Delivery date
-              </label>
+            <Field label="Delivery date">
               <input
                 type="date"
-                value={deliveryDate}
-                onChange={(e) => setDeliveryDate(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
+                className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
               />
-            </div>
+            </Field>
 
-            {/* Email (receipt) */}
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">
-                Your email (receipt)
-              </label>
+            <Field label="Your email (receipt)">
               <input
                 type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
+                className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
+                defaultValue="fuelflow.queries@gmail.com"
               />
-            </div>
+            </Field>
 
-            {/* Full name */}
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Full name</label>
-              <input
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
-              />
-            </div>
+            <Field className="md:col-span-2" label="Full name">
+              <input className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+            </Field>
 
-            {/* Address line 1 */}
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">
-                Address line 1
-              </label>
-              <input
-                value={addr1}
-                onChange={(e) => setAddr1(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
-              />
-            </div>
+            <Field label="Address line 1">
+              <input className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+            </Field>
 
-            {/* Address line 2 */}
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">
-                Address line 2
-              </label>
-              <input
-                value={addr2}
-                onChange={(e) => setAddr2(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
-              />
-            </div>
+            <Field label="Address line 2">
+              <input className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+            </Field>
 
-            {/* City */}
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">City</label>
-              <input
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
-              />
-            </div>
+            <Field label="Postcode">
+              <input className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+            </Field>
 
-            {/* Postcode */}
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Postcode</label>
-              <input
-                value={postcode}
-                onChange={(e) => setPostcode(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2"
-              />
-            </div>
+            <Field label="City">
+              <input className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+            </Field>
           </div>
 
-          {/* terms */}
-          <div className="mt-4 flex items-center gap-2">
-            <input
-              id="terms"
-              type="checkbox"
-              checked={accepted}
-              onChange={(e) => setAccepted(e.target.checked)}
-              className="w-4 h-4"
-            />
-            <label htmlFor="terms" className="text-sm text-gray-300">
-              I agree to the{" "}
-              <a href="/terms" target="_blank" className="underline">
-                Terms &amp; Conditions
-              </a>
-              .
+          {/* Terms + CTA */}
+          <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <label className="inline-flex items-center gap-3 text-sm text-white/80">
+              <input
+                type="checkbox"
+                checked={acceptedTerms}
+                onChange={(e) => setAcceptedTerms(e.target.checked)}
+                className="h-4 w-4 accent-yellow-500"
+              />
+              <span>
+                I agree to the{" "}
+                <button
+                  type="button"
+                  onClick={() => setShowTerms(true)}
+                  className="underline underline-offset-4 hover:text-white"
+                >
+                  Terms &amp; Conditions
+                </button>
+                .
+              </span>
             </label>
-          </div>
 
-          {/* footer */}
-          <div className="mt-6 flex flex-col md:flex-row md:items-center md:justify-between gap-3 text-gray-300">
-            <div>
-              Unit price: <strong>{fmt.format(unitPrice)}/L</strong> • Total:{" "}
-              <strong>{fmt.format(totalGBP)}</strong>
-            </div>
             <button
-              disabled={busy}
-              onClick={handlePay}
-              className="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black font-medium px-5 py-2 rounded-lg w-full md:w-auto"
+              type="submit"
+              disabled={payDisabled}
+              className={`rounded-xl px-5 py-2 font-semibold ${
+                payDisabled
+                  ? "cursor-not-allowed bg-yellow-500/50 text-[#041F3E]"
+                  : "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
+              }`}
             >
-              {busy ? "Loading…" : "Pay with Stripe"}
+              Pay with Stripe
             </button>
           </div>
+        </form>
+
+        {/* Clean footer */}
+        <footer className="flex items-center justify-center py-10 text-sm text-white/60">
+          © {new Date().getFullYear()} FuelFlow. All rights reserved.
+        </footer>
+      </section>
+
+      {/* Terms modal */}
+      <TermsModal
+        open={showTerms}
+        onClose={() => setShowTerms(false)}
+        onAccept={() => setAcceptedTerms(true)}
+      />
+    </main>
+  );
+}
+
+/* ------------------------------ Sub-components ------------------------------ */
+
+function Card({ title, value, suffix }: { title: string; value: string; suffix?: string }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h3 className="text-white/80">{title}</h3>
+      <p className="mt-2 text-2xl font-bold">
+        {value} {suffix ? <span className="text-base font-normal text-white/70">{suffix}</span> : null}
+      </p>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  className = "",
+  children,
+}: {
+  label: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className={`block ${className}`}>
+      <span className="mb-1 block text-sm text-white/80">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+/* ----------------------------- Terms Modal UI ----------------------------- */
+
+function TermsModal({
+  open,
+  onClose,
+  onAccept,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onAccept: () => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} aria-hidden="true" />
+
+      {/* Dialog */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="relative z-[101] w-[min(960px,92vw)] max-h-[86vh] overflow-hidden rounded-2xl border border-white/10 bg-[#0E2E57] shadow-2xl"
+      >
+        {/* Header */}
+        <div className="flex items-center gap-3 px-6 py-4 border-b border-white/10 bg-[#0A2446]">
+          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+          <h2 className="text-lg font-semibold text-white">FuelFlow — Terms & Conditions</h2>
+          <button
+            onClick={onClose}
+            className="ml-auto rounded-lg px-3 py-1.5 text-white/70 hover:bg-white/10"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Scrollable content */}
+        <div className="overflow-y-auto p-6">
+          <TermsContent />
+        </div>
+
+        {/* Footer actions */}
+        <div className="flex items-center justify-end gap-3 border-t border-white/10 px-6 py-4 bg-[#0A2446]">
+          <button
+            onClick={onClose}
+            className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-white/90 hover:bg-white/10"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => {
+              onAccept();
+              onClose();
+            }}
+            className="rounded-xl bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400"
+          >
+            I Accept
+          </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* --------------------------- Terms Content Text --------------------------- */
+
+function TermsContent() {
+  return (
+    <div className="space-y-6 text-sm leading-6">
+      <section>
+        <h3 className="text-base font-semibold text-white">1. Definitions & Scope</h3>
+        <p className="text-white/80">
+          “Company”, “we”, “us”, or “FuelFlow” means FuelFlow Ltd. “Customer”, “you” means the
+          purchasing entity. “Products” means petroleum products (e.g., petrol, diesel). “Services”
+          means ancillary services we may offer (e.g., arranging deliveries, tank installation via
+          approved partners). These Terms govern all quotations, orders, deliveries, and any rental
+          of tanks or equipment supplied by or through FuelFlow.
+        </p>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-white">2. Supply of Fuel & Customer Responsibilities</h3>
+        <ul className="list-disc pl-5 text-white/80 space-y-2">
+          <li>
+            We supply fuel on the terms herein. You are responsible for ensuring your premises and
+            tanks are suitable, compliant, and safe to accept deliveries (including access routes,
+            tank integrity, venting, overfill protection, and any required permits).
+          </li>
+          <li>
+            You must provide accurate delivery information and ensure a representative is present if
+            required by the carrier. Any failed delivery or waiting time costs due to site issues may
+            be charged to you.
+          </li>
+          <li>
+            You are responsible for ongoing tank inspections, leak prevention, spill response, and
+            compliance with all applicable laws and standards.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-white">3. Pricing, Orders & Payment</h3>
+        <ul className="list-disc pl-5 text-white/80 space-y-2">
+          <li>
+            Prices are quoted per litre and may vary with market conditions until an order is
+            confirmed. Taxes and duties (if applicable) are in addition to the quoted price.
+          </li>
+          <li>
+            Payment terms are as stated at checkout or agreed in writing. We may suspend deliveries
+            for late or overdue balances and charge interest on overdue sums to the maximum permitted by law.
+          </li>
+          <li>
+            Estimates are based on quantity and location assumptions; final invoice may reflect meter
+            readings or bill of lading volumes actually delivered.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-white">4. Title, Risk & Delivery</h3>
+        <ul className="list-disc pl-5 text-white/80 space-y-2">
+          <li>
+            Risk passes on delivery to your tank; title passes once payment is received in full
+            (retention of title). If payment is not received, we may recover products or pursue legal remedies.
+          </li>
+          <li>
+            Delivery dates are estimates; we are not liable for delays caused by carriers, traffic, weather,
+            or events beyond our control (force majeure).
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-white">5. Rented Tanks & Equipment</h3>
+        <ul className="list-disc pl-5 text-white/80 space-y-2">
+          <li>
+            Rented tanks/equipment remain our (or our partner’s) property. You must use them only for
+            FuelFlow supplies, keep them in good condition, and insure them for loss or damage.
+          </li>
+          <li>
+            You are liable for misuse, negligence, contamination, overfills, or damage. On termination,
+            you must allow collection in good order and pay applicable removal or remediation costs.
+          </li>
+          <li>
+            Breach of rental terms may entitle us to immediate recovery of the equipment and damages.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-white">6. Safety, Environment & Indemnity</h3>
+        <ul className="list-disc pl-5 text-white/80 space-y-2">
+          <li>
+            You must ensure safe access and a safe working environment for deliveries. You will
+            indemnify FuelFlow for losses arising from unsafe conditions, site contamination, or
+            environmental incidents caused by your acts/omissions.
+          </li>
+          <li>
+            You must immediately notify relevant authorities of any spill where required and take
+            prompt remedial action.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-white">7. Warranties & Limitation of Liability</h3>
+        <ul className="list-disc pl-5 text-white/80 space-y-2">
+          <li>
+            Products will conform to standard specifications at the time of delivery. Except as
+            required by law, all other warranties are excluded.
+          </li>
+          <li>
+            Our liability is limited to the price of the relevant delivery or, in the case of rented
+            equipment, to direct losses reasonably foreseeable and proven. We exclude liability for
+            indirect or consequential loss (e.g., loss of profits, business interruption).
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-white">8. Compliance</h3>
+        <p className="text-white/80">
+          You agree to comply with all applicable laws, including anti-bribery, modern slavery,
+          data protection, and sanctions regulations. We may suspend service if we reasonably suspect non-compliance.
+        </p>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-white">9. Termination</h3>
+        <p className="text-white/80">
+          We may terminate or suspend supplies for non-payment, safety concerns, material breach, or
+          insolvency. On termination, all sums become immediately due and any rented equipment must
+          be returned promptly.
+        </p>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-white">10. Governing Law</h3>
+        <p className="text-white/80">
+          These Terms are governed by the laws of England & Wales. The courts of England shall have
+          exclusive jurisdiction.
+        </p>
+      </section>
     </div>
   );
 }
