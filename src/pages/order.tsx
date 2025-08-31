@@ -189,7 +189,7 @@ export default function OrderPage() {
           capex_required_gbp: capexRequired || null,
           terms_version: termsVersion,
           status: "draft",
-          acceptance_id: acceptanceId || null,
+         ...(acceptanceId ? { acceptance_id: acceptanceId } : {}),
         })
         .select("id")
         .single();
