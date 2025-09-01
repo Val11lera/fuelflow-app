@@ -15,7 +15,8 @@ function fmtGBP(n: number) {
 }
 
 const TERMS_LS_KEY = "ff_terms_accepted_v2";
-const CONTRACT_OK_LS_KEY = "ff_contract_signed_v1";
+const LS_BUY = "ff_contract_status_buy_v1";
+const LS_RENT = "ff_contract_status_rent_v1";
 
 /* --------------------------- Page Component -------------------------- */
 export default function OrderPage() {
@@ -36,11 +37,34 @@ export default function OrderPage() {
     } catch {}
   }, [acceptedTerms]);
 
-  /* ----- Tank option & contract state ----- */
+  /* ----- Tank option & contract status (per option) ----- */
   const [tankOption, setTankOption] = useState<"none" | "rent" | "buy">("none");
-  const [contractSigned, setContractSigned] = useState(false);
-  useEffect(() => setContractSigned(localStorage.getItem(CONTRACT_OK_LS_KEY) === "1"), []);
+  type CStat = "none" | "signed" | "approved";
+  const [contractStatus, setContractStatus] = useState<{ buy: CStat; rent: CStat }>({ buy: "none", rent: "none" });
+
+  useEffect(() => {
+    try {
+      setContractStatus({
+        buy: ((localStorage.getItem(LS_BUY) as CStat) || "none"),
+        rent: ((localStorage.getItem(LS_RENT) as CStat) || "none"),
+      });
+    } catch {}
+  }, []);
+
+  function markSigned(opt: "buy" | "rent") {
+    setContractStatus((s) => {
+      const next = { ...s, [opt]: "signed" as CStat };
+      try { localStorage.setItem(opt === "buy" ? LS_BUY : LS_RENT, "signed"); } catch {}
+      return next;
+    });
+  }
+
   const contractNeeded = tankOption === "rent" || tankOption === "buy";
+  const hasSigned = tankOption === "buy"
+    ? contractStatus.buy !== "none"
+    : tankOption === "rent"
+      ? contractStatus.rent !== "none"
+      : false;
 
   /* ----- Modals ----- */
   const [showROI, setShowROI] = useState<null | "rent" | "buy">(null);
@@ -49,10 +73,8 @@ export default function OrderPage() {
   function onSubmitOrder(e: React.FormEvent) {
     e.preventDefault();
     if (!acceptedTerms) return;
-    if (contractNeeded && !contractSigned) return;
-
-    // TODO: replace with your real Stripe / API flow
-    alert("Proceeding to payment…");
+    if (contractNeeded && !hasSigned) return;
+    alert("Proceeding to payment…"); // replace with your live payment flow
   }
 
   return (
@@ -81,6 +103,7 @@ export default function OrderPage() {
             onStartContract={() => setShowContract("buy")}
             selected={tankOption === "buy"}
             onSelect={() => setTankOption("buy")}
+            status={contractStatus.buy}
           />
 
           <TankPanel
@@ -95,6 +118,7 @@ export default function OrderPage() {
             onStartContract={() => setShowContract("rent")}
             selected={tankOption === "rent"}
             onSelect={() => setTankOption("rent")}
+            status={contractStatus.rent}
           />
         </div>
 
@@ -177,19 +201,24 @@ export default function OrderPage() {
               {contractNeeded && (
                 <p className="mt-2 text-sm text-white/70">
                   Contract required:{" "}
-                  {contractSigned ? (
-                    <span className="text-green-400 font-medium">Signed & saved</span>
+                  {hasSigned ? (
+                    <span className="text-green-400 font-medium">
+                      {tankOption === "rent" && contractStatus.rent === "signed" ? "Signed (awaiting approval)" : "Signed & saved"}
+                    </span>
                   ) : (
                     <span className="text-red-300">Not yet signed</span>
                   )}{" "}
                   — use the panel above to{" "}
-                  <button
-                    type="button"
-                    className="underline underline-offset-4 hover:text-white"
-                    onClick={() => setShowContract(tankOption as "rent" | "buy")}
-                  >
-                    start contract
-                  </button>
+                  {!hasSigned && (
+                    <button
+                      type="button"
+                      className="underline underline-offset-4 hover:text-white"
+                      onClick={() => setShowContract(tankOption as "rent" | "buy")}
+                    >
+                      start contract
+                    </button>
+                  )}
+                  {hasSigned && tankOption === "rent" && contractStatus.rent === "signed" && <> (admin approval required)</>}
                   .
                 </p>
               )}
@@ -217,9 +246,9 @@ export default function OrderPage() {
             <div className="flex items-center justify-end gap-3">
               <button
                 type="submit"
-                disabled={!acceptedTerms || (contractNeeded && !contractSigned)}
+                disabled={!acceptedTerms || (contractNeeded && !hasSigned)}
                 className={`rounded-xl px-5 py-2 font-semibold ${
-                  !acceptedTerms || (contractNeeded && !contractSigned)
+                  !acceptedTerms || (contractNeeded && !hasSigned)
                     ? "cursor-not-allowed bg-yellow-500/50 text-[#041F3E]"
                     : "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
                 }`}
@@ -243,12 +272,7 @@ export default function OrderPage() {
         <ContractModal
           option={showContract}
           onClose={() => setShowContract(null)}
-          onSigned={() => {
-            setContractSigned(true);
-            try {
-              localStorage.setItem(CONTRACT_OK_LS_KEY, "1");
-            } catch {}
-          }}
+          onSigned={() => markSigned(showContract)}
           fuel={fuel}
           litres={litres}
         />
@@ -294,6 +318,7 @@ function TankPanel({
   onStartContract,
   onSelect,
   selected,
+  status, // 'none' | 'signed' | 'approved'
 }: {
   type: "buy" | "rent";
   title: string;
@@ -302,21 +327,18 @@ function TankPanel({
   onStartContract: () => void;
   onSelect: () => void;
   selected: boolean;
+  status: "none" | "signed" | "approved";
 }) {
+  const hasActive = status === "signed" || status === "approved";
+
   return (
-    <div
-      className={`rounded-2xl border p-6 ${
-        selected ? "border-yellow-400 bg-white/5" : "border-white/10 bg-white/5"
-      }`}
-    >
+    <div className={`rounded-2xl border p-6 ${selected ? "border-yellow-400 bg-white/5" : "border-white/10 bg-white/5"}`}>
       <div className="flex items-center justify-between">
         <h3 className="text-2xl font-semibold">{title}</h3>
         <button
           type="button"
           onClick={onSelect}
-          className={`rounded-xl px-3 py-1 text-sm ${
-            selected ? "bg-yellow-400 text-[#041F3E]" : "border border-white/20 bg-white/10"
-          }`}
+          className={`rounded-xl px-3 py-1 text-sm ${selected ? "bg-yellow-400 text-[#041F3E]" : "border border-white/20 bg-white/10"}`}
         >
           {selected ? "Selected" : "Select"}
         </button>
@@ -331,7 +353,7 @@ function TankPanel({
         ))}
       </ul>
 
-      <div className="mt-5 flex flex-wrap gap-3">
+      <div className="mt-5 flex flex-wrap gap-3 items-center">
         <button
           type="button"
           onClick={onOpenROI}
@@ -339,13 +361,20 @@ function TankPanel({
         >
           Open ROI
         </button>
-        <button
-          type="button"
-          onClick={onStartContract}
-          className="rounded-xl bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400"
-        >
-          Start Contract
-        </button>
+
+        {/* Replace Start Contract based on status */}
+        {type === "buy" && hasActive && <span className="text-green-400 font-medium">Contract signed</span>}
+        {type === "rent" && status === "signed" && <span className="text-yellow-300 font-medium">Awaiting admin approval</span>}
+        {type === "rent" && status === "approved" && <span className="text-green-400 font-medium">Approved</span>}
+        {status === "none" && (
+          <button
+            type="button"
+            onClick={onStartContract}
+            className="rounded-xl bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400"
+          >
+            Start Contract
+          </button>
+        )}
       </div>
     </div>
   );
@@ -359,7 +388,6 @@ function RoiModal({ option, onClose }: { option: "buy" | "rent"; onClose: () => 
 
   const fuelflow = Math.max(0, market - diff);
   const monthlySavings = Math.max(0, (market - fuelflow) * consumption);
-  // naive payback if "buy", assume £12,000 capex
   const capex = 12000;
   const paybackMonths = option === "buy" ? (monthlySavings > 0 ? Math.ceil(capex / monthlySavings) : Infinity) : 0;
 
@@ -375,34 +403,16 @@ function RoiModal({ option, onClose }: { option: "buy" | "rent"; onClose: () => 
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <Field label="Market price (GBP/L)">
-            <input
-              type="number"
-              min={0}
-              step="0.01"
-              value={market}
-              onChange={(e) => setMarket(parseFloat(e.target.value || "0"))}
-              className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none"
-            />
+            <input type="number" min={0} step="0.01" value={market} onChange={(e) => setMarket(parseFloat(e.target.value || "0"))}
+                   className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
           </Field>
           <Field label="FuelFlow cheaper by (GBP/L)">
-            <input
-              type="number"
-              min={0}
-              step="0.01"
-              value={diff}
-              onChange={(e) => setDiff(parseFloat(e.target.value || "0"))}
-              className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none"
-            />
+            <input type="number" min={0} step="0.01" value={diff} onChange={(e) => setDiff(parseFloat(e.target.value || "0"))}
+                   className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
           </Field>
           <Field label="Monthly consumption (L)">
-            <input
-              type="number"
-              min={0}
-              step="1"
-              value={consumption}
-              onChange={(e) => setConsumption(parseInt(e.target.value || "0", 10))}
-              className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none"
-            />
+            <input type="number" min={0} step="1" value={consumption} onChange={(e) => setConsumption(parseInt(e.target.value || "0", 10))}
+                   className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
           </Field>
         </div>
 
@@ -515,7 +525,7 @@ function ContractModal({
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to save contract.");
       setMsg({ type: "ok", text: "Contract signed and saved." });
-      onSigned();
+      onSigned(); // mark the specific option as signed
       setTimeout(onClose, 900);
     } catch (e: any) {
       setMsg({ type: "err", text: e.message || "Failed to save contract." });
@@ -569,21 +579,23 @@ function ContractModal({
               </div>
             </div>
 
-            <h3 className="mt-6 mb-2 text-sm font-semibold text-white/90">
-              Tank & pricing assumptions
-            </h3>
+            <h3 className="mt-6 mb-2 text-sm font-semibold text-white/90">Tank & pricing assumptions</h3>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Tank size (L)">
-                <input type="number" min={0} value={tankSize} onChange={(e) => setTankSize(parseInt(e.target.value || "0", 10))} className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
+                <input type="number" min={0} value={tankSize} onChange={(e) => setTankSize(parseInt(e.target.value || "0", 10))}
+                       className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
               </Field>
               <Field label="Monthly consumption (L)">
-                <input type="number" min={0} value={monthlyConsumption} onChange={(e) => setMonthlyConsumption(parseInt(e.target.value || "0", 10))} className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
+                <input type="number" min={0} value={monthlyConsumption} onChange={(e) => setMonthlyConsumption(parseInt(e.target.value || "0", 10))}
+                       className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
               </Field>
               <Field label="Market price (GBP/L)">
-                <input type="number" step="0.01" min={0} value={market} onChange={(e) => setMarket(parseFloat(e.target.value || "0"))} className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
+                <input type="number" step="0.01" min={0} value={market} onChange={(e) => setMarket(parseFloat(e.target.value || "0"))}
+                       className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
               </Field>
               <Field label="FuelFlow cheaper by (GBP/L)">
-                <input type="number" step="0.01" min={0} value={diff} onChange={(e) => setDiff(parseFloat(e.target.value || "0"))} className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
+                <input type="number" step="0.01" min={0} value={diff} onChange={(e) => setDiff(parseFloat(e.target.value || "0"))}
+                       className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
               </Field>
             </div>
 
@@ -632,9 +644,7 @@ function ContractModal({
                 />
               </div>
 
-              {msg && (
-                <p className={msg.type === "ok" ? "text-green-400" : "text-red-300"}>{msg.text}</p>
-              )}
+              {msg && <p className={msg.type === "ok" ? "text-green-400" : "text-red-300"}>{msg.text}</p>}
 
               <div className="flex items-center justify-end gap-3">
                 <button onClick={onClose} type="button" className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 hover:bg-white/10">
@@ -661,7 +671,5 @@ function ContractModal({
     </div>
   );
 }
-
-
 
 
