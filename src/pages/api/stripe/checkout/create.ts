@@ -1,8 +1,7 @@
-// src/pages/api/stripe/checkout/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
+import supabaseAdmin from "@/lib/supabaseAdmin"; // <— ADD
 
-/** Build an absolute base URL that works on Vercel + locally */
 function getBaseUrl(req: NextApiRequest) {
   const proto =
     (req.headers["x-forwarded-proto"] as string) ||
@@ -39,9 +38,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       address_line2,
       city,
       postcode,
+      mode, // <— 'buy' | 'rent' | undefined
     } = req.body || {};
 
-    // ---- minimal validation & tolerant calculations ----
+    // ---------------- RENT APPROVAL GUARD ----------------
+    if (mode === 'rent') {
+      if (!email) return res.status(400).json({ error: "Email required for rental approval check" });
+
+      const { data: contract, error: cErr } = await supabaseAdmin
+        .from('contracts')
+        .select('id,status')
+        .eq('email', email)
+        .eq('tank_option', 'rent')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (cErr) return res.status(500).json({ error: 'Approval check failed' });
+      if (!contract || contract.status !== 'approved') {
+        return res.status(403).json({ error: 'Rental requires admin approval before payment.' });
+      }
+    }
+    // -----------------------------------------------------
+
     if (!order_id || typeof order_id !== "string") {
       return res.status(400).json({ error: "order_id is required" });
     }
@@ -58,11 +77,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     let resolvedTotal = Number.isFinite(totalNum) ? totalNum : NaN;
 
     if (!Number.isFinite(resolvedUnitPrice) && Number.isFinite(resolvedTotal)) {
-      // derive unit price from total
       resolvedUnitPrice = resolvedTotal / litresNum;
     }
     if (!Number.isFinite(resolvedTotal) && Number.isFinite(resolvedUnitPrice)) {
-      // derive total from unit price
       resolvedTotal = resolvedUnitPrice * litresNum;
     }
 
@@ -73,13 +90,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "total is missing/invalid" });
     }
 
-    const amountMinor = Math.round(resolvedTotal * 100); // pence
+    const amountMinor = Math.round(resolvedTotal * 100);
     const baseUrl = getBaseUrl(req);
 
-    // Build a readable product name
-    const productName = `Fuel order — ${fuel ?? "fuel"} (${litresNum}L @ £${resolvedUnitPrice.toFixed(
-      2
-    )}/L)`;
+    const productName = `Fuel order — ${fuel ?? "fuel"} (${litresNum}L @ £${resolvedUnitPrice.toFixed(2)}/L)`;
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
@@ -89,17 +103,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           price_data: {
             currency: "gbp",
             product_data: { name: productName },
-            unit_amount: amountMinor, // total as single line item
+            unit_amount: amountMinor,
           },
           quantity: 1,
         },
       ],
-      // After payment
       success_url: `${baseUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/checkout/cancel`,
-      // Attach everything else as metadata (shows up on PaymentIntent/Charge)
       metadata: {
         order_id,
+        mode: mode || '',
         fuel: String(fuel ?? ""),
         litres: String(litresNum),
         unit_price: resolvedUnitPrice.toFixed(4),
@@ -117,11 +130,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json({ url: session.url });
   } catch (err: any) {
     console.error("Stripe create session error:", err);
-    return res
-      .status(500)
-      .json({ error: err?.message || "create_session_failed" });
+    return res.status(500).json({ error: err?.message || "create_session_failed" });
   }
 }
-
 
 
