@@ -1,15 +1,15 @@
 // src/pages/api/contracts/draft.ts
-import type { NextApiRequest, NextApiResponse } from 'next';
-import supabaseAdmin from '@/lib/supabaseAdmin';
+import type { NextApiRequest, NextApiResponse } from "next";
+import supabaseAdmin from "@/lib/supabaseAdmin";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).json({ error: 'Method Not Allowed' });
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ error: "Method Not Allowed" });
   }
 
   const {
-    option, // 'buy' | 'rent'
+    option, // "buy" | "rent"
     full_name, email,
     address1, address2, city, postcode,
     tank_size_litres, monthly_consumption_litres,
@@ -19,20 +19,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } = (req.body || {}) as Record<string, any>;
 
   try {
-    // optional: attach user
     let user_id: string | null = null;
     const auth = req.headers.authorization;
-    if (auth?.startsWith('Bearer ')) {
+    if (auth?.startsWith("Bearer ")) {
       const token = auth.slice(7);
       const { data } = await supabaseAdmin.auth.getUser(token);
       if (data?.user?.id) user_id = data.user.id;
     }
 
     const { data, error } = await supabaseAdmin
-      .from('contracts')
+      .from("contracts")
       .insert({
-        contract_type: option === 'buy' ? 'buy' : 'rent',
-        status: 'draft',
+        contract_type: option === "buy" ? "buy" : "rent",
+        status: "draft",
         user_id,
         customer_name: full_name || null,
         email: email || null,
@@ -50,16 +49,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         est_monthly_savings_gbp: est_monthly_savings ?? null,
         est_payback_months: est_payback_months ?? null,
 
-        terms_version: terms_version || 'v1',
+        terms_version: terms_version || "v1",
         signature_name: signature_name || null,
       })
-      .select('id')
+      .select("id")
       .single();
 
     if (error) throw error;
     return res.status(200).json({ id: data.id });
   } catch (e: any) {
-    return res.status(500).json({ error: e.message || 'Failed to save draft' });
+    return res.status(500).json({ error: e.message || "Failed to save draft" });
   }
 }
 
