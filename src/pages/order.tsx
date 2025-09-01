@@ -1,5 +1,4 @@
 // src/pages/order.tsx
-// src/pages/order.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -15,8 +14,9 @@ function fmtGBP(n: number) {
 }
 
 const TERMS_LS_KEY = "ff_terms_accepted_v2";
-const LS_BUY = "ff_contract_status_buy_v1";
-const LS_RENT = "ff_contract_status_rent_v1";
+const LS_BUY = "ff_contract_status_buy_v1";   // 'none' | 'signed' | 'approved'
+const LS_RENT = "ff_contract_status_rent_v1"; // 'none' | 'signed' | 'approved'
+const LS_EMAIL = "ff_user_email_v1";
 
 /* --------------------------- Page Component -------------------------- */
 export default function OrderPage() {
@@ -38,31 +38,65 @@ export default function OrderPage() {
   }, [acceptedTerms]);
 
   /* ----- Tank option & contract status (per option) ----- */
-  const [tankOption, setTankOption] = useState<"none" | "rent" | "buy">("none");
   type CStat = "none" | "signed" | "approved";
-  const [contractStatus, setContractStatus] = useState<{ buy: CStat; rent: CStat }>({ buy: "none", rent: "none" });
+  const [tankOption, setTankOption] = useState<"none" | "rent" | "buy">("none");
+  const [contractStatus, setContractStatus] = useState<{ buy: CStat; rent: CStat }>({
+    buy: "none",
+    rent: "none",
+  });
+  const [knownEmail, setKnownEmail] = useState<string>("");
 
+  // Load local status/email, then refresh from server if we know an email
   useEffect(() => {
     try {
       setContractStatus({
         buy: ((localStorage.getItem(LS_BUY) as CStat) || "none"),
         rent: ((localStorage.getItem(LS_RENT) as CStat) || "none"),
       });
+      const e = localStorage.getItem(LS_EMAIL) || "";
+      setKnownEmail(e);
+      if (e) {
+        refreshServerStatus(e, "buy");
+        refreshServerStatus(e, "rent");
+      }
     } catch {}
   }, []);
 
-  function markSigned(opt: "buy" | "rent") {
+  async function refreshServerStatus(email: string, opt: "buy" | "rent") {
+    try {
+      const res = await fetch(`/api/contracts/latest?option=${opt}&email=${encodeURIComponent(email)}`);
+      const j = await res.json();
+      if (j?.exists) {
+        setContractStatus((s) => {
+          const next = { ...s, [opt]: j.approved ? ("approved" as CStat) : ("signed" as CStat) };
+          localStorage.setItem(opt === "buy" ? LS_BUY : LS_RENT, next[opt]);
+          return next;
+        });
+      }
+    } catch {
+      // ignore network errors here
+    }
+  }
+
+  function markSigned(opt: "buy" | "rent", emailJustUsed: string) {
     setContractStatus((s) => {
       const next = { ...s, [opt]: "signed" as CStat };
-      try { localStorage.setItem(opt === "buy" ? LS_BUY : LS_RENT, "signed"); } catch {}
+      try {
+        localStorage.setItem(opt === "buy" ? LS_BUY : LS_RENT, "signed");
+        if (emailJustUsed) {
+          localStorage.setItem(LS_EMAIL, emailJustUsed);
+          setKnownEmail(emailJustUsed);
+        }
+      } catch {}
       return next;
     });
   }
 
   const contractNeeded = tankOption === "rent" || tankOption === "buy";
-  const hasSigned = tankOption === "buy"
-    ? contractStatus.buy !== "none"
-    : tankOption === "rent"
+  const hasSigned =
+    tankOption === "buy"
+      ? contractStatus.buy !== "none"
+      : tankOption === "rent"
       ? contractStatus.rent !== "none"
       : false;
 
@@ -158,7 +192,21 @@ export default function OrderPage() {
             </Field>
 
             <Field label="Your email (receipt)">
-              <input type="email" className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+              <input
+                type="email"
+                defaultValue={knownEmail}
+                onBlur={(e) => {
+                  const v = e.currentTarget.value.trim();
+                  if (v) {
+                    localStorage.setItem(LS_EMAIL, v);
+                    setKnownEmail(v);
+                    // optional: refresh status from server for this email
+                    refreshServerStatus(v, "buy");
+                    refreshServerStatus(v, "rent");
+                  }
+                }}
+                className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
+              />
             </Field>
 
             <Field className="md:col-span-2" label="Full name">
@@ -203,13 +251,14 @@ export default function OrderPage() {
                   Contract required:{" "}
                   {hasSigned ? (
                     <span className="text-green-400 font-medium">
-                      {tankOption === "rent" && contractStatus.rent === "signed" ? "Signed (awaiting approval)" : "Signed & saved"}
+                      {tankOption === "rent" && contractStatus.rent === "signed"
+                        ? "Signed (awaiting approval)"
+                        : "Signed & saved"}
                     </span>
                   ) : (
                     <span className="text-red-300">Not yet signed</span>
                   )}{" "}
-                  — use the panel above to{" "}
-                  {!hasSigned && (
+                  — {!hasSigned && (
                     <button
                       type="button"
                       className="underline underline-offset-4 hover:text-white"
@@ -218,7 +267,7 @@ export default function OrderPage() {
                       start contract
                     </button>
                   )}
-                  {hasSigned && tankOption === "rent" && contractStatus.rent === "signed" && <> (admin approval required)</>}
+                  {hasSigned && tankOption === "rent" && contractStatus.rent === "signed" && " (admin approval required)"}
                   .
                 </p>
               )}
@@ -272,7 +321,10 @@ export default function OrderPage() {
         <ContractModal
           option={showContract}
           onClose={() => setShowContract(null)}
-          onSigned={() => markSigned(showContract)}
+          onSigned={(email) => {
+            // mark this option as signed and remember email
+            markSigned(showContract, email);
+          }}
           fuel={fuel}
           litres={litres}
         />
@@ -353,7 +405,7 @@ function TankPanel({
         ))}
       </ul>
 
-      <div className="mt-5 flex flex-wrap gap-3 items-center">
+      <div className="mt-5 flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={onOpenROI}
@@ -446,7 +498,7 @@ function ContractModal({
 }: {
   option: "buy" | "rent";
   onClose: () => void;
-  onSigned: () => void;
+  onSigned: (emailUsed: string) => void;
   fuel: "diesel" | "petrol";
   litres: number;
 }) {
@@ -525,7 +577,7 @@ function ContractModal({
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to save contract.");
       setMsg({ type: "ok", text: "Contract signed and saved." });
-      onSigned(); // mark the specific option as signed
+      onSigned(email); // remember email + mark status
       setTimeout(onClose, 900);
     } catch (e: any) {
       setMsg({ type: "err", text: e.message || "Failed to save contract." });
