@@ -1,7 +1,8 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
-import supabaseAdmin from "@/lib/supabaseAdmin"; // <— ADD
+import supabaseAdmin from "@/lib/supabaseAdmin";
 
+/** Build an absolute base URL that works on Vercel + locally */
 function getBaseUrl(req: NextApiRequest) {
   const proto =
     (req.headers["x-forwarded-proto"] as string) ||
@@ -38,28 +39,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       address_line2,
       city,
       postcode,
-      mode, // <— 'buy' | 'rent' | undefined
+      mode, // 'buy' | 'rent' | undefined
     } = req.body || {};
 
-    // ---------------- RENT APPROVAL GUARD ----------------
-    if (mode === 'rent') {
+    // RENT approval guard
+    if (mode === "rent") {
       if (!email) return res.status(400).json({ error: "Email required for rental approval check" });
 
       const { data: contract, error: cErr } = await supabaseAdmin
-        .from('contracts')
-        .select('id,status')
-        .eq('email', email)
-        .eq('tank_option', 'rent')
-        .order('created_at', { ascending: false })
+        .from("contracts")
+        .select("id,status")
+        .eq("email", email)
+        .eq("tank_option", "rent")
+        .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (cErr) return res.status(500).json({ error: 'Approval check failed' });
-      if (!contract || contract.status !== 'approved') {
-        return res.status(403).json({ error: 'Rental requires admin approval before payment.' });
+      if (cErr) return res.status(500).json({ error: "Approval check failed" });
+      if (!contract || contract.status !== "approved") {
+        return res.status(403).json({ error: "Rental requires admin approval before payment." });
       }
     }
-    // -----------------------------------------------------
 
     if (!order_id || typeof order_id !== "string") {
       return res.status(400).json({ error: "order_id is required" });
@@ -112,7 +112,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       cancel_url: `${baseUrl}/checkout/cancel`,
       metadata: {
         order_id,
-        mode: mode || '',
+        mode: mode || "",
         fuel: String(fuel ?? ""),
         litres: String(litresNum),
         unit_price: resolvedUnitPrice.toFixed(4),
@@ -133,5 +133,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: err?.message || "create_session_failed" });
   }
 }
-
 
