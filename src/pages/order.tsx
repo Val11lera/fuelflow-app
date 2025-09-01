@@ -20,13 +20,22 @@ const LS_EMAIL = "ff_user_email_v1";
 
 /* --------------------------- Page Component -------------------------- */
 export default function OrderPage() {
-  /* ----- Order basics ----- */
+  /* ----- Prices (static demo) ----- */
   const [fuel, setFuel] = useState<"diesel" | "petrol">("diesel");
   const [litres, setLitres] = useState<number>(1000);
   const unitPetrol = 0.46;
   const unitDiesel = 0.49;
   const unitPrice = useMemo(() => (fuel === "diesel" ? unitDiesel : unitPetrol), [fuel]);
   const total = useMemo(() => litres * unitPrice, [litres, unitPrice]);
+
+  /* ----- Checkout form basics ----- */
+  const [deliveryDate, setDeliveryDate] = useState<string>("");
+  const [email, setEmail] = useState<string>("");
+  const [fullName, setFullName] = useState<string>("");
+  const [address1, setAddress1] = useState<string>("");
+  const [address2, setAddress2] = useState<string>("");
+  const [postcode, setPostcode] = useState<string>("");
+  const [city, setCity] = useState<string>("");
 
   /* ----- Terms gate for payment ----- */
   const [acceptedTerms, setAcceptedTerms] = useState(false);
@@ -44,9 +53,8 @@ export default function OrderPage() {
     buy: "none",
     rent: "none",
   });
-  const [knownEmail, setKnownEmail] = useState<string>("");
 
-  // Load local status/email, then refresh from server if we know an email
+  // Load local status/email; then refresh from server if we know an email
   useEffect(() => {
     try {
       setContractStatus({
@@ -54,7 +62,7 @@ export default function OrderPage() {
         rent: ((localStorage.getItem(LS_RENT) as CStat) || "none"),
       });
       const e = localStorage.getItem(LS_EMAIL) || "";
-      setKnownEmail(e);
+      if (e) setEmail(e);
       if (e) {
         refreshServerStatus(e, "buy");
         refreshServerStatus(e, "rent");
@@ -62,9 +70,9 @@ export default function OrderPage() {
     } catch {}
   }, []);
 
-  async function refreshServerStatus(email: string, opt: "buy" | "rent") {
+  async function refreshServerStatus(emailVal: string, opt: "buy" | "rent") {
     try {
-      const res = await fetch(`/api/contracts/latest?option=${opt}&email=${encodeURIComponent(email)}`);
+      const res = await fetch(`/api/contracts/latest?option=${opt}&email=${encodeURIComponent(emailVal)}`);
       const j = await res.json();
       if (j?.exists) {
         setContractStatus((s) => {
@@ -73,9 +81,7 @@ export default function OrderPage() {
           return next;
         });
       }
-    } catch {
-      // ignore network errors here
-    }
+    } catch {}
   }
 
   function markSigned(opt: "buy" | "rent", emailJustUsed: string) {
@@ -85,7 +91,7 @@ export default function OrderPage() {
         localStorage.setItem(opt === "buy" ? LS_BUY : LS_RENT, "signed");
         if (emailJustUsed) {
           localStorage.setItem(LS_EMAIL, emailJustUsed);
-          setKnownEmail(emailJustUsed);
+          setEmail(emailJustUsed);
         }
       } catch {}
       return next;
@@ -93,31 +99,63 @@ export default function OrderPage() {
   }
 
   const contractNeeded = tankOption === "rent" || tankOption === "buy";
-  const hasSigned =
-    tankOption === "buy"
-      ? contractStatus.buy !== "none"
-      : tankOption === "rent"
-      ? contractStatus.rent !== "none"
-      : false;
 
-  /* ----- Modals ----- */
+  // NEW: stricter gate – RENT must be APPROVED (not just signed)
+  const contractGateOk =
+    tankOption === "none" ||
+    (tankOption === "buy" && contractStatus.buy !== "none") ||
+    (tankOption === "rent" && contractStatus.rent === "approved");
+
+  const payDisabled = !acceptedTerms || !contractGateOk;
+
+  /* ----- ROI & Contract modals ----- */
   const [showROI, setShowROI] = useState<null | "rent" | "buy">(null);
   const [showContract, setShowContract] = useState<null | "rent" | "buy">(null);
 
-  function onSubmitOrder(e: React.FormEvent) {
+  /* ----- Submit to Stripe Checkout (server creates session) ----- */
+  const [submitting, setSubmitting] = useState(false);
+
+  async function onSubmitOrder(e: React.FormEvent) {
     e.preventDefault();
-    if (!acceptedTerms) return;
-    if (contractNeeded && !hasSigned) return;
-    alert("Proceeding to payment…"); // replace with your live payment flow
+    if (payDisabled) return;
+
+    // minor client validation
+    if (!email || !fullName || !address1 || !postcode) {
+      alert("Please complete your contact details before payment.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      // Use your server endpoint that creates a Checkout Session
+      // This version creates an "orders" row and returns { url }
+      const r = await fetch("/api/stripe/checkout/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userEmail: email,
+          fuel,
+          litres,
+          deliveryDate: deliveryDate || null,
+          name: fullName,
+          address: `${address1}${address2 ? ", " + address2 : ""}, ${city}`,
+          postcode,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j?.url) throw new Error(j?.error || "Could not start checkout");
+      window.location.href = j.url; // redirect to Stripe
+    } catch (err: any) {
+      alert(err?.message || "Payment error");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
     <main className="min-h-screen bg-[#071B33] text-white">
-      {/* Top bar */}
       <div className="mx-auto flex w-full max-w-6xl items-center justify-end px-4 pt-6">
-        <a href="/client-dashboard" className="text-sm text-white/80 hover:text-white">
-          Back to Dashboard
-        </a>
+        <a href="/client-dashboard" className="text-sm text-white/80 hover:text-white">Back to Dashboard</a>
       </div>
 
       <section className="mx-auto w-full max-w-6xl px-4">
@@ -146,7 +184,7 @@ export default function OrderPage() {
             bullets={[
               "Flexible rental plans (short & long term).",
               "Maintenance and support included.",
-              "Ideal for temp sites and events.",
+              "Ideal for temporary sites and events.",
             ]}
             onOpenROI={() => setShowROI("rent")}
             onStartContract={() => setShowContract("rent")}
@@ -188,45 +226,64 @@ export default function OrderPage() {
             </Field>
 
             <Field label="Delivery date">
-              <input type="date" className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+              <input
+                type="date"
+                value={deliveryDate}
+                onChange={(e) => setDeliveryDate(e.target.value)}
+                className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
+              />
             </Field>
 
             <Field label="Your email (receipt)">
               <input
                 type="email"
-                defaultValue={knownEmail}
-                onBlur={(e) => {
-                  const v = e.currentTarget.value.trim();
-                  if (v) {
-                    localStorage.setItem(LS_EMAIL, v);
-                    setKnownEmail(v);
-                    // optional: refresh status from server for this email
-                    refreshServerStatus(v, "buy");
-                    refreshServerStatus(v, "rent");
-                  }
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  localStorage.setItem(LS_EMAIL, e.target.value);
                 }}
                 className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
               />
             </Field>
 
             <Field className="md:col-span-2" label="Full name">
-              <input className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+              <input
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
+              />
             </Field>
 
             <Field label="Address line 1">
-              <input className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+              <input
+                value={address1}
+                onChange={(e) => setAddress1(e.target.value)}
+                className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
+              />
             </Field>
 
             <Field label="Address line 2">
-              <input className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+              <input
+                value={address2}
+                onChange={(e) => setAddress2(e.target.value)}
+                className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
+              />
             </Field>
 
             <Field label="Postcode">
-              <input className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+              <input
+                value={postcode}
+                onChange={(e) => setPostcode(e.target.value)}
+                className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
+              />
             </Field>
 
             <Field label="City">
-              <input className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none" />
+              <input
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+                className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
+              />
             </Field>
 
             <Field label="Tank option" className="md:col-span-2">
@@ -246,29 +303,55 @@ export default function OrderPage() {
                   </button>
                 ))}
               </div>
-              {contractNeeded && (
+
+              {tankOption === "none" && (
+                <p className="mt-2 text-sm text-white/70">No tank selected — you can order fuel only.</p>
+              )}
+
+              {tankOption === "buy" && (
                 <p className="mt-2 text-sm text-white/70">
                   Contract required:{" "}
-                  {hasSigned ? (
-                    <span className="text-green-400 font-medium">
-                      {tankOption === "rent" && contractStatus.rent === "signed"
-                        ? "Signed (awaiting approval)"
-                        : "Signed & saved"}
-                    </span>
+                  {contractStatus.buy !== "none" ? (
+                    <span className="text-green-400 font-medium">Signed & saved</span>
                   ) : (
-                    <span className="text-red-300">Not yet signed</span>
-                  )}{" "}
-                  — {!hasSigned && (
-                    <button
-                      type="button"
-                      className="underline underline-offset-4 hover:text-white"
-                      onClick={() => setShowContract(tankOption as "rent" | "buy")}
-                    >
-                      start contract
-                    </button>
+                    <>
+                      <span className="text-red-300">Not yet signed</span> —{" "}
+                      <button
+                        type="button"
+                        className="underline underline-offset-4 hover:text-white"
+                        onClick={() => setShowContract("buy")}
+                      >
+                        start contract
+                      </button>
+                      .
+                    </>
                   )}
-                  {hasSigned && tankOption === "rent" && contractStatus.rent === "signed" && " (admin approval required)"}
-                  .
+                </p>
+              )}
+
+              {tankOption === "rent" && (
+                <p className="mt-2 text-sm text-white/70">
+                  Contract required:{" "}
+                  {contractStatus.rent === "approved" ? (
+                    <span className="text-green-400 font-medium">Approved</span>
+                  ) : contractStatus.rent === "signed" ? (
+                    <>
+                      <span className="text-yellow-300 font-medium">Signed (awaiting approval)</span> — admin
+                      approval required before payment.
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-red-300">Not yet signed</span> —{" "}
+                      <button
+                        type="button"
+                        className="underline underline-offset-4 hover:text-white"
+                        onClick={() => setShowContract("rent")}
+                      >
+                        start contract
+                      </button>
+                      .
+                    </>
+                  )}
                 </p>
               )}
             </Field>
@@ -295,21 +378,21 @@ export default function OrderPage() {
             <div className="flex items-center justify-end gap-3">
               <button
                 type="submit"
-                disabled={!acceptedTerms || (contractNeeded && !hasSigned)}
+                disabled={payDisabled || submitting}
                 className={`rounded-xl px-5 py-2 font-semibold ${
-                  !acceptedTerms || (contractNeeded && !hasSigned)
+                  payDisabled || submitting
                     ? "cursor-not-allowed bg-yellow-500/50 text-[#041F3E]"
                     : "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
                 }`}
               >
-                Pay with Stripe
+                {submitting ? "Starting checkout…" : "Pay with Stripe"}
               </button>
             </div>
           </div>
         </form>
 
         <footer className="flex items-center justify-center py-10 text-sm text-white/60">
-          © {new Date().getFullYear()} FuelFlow. All rights reserved.
+          <span className="text-white/70">Tip:</span>&nbsp; If you select <b>Rent</b>, payment is disabled until an admin approves your rental contract.
         </footer>
       </section>
 
@@ -321,10 +404,7 @@ export default function OrderPage() {
         <ContractModal
           option={showContract}
           onClose={() => setShowContract(null)}
-          onSigned={(email) => {
-            // mark this option as signed and remember email
-            markSigned(showContract, email);
-          }}
+          onSigned={(e) => markSigned(showContract, e)}
           fuel={fuel}
           litres={litres}
         />
