@@ -1,4 +1,3 @@
-// src/pages/api/stripe/webhook.ts
 import { buffer } from "micro";
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
@@ -6,7 +5,6 @@ import { createClient } from "@supabase/supabase-js";
 
 export const config = { api: { bodyParser: false } };
 
-// ---- Stripe / Supabase clients ----
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
@@ -16,12 +14,11 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
-// ---- helpers ----
+// ---------- helpers ----------
 function safeEmailFromPI(
   pi: Stripe.PaymentIntent,
   extraEmail?: string | null
 ): string | null {
-  // Try the expanded charges array first (if available)
   const charges =
     (pi as any)?.charges as
       | { data?: Array<{ billing_details?: { email?: string } }> }
@@ -41,13 +38,11 @@ function safeAmountFromPI(pi: Stripe.PaymentIntent): number {
   return 0;
 }
 
-/** Build a compact JSON snapshot to persist in payments.meta */
 function buildMetaFromSession(
   cs: Stripe.Checkout.Session | null,
   pi: Stripe.PaymentIntent | null,
   email: string | null
 ) {
-  // Note: only include *useful* fields so meta stays small and queryable
   return {
     source: cs ? "checkout.session.completed" : "payment_intent.succeeded",
     checkout_session: cs
@@ -74,7 +69,6 @@ function buildMetaFromSession(
         }
       : null,
     resolved_email: email,
-    // Convenience breakout for common order fields (if you sent them in metadata)
     order_hint: {
       order_id:
         (cs?.metadata?.order_id as string | undefined) ||
@@ -124,10 +118,24 @@ function buildMetaFromSession(
   };
 }
 
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse
-) {
+// mark order paid in either "orders" or "public_orders"
+async function markOrderPaid(orderId: string, piId: string) {
+  let upd = await supabase
+    .from("orders")
+    .update({ status: "paid", paid_at: new Date().toISOString(), stripe_pi_id: piId })
+    .eq("id", orderId);
+
+  if (upd.error && /relation .* does not exist/i.test(upd.error.message)) {
+    upd = await supabase
+      .from("public_orders")
+      .update({ status: "paid", paid_at: new Date().toISOString(), stripe_pi_id: piId })
+      .eq("id", orderId);
+  }
+  return upd;
+}
+
+// ---------- handler ----------
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).end("Method Not Allowed");
@@ -163,11 +171,7 @@ export default async function handler(
 
     const { error: insertEvtErr } = await supabase
       .from("webhook_events")
-      .insert({
-        id: event.id,
-        type: event.type,
-        raw: event as any,
-      });
+      .insert({ id: event.id, type: event.type, raw: event as any });
 
     if (insertEvtErr) {
       console.error("DB insert error (webhook_events):", insertEvtErr);
@@ -181,10 +185,8 @@ export default async function handler(
   // 3) Process
   try {
     switch (event.type) {
-      // You might trigger this directly (CLI/test)
       case "payment_intent.succeeded": {
         const piBasic = event.data.object as Stripe.PaymentIntent;
-        // Expand for best email capture
         const pi = await stripe.paymentIntents.retrieve(piBasic.id, {
           expand: ["latest_charge", "charges.data.billing_details"],
         });
@@ -202,7 +204,7 @@ export default async function handler(
             status: pi.status,
             email,
             order_id: orderId,
-            cs_id: null, // no Checkout Session in this event type
+            cs_id: null,
             meta,
           },
           { onConflict: "pi_id" }
@@ -213,15 +215,7 @@ export default async function handler(
         }
 
         if (orderId) {
-          const { error: updOrderErr } = await supabase
-            .from("orders")
-            .update({
-              status: "paid",
-              paid_at: new Date().toISOString(),
-              stripe_pi_id: pi.id,
-            })
-            .eq("id", orderId);
-
+          const { error: updOrderErr } = await markOrderPaid(orderId, pi.id);
           if (updOrderErr) {
             console.error("DB update error (orders):", updOrderErr);
             return res.status(500).send("DB update error (orders)");
@@ -230,13 +224,9 @@ export default async function handler(
         break;
       }
 
-      // Primary path when using Stripe Checkout
       case "checkout.session.completed": {
         const cs = event.data.object as Stripe.Checkout.Session;
-        if (!cs.payment_intent) {
-          console.log("No payment_intent on checkout.session; skipping");
-          break;
-        }
+        if (!cs.payment_intent) break;
 
         const pi = await stripe.paymentIntents.retrieve(
           cs.payment_intent as string,
@@ -260,8 +250,8 @@ export default async function handler(
             status: pi.status,
             email,
             order_id: orderId,
-            cs_id: cs.id, // <— store Checkout Session id
-            meta,         // <— snapshot of metadata/customer info
+            cs_id: cs.id,
+            meta,
           },
           { onConflict: "pi_id" }
         );
@@ -271,15 +261,7 @@ export default async function handler(
         }
 
         if (orderId) {
-          const { error: updOrderErr } = await supabase
-            .from("orders")
-            .update({
-              status: "paid",
-              paid_at: new Date().toISOString(),
-              stripe_pi_id: pi.id,
-            })
-            .eq("id", orderId);
-
+          const { error: updOrderErr } = await markOrderPaid(orderId, pi.id);
           if (updOrderErr) {
             console.error("DB update error (orders):", updOrderErr);
             return res.status(500).send("DB update error (orders)");
@@ -295,7 +277,6 @@ export default async function handler(
     return res.status(200).json({ received: true });
   } catch (err: any) {
     console.error("Processing error:", err);
-    // Non-2xx => Stripe will retry (good for transient issues)
     return res.status(500).send("Webhook processing error");
   }
 }
