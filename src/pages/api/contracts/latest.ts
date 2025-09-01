@@ -1,5 +1,4 @@
 // src/pages/api/contracts/latest.ts
-// /src/pages/api/contracts/latest.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
@@ -14,7 +13,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const option = (req.query.option as "buy" | "rent") || "rent";
   const emailParam = (req.query.email as string | undefined)?.trim();
 
-  // 1) Try auth user first (if Authorization header present)
+  // Try auth first (if token provided), else fallback to email
   let userId: string | null = null;
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith("Bearer ")) {
@@ -23,7 +22,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!error && data?.user?.id) userId = data.user.id;
   }
 
-  // 2) If no auth user, fallback to email filter (best-effort)
   let q = supabaseAdmin
     .from("contracts")
     .select("id,status,approved_at,signed_at,created_at")
