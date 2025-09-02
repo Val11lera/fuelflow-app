@@ -2,23 +2,8 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: "2024-06-20",
-});
-
-// Service-role admin client (bypasses RLS)
-const supabase = createClient(
-  process.env.SUPABASE_URL as string,
-  process.env.SUPABASE_SERVICE_ROLE_KEY as string
-);
-
-// If you prefer "public_orders", set ORDERS_TABLE=public_orders in .env
-const ORDERS_TABLE = (process.env.ORDERS_TABLE || "orders").trim();
-
-/** Build an absolute URL that works locally & on Vercel */
-function baseUrl(req: NextApiRequest) {
-  const env = process.env.SITE_URL && process.env.SITE_URL.trim();
-  if (env) return env.replace(/\/+$/, "");
+/** Build an absolute base URL that works locally & on Vercel */
+function getBaseUrl(req: NextApiRequest) {
   const proto =
     (req.headers["x-forwarded-proto"] as string) ||
     (req.headers["x-forwarded-protocol"] as string) ||
@@ -30,136 +15,115 @@ function baseUrl(req: NextApiRequest) {
   return `${proto}://${host}`;
 }
 
-async function getUnitPriceGBPPerL(fuel: "petrol" | "diesel") {
-  // Try database price view first
-  const { data, error } = await supabase
-    .from("latest_daily_prices")
-    .select("fuel,total_price")
-    .eq("fuel", fuel)
-    .maybeSingle();
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
+  apiVersion: "2024-06-20",
+});
 
-  if (!error && data && Number.isFinite(Number(data.total_price))) {
-    return Number(data.total_price);
-  }
-  // Fallback so you can still test if the view is missing
-  return fuel === "diesel" ? 0.49 : 0.46;
-}
-
-async function insertOrderRow(row: Record<string, any>) {
-  // Try configured table first, then auto-fallback to public_orders
-  let table = ORDERS_TABLE;
-
-  let ins = await supabase.from(table).insert(row).select("id").single();
-  if (ins.error && /relation .* does not exist/i.test(ins.error.message)) {
-    table = "public_orders";
-    ins = await supabase.from(table).insert(row).select("id").single();
-  }
-
-  if (ins.error || !ins.data) {
-    const msg = ins.error?.message || `Insert failed into ${table}`;
-    return { ok: false as const, error: msg };
-  }
-  return { ok: true as const, id: ins.data.id, table };
-}
+// server-side admin client
+const supabase = createClient(
+  process.env.SUPABASE_URL as string,
+  process.env.SUPABASE_SERVICE_ROLE_KEY as string
+);
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
-    return res.status(405).end("Method Not Allowed");
+    return res.status(405).json({ error: "Method Not Allowed" });
   }
 
   try {
     const {
-      userEmail,
-      fuel,
-      litres,
-      deliveryDate,
-      name,
-      address,
+      fuel,           // "petrol" | "diesel"
+      litres,         // number
+      deliveryDate,   // ISO string or null
+      full_name,
+      email,
+      address_line1,
+      address_line2,
+      city,
       postcode,
-    } = req.body as {
-      userEmail: string;
-      fuel: "petrol" | "diesel";
-      litres: number;
-      deliveryDate?: string | null;
-      name?: string;
-      address?: string;
-      postcode?: string;
-    };
+    } = req.body || {};
 
-    if (!userEmail || !fuel || !litres || litres <= 0) {
-      return res.status(400).json({ error: "Missing or invalid order fields" });
+    if (!fuel || !litres || litres <= 0) {
+      return res.status(400).json({ error: "Missing/invalid fuel or litres" });
     }
 
-    // 1) Price (DB first, fallback if needed)
-    const unitPrice = await getUnitPriceGBPPerL(fuel);
-    const total = unitPrice * litres;
-    const totalPence = Math.round(total * 100);
+    // 1) Read latest unit price from public.latest_prices view
+    const { data: priceRow, error: priceErr } = await supabase
+      .from("latest_prices")
+      .select("fuel,total_price")
+      .eq("fuel", fuel)
+      .maybeSingle();
 
-    // 2) Create order row
-    const row = {
-      user_email: userEmail,
-      fuel,
-      litres,
-      delivery_date: deliveryDate ?? null,
-      name: name ?? null,
-      address: address ?? null,
-      postcode: postcode ?? null,
-      unit_price: unitPrice,
-      total_amount_pence: totalPence,
-      status: "pending",
-    };
-    const inserted = await insertOrderRow(row);
-    if (!inserted.ok) {
-      console.error("Order insert error:", inserted.error);
-      return res.status(500).json({ error: "Failed to create order", details: inserted.error });
+    if (priceErr || !priceRow) {
+      return res.status(500).json({ error: "Could not fetch unit price" });
     }
 
-    const orderId = inserted.id;
-    const success = `${baseUrl(req)}/checkout/success?orderId=${orderId}`;
-    const cancel = `${baseUrl(req)}/checkout/cancel?orderId=${orderId}`;
+    const unitPrice = Number(priceRow.total_price); // £ per litre
+    const total = unitPrice * Number(litres);       // £
+    const totalPence = Math.round(total * 100);     // pence
 
-    // 3) Create Stripe Checkout session
+    // 2) Create an order row first
+    const { data: order, error: orderErr } = await supabase
+      .from("orders")
+      .insert({
+        user_email: email ?? null,
+        fuel,
+        litres: Number(litres),
+        delivery_date: deliveryDate ?? null,
+        name: full_name ?? null,
+        address: address_line1 ?? null,
+        postcode: postcode ?? null,
+        unit_price: unitPrice,                // £
+        total_amount_pence: totalPence,       // pence
+        status: "pending",
+      })
+      .select("id")
+      .single();
+
+    if (orderErr || !order) {
+      return res.status(500).json({ error: "Failed to create order" });
+    }
+
+    // 3) Create Stripe Checkout Session – ALWAYS return JSON with {url}
+    const base = getBaseUrl(req);
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      customer_email: userEmail,
+      customer_email: typeof email === "string" ? email : undefined,
       line_items: [
         {
           price_data: {
             currency: "gbp",
             product_data: {
-              name: `Fuel order - ${fuel}`,
-              description: `${litres} litre(s) @ £${unitPrice.toFixed(2)}/L`,
+              name: `Fuel order — ${fuel}`,
+              description: `${litres} L @ £${unitPrice.toFixed(2)}/L`,
             },
-            unit_amount: totalPence,
+            unit_amount: totalPence, // total as single line item
           },
           quantity: 1,
         },
       ],
-      success_url: success,
-      cancel_url: cancel,
+      success_url: `${base}/checkout/success?orderId=${order.id}`,
+      cancel_url: `${base}/checkout/cancel?orderId=${order.id}`,
       metadata: {
-        order_id: orderId,
-        fuel,
+        order_id: order.id,
+        fuel: String(fuel),
         litres: String(litres),
-        unit_price: String(unitPrice),
-        email: userEmail,
-      },
-      payment_intent_data: {
-        metadata: {
-          order_id: orderId,
-          fuel,
-          litres: String(litres),
-          unit_price: String(unitPrice),
-          email: userEmail,
-        },
+        unit_price: unitPrice.toFixed(4),
+        total: total.toFixed(2),
+        delivery_date: deliveryDate ? String(deliveryDate) : "",
+        email: typeof email === "string" ? email : "",
+        full_name: typeof full_name === "string" ? full_name : "",
+        address_line1: typeof address_line1 === "string" ? address_line1 : "",
+        address_line2: typeof address_line2 === "string" ? address_line2 : "",
+        city: typeof city === "string" ? city : "",
+        postcode: typeof postcode === "string" ? postcode : "",
       },
     });
 
     return res.status(200).json({ url: session.url });
-  } catch (e: any) {
-    console.error("create checkout error", e);
-    return res.status(500).json({ error: e?.message || "Checkout creation failed" });
+  } catch (err: any) {
+    console.error("create checkout error", err);
+    return res.status(500).json({ error: err?.message || "Checkout creation failed" });
   }
 }
-
