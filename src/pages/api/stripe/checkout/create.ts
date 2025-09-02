@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-/** Build an absolute base URL that works locally & on Vercel */
+/** Build an absolute base URL that works locally and on Vercel */
 function getBaseUrl(req: NextApiRequest) {
   const proto =
     (req.headers["x-forwarded-proto"] as string) ||
@@ -19,7 +19,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 
-// server-side admin client
+// server-side Supabase (service role) – for creating the order row
 const supabase = createClient(
   process.env.SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
@@ -33,9 +33,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const {
-      fuel,           // "petrol" | "diesel"
-      litres,         // number
-      deliveryDate,   // ISO string or null
+      fuel,               // "petrol" | "diesel"
+      litres,             // number
+      deliveryDate,       // ISO string | null
       full_name,
       email,
       address_line1,
@@ -44,11 +44,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       postcode,
     } = req.body || {};
 
-    if (!fuel || !litres || litres <= 0) {
+    if (!fuel || !litres || Number(litres) <= 0) {
       return res.status(400).json({ error: "Missing/invalid fuel or litres" });
     }
 
-    // 1) Read latest unit price from public.latest_prices view
+    // 1) Read the current unit price from public.latest_prices view
     const { data: priceRow, error: priceErr } = await supabase
       .from("latest_prices")
       .select("fuel,total_price")
@@ -63,7 +63,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const total = unitPrice * Number(litres);       // £
     const totalPence = Math.round(total * 100);     // pence
 
-    // 2) Create an order row first
+    // 2) Create a pending order row first
     const { data: order, error: orderErr } = await supabase
       .from("orders")
       .insert({
@@ -85,7 +85,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(500).json({ error: "Failed to create order" });
     }
 
-    // 3) Create Stripe Checkout Session – ALWAYS return JSON with {url}
+    // 3) Create Stripe Checkout Session — always return JSON { url }
     const base = getBaseUrl(req);
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
@@ -98,7 +98,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               name: `Fuel order — ${fuel}`,
               description: `${litres} L @ £${unitPrice.toFixed(2)}/L`,
             },
-            unit_amount: totalPence, // total as single line item
+            unit_amount: totalPence, // total as one line item
           },
           quantity: 1,
         },
@@ -127,3 +127,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: err?.message || "Checkout creation failed" });
   }
 }
+
