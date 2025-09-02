@@ -1,4 +1,5 @@
 // src/pages/order.tsx
+// src/pages/order.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -13,14 +14,9 @@ function fmtGBP(n: number) {
   }).format(n);
 }
 
-const TERMS_LS_KEY = "ff_terms_accepted_v2";
-const LS_BUY = "ff_contract_status_buy_v1";   // 'none' | 'signed' | 'approved'
-const LS_RENT = "ff_contract_status_rent_v1"; // 'none' | 'signed' | 'approved'
-const LS_EMAIL = "ff_user_email_v1";
-
 /* --------------------------- Page Component -------------------------- */
 export default function OrderPage() {
-  /* ----- Prices (static demo) ----- */
+  /* ----- Pricing basics ----- */
   const [fuel, setFuel] = useState<"diesel" | "petrol">("diesel");
   const [litres, setLitres] = useState<number>(1000);
   const unitPetrol = 0.46;
@@ -28,134 +24,103 @@ export default function OrderPage() {
   const unitPrice = useMemo(() => (fuel === "diesel" ? unitDiesel : unitPetrol), [fuel]);
   const total = useMemo(() => litres * unitPrice, [litres, unitPrice]);
 
-  /* ----- Checkout form basics ----- */
-  const [deliveryDate, setDeliveryDate] = useState<string>("");
-  const [email, setEmail] = useState<string>("");
-  const [fullName, setFullName] = useState<string>("");
-  const [address1, setAddress1] = useState<string>("");
-  const [address2, setAddress2] = useState<string>("");
-  const [postcode, setPostcode] = useState<string>("");
-  const [city, setCity] = useState<string>("");
-
-  /* ----- Terms gate for payment ----- */
+  /* ----- Terms & CTA state ----- */
   const [acceptedTerms, setAcceptedTerms] = useState(false);
-  useEffect(() => setAcceptedTerms(localStorage.getItem(TERMS_LS_KEY) === "1"), []);
-  useEffect(() => {
-    try {
-      localStorage.setItem(TERMS_LS_KEY, acceptedTerms ? "1" : "0");
-    } catch {}
-  }, [acceptedTerms]);
+  const [starting, setStarting] = useState(false);
 
-  /* ----- Tank option & contract status (per option) ----- */
-  type CStat = "none" | "signed" | "approved";
+  /* ----- Tank option & panels ----- */
   const [tankOption, setTankOption] = useState<"none" | "rent" | "buy">("none");
-  const [contractStatus, setContractStatus] = useState<{ buy: CStat; rent: CStat }>({
-    buy: "none",
-    rent: "none",
-  });
-
-  // Load local status/email; then refresh from server if we know an email
-  useEffect(() => {
-    try {
-      setContractStatus({
-        buy: ((localStorage.getItem(LS_BUY) as CStat) || "none"),
-        rent: ((localStorage.getItem(LS_RENT) as CStat) || "none"),
-      });
-      const e = localStorage.getItem(LS_EMAIL) || "";
-      if (e) setEmail(e);
-      if (e) {
-        refreshServerStatus(e, "buy");
-        refreshServerStatus(e, "rent");
-      }
-    } catch {}
-  }, []);
-
-  async function refreshServerStatus(emailVal: string, opt: "buy" | "rent") {
-    try {
-      const res = await fetch(`/api/contracts/latest?option=${opt}&email=${encodeURIComponent(emailVal)}`);
-      const j = await res.json();
-      if (j?.exists) {
-        setContractStatus((s) => {
-          const next = { ...s, [opt]: j.approved ? ("approved" as CStat) : ("signed" as CStat) };
-          localStorage.setItem(opt === "buy" ? LS_BUY : LS_RENT, next[opt]);
-          return next;
-        });
-      }
-    } catch {}
-  }
-
-  function markSigned(opt: "buy" | "rent", emailJustUsed: string) {
-    setContractStatus((s) => {
-      const next = { ...s, [opt]: "signed" as CStat };
-      try {
-        localStorage.setItem(opt === "buy" ? LS_BUY : LS_RENT, "signed");
-        if (emailJustUsed) {
-          localStorage.setItem(LS_EMAIL, emailJustUsed);
-          setEmail(emailJustUsed);
-        }
-      } catch {}
-      return next;
-    });
-  }
-
-  const contractNeeded = tankOption === "rent" || tankOption === "buy";
-
-  // NEW: stricter gate – RENT must be APPROVED (not just signed)
-  const contractGateOk =
-    tankOption === "none" ||
-    (tankOption === "buy" && contractStatus.buy !== "none") ||
-    (tankOption === "rent" && contractStatus.rent === "approved");
-
-  const payDisabled = !acceptedTerms || !contractGateOk;
-
-  /* ----- ROI & Contract modals ----- */
   const [showROI, setShowROI] = useState<null | "rent" | "buy">(null);
   const [showContract, setShowContract] = useState<null | "rent" | "buy">(null);
 
-  /* ----- Submit to Stripe Checkout (server creates session) ----- */
-  const [submitting, setSubmitting] = useState(false);
+  /* ----- Contract status (pulled from API by email) ----- */
+  const [buySigned, setBuySigned] = useState(false);
+  const [rentSigned, setRentSigned] = useState(false);
+  const [rentApproved, setRentApproved] = useState(false);
 
+  /* ----- Controlled inputs (used by checkout API) ----- */
+  const [emailInput, setEmailInput] = useState("");
+  const [fullNameInput, setFullNameInput] = useState("");
+  const [address1Input, setAddress1Input] = useState("");
+  const [address2Input, setAddress2Input] = useState("");
+  const [cityInput, setCityInput] = useState("");
+  const [postcodeInput, setPostcodeInput] = useState("");
+
+  /* ----- When email changes, fetch latest contract states for both options ----- */
+  useEffect(() => {
+    let abort = false;
+    async function load(option: "buy" | "rent") {
+      if (!emailInput) return { exists: false, approved: false };
+      const r = await fetch(`/api/contracts/latest?option=${option}&email=${encodeURIComponent(emailInput)}`);
+      const j = await r.json().catch(() => ({ exists: false, approved: false }));
+      return j as { exists?: boolean; approved?: boolean };
+    }
+    (async () => {
+      if (!emailInput) {
+        if (!abort) {
+          setBuySigned(false);
+          setRentSigned(false);
+          setRentApproved(false);
+        }
+        return;
+      }
+      const [b, r] = await Promise.all([load("buy"), load("rent")]);
+      if (!abort) {
+        setBuySigned(Boolean(b?.exists));
+        setRentSigned(Boolean(r?.exists));
+        setRentApproved(Boolean(r?.approved));
+      }
+    })();
+    return () => {
+      abort = true;
+    };
+  }, [emailInput]);
+
+  /* ------------------------------ Actions ------------------------------ */
   async function onSubmitOrder(e: React.FormEvent) {
     e.preventDefault();
-    if (payDisabled) return;
+    if (!acceptedTerms) return;
+    // RENT gating — only allow payment when admin has approved
+    if (tankOption === "rent" && !rentApproved) return;
 
-    // minor client validation
-    if (!email || !fullName || !address1 || !postcode) {
-      alert("Please complete your contact details before payment.");
-      return;
-    }
-
-    setSubmitting(true);
     try {
-      // Use your server endpoint that creates a Checkout Session
-      // This version creates an "orders" row and returns { url }
-      const r = await fetch("/api/stripe/checkout/create", {
+      setStarting(true);
+      const resp = await fetch("/api/stripe/checkout/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userEmail: email,
+          userEmail: emailInput,
           fuel,
           litres,
-          deliveryDate: deliveryDate || null,
-          name: fullName,
-          address: `${address1}${address2 ? ", " + address2 : ""}, ${city}`,
-          postcode,
+          deliveryDate: null,
+          name: fullNameInput || null,
+          address:
+            (address1Input || address2Input
+              ? `${address1Input} ${address2Input}`.trim()
+              : null) || null,
+          postcode: postcodeInput || null,
         }),
       });
-      const j = await r.json();
-      if (!r.ok || !j?.url) throw new Error(j?.error || "Could not start checkout");
-      window.location.href = j.url; // redirect to Stripe
-    } catch (err: any) {
-      alert(err?.message || "Payment error");
+      const json = await resp.json();
+      if (!resp.ok || !json?.url) {
+        alert(json?.error || "Failed to create order");
+        return;
+      }
+      window.location.href = json.url as string;
+    } catch (e: any) {
+      alert(e?.message || "Failed to create order");
     } finally {
-      setSubmitting(false);
+      setStarting(false);
     }
   }
 
   return (
     <main className="min-h-screen bg-[#071B33] text-white">
+      {/* Top bar */}
       <div className="mx-auto flex w-full max-w-6xl items-center justify-end px-4 pt-6">
-        <a href="/client-dashboard" className="text-sm text-white/80 hover:text-white">Back to Dashboard</a>
+        <a href="/client-dashboard" className="text-sm text-white/80 hover:text-white">
+          Back to Dashboard
+        </a>
       </div>
 
       <section className="mx-auto w-full max-w-6xl px-4">
@@ -171,11 +136,11 @@ export default function OrderPage() {
               "Variety of sizes and specifications.",
               "Best for long-term sites and high-volume usage.",
             ]}
+            statusBadge={buySigned ? "Contract signed" : undefined}
             onOpenROI={() => setShowROI("buy")}
             onStartContract={() => setShowContract("buy")}
             selected={tankOption === "buy"}
             onSelect={() => setTankOption("buy")}
-            status={contractStatus.buy}
           />
 
           <TankPanel
@@ -184,13 +149,15 @@ export default function OrderPage() {
             bullets={[
               "Flexible rental plans (short & long term).",
               "Maintenance and support included.",
-              "Ideal for temporary sites and events.",
+              "Ideal for temp sites and events.",
             ]}
+            statusBadge={
+              rentApproved ? "Approved" : rentSigned ? "Awaiting admin approval" : undefined
+            }
             onOpenROI={() => setShowROI("rent")}
             onStartContract={() => setShowContract("rent")}
             selected={tankOption === "rent"}
             onSelect={() => setTankOption("rent")}
-            status={contractStatus.rent}
           />
         </div>
 
@@ -228,8 +195,6 @@ export default function OrderPage() {
             <Field label="Delivery date">
               <input
                 type="date"
-                value={deliveryDate}
-                onChange={(e) => setDeliveryDate(e.target.value)}
                 className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
               />
             </Field>
@@ -237,51 +202,48 @@ export default function OrderPage() {
             <Field label="Your email (receipt)">
               <input
                 type="email"
-                value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  localStorage.setItem(LS_EMAIL, e.target.value);
-                }}
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
                 className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
               />
             </Field>
 
             <Field className="md:col-span-2" label="Full name">
               <input
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
+                value={fullNameInput}
+                onChange={(e) => setFullNameInput(e.target.value)}
                 className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
               />
             </Field>
 
             <Field label="Address line 1">
               <input
-                value={address1}
-                onChange={(e) => setAddress1(e.target.value)}
+                value={address1Input}
+                onChange={(e) => setAddress1Input(e.target.value)}
                 className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
               />
             </Field>
 
             <Field label="Address line 2">
               <input
-                value={address2}
-                onChange={(e) => setAddress2(e.target.value)}
+                value={address2Input}
+                onChange={(e) => setAddress2Input(e.target.value)}
                 className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
               />
             </Field>
 
             <Field label="Postcode">
               <input
-                value={postcode}
-                onChange={(e) => setPostcode(e.target.value)}
+                value={postcodeInput}
+                onChange={(e) => setPostcodeInput(e.target.value)}
                 className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
               />
             </Field>
 
             <Field label="City">
               <input
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
+                value={cityInput}
+                onChange={(e) => setCityInput(e.target.value)}
                 className="w-full rounded-xl border border-white/15 bg-[#0E2E57] p-2 outline-none"
               />
             </Field>
@@ -304,56 +266,34 @@ export default function OrderPage() {
                 ))}
               </div>
 
-              {tankOption === "none" && (
-                <p className="mt-2 text-sm text-white/70">No tank selected — you can order fuel only.</p>
-              )}
-
-              {tankOption === "buy" && (
-                <p className="mt-2 text-sm text-white/70">
-                  Contract required:{" "}
-                  {contractStatus.buy !== "none" ? (
-                    <span className="text-green-400 font-medium">Signed & saved</span>
-                  ) : (
-                    <>
-                      <span className="text-red-300">Not yet signed</span> —{" "}
-                      <button
-                        type="button"
-                        className="underline underline-offset-4 hover:text-white"
-                        onClick={() => setShowContract("buy")}
-                      >
-                        start contract
-                      </button>
-                      .
-                    </>
-                  )}
-                </p>
-              )}
-
-              {tankOption === "rent" && (
-                <p className="mt-2 text-sm text-white/70">
-                  Contract required:{" "}
-                  {contractStatus.rent === "approved" ? (
-                    <span className="text-green-400 font-medium">Approved</span>
-                  ) : contractStatus.rent === "signed" ? (
-                    <>
-                      <span className="text-yellow-300 font-medium">Signed (awaiting approval)</span> — admin
-                      approval required before payment.
-                    </>
-                  ) : (
-                    <>
-                      <span className="text-red-300">Not yet signed</span> —{" "}
-                      <button
-                        type="button"
-                        className="underline underline-offset-4 hover:text-white"
-                        onClick={() => setShowContract("rent")}
-                      >
-                        start contract
-                      </button>
-                      .
-                    </>
-                  )}
-                </p>
-              )}
+              {/* Helpful status line */}
+              <div className="mt-2 text-sm text-white/70">
+                {tankOption === "none" && <>No tank selected — you can order fuel only.</>}
+                {tankOption === "buy" && (
+                  <>
+                    Contract required:{" "}
+                    {buySigned ? (
+                      <span className="font-medium text-green-400">Signed</span>
+                    ) : (
+                      <span className="text-red-300">Not signed</span>
+                    )}
+                    .
+                  </>
+                )}
+                {tankOption === "rent" && (
+                  <>
+                    Contract required:{" "}
+                    {rentApproved ? (
+                      <span className="font-medium text-green-400">Approved</span>
+                    ) : rentSigned ? (
+                      <span className="font-medium text-yellow-300">Signed (awaiting admin approval)</span>
+                    ) : (
+                      <span className="text-red-300">Not signed</span>
+                    )}{" "}
+                    — payment enabled only after approval.
+                  </>
+                )}
+              </div>
             </Field>
           </div>
 
@@ -378,35 +318,54 @@ export default function OrderPage() {
             <div className="flex items-center justify-end gap-3">
               <button
                 type="submit"
-                disabled={payDisabled || submitting}
+                disabled={
+                  starting ||
+                  !acceptedTerms ||
+                  (tankOption === "rent" && !rentApproved)
+                }
                 className={`rounded-xl px-5 py-2 font-semibold ${
-                  payDisabled || submitting
+                  starting || !acceptedTerms || (tankOption === "rent" && !rentApproved)
                     ? "cursor-not-allowed bg-yellow-500/50 text-[#041F3E]"
                     : "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
                 }`}
               >
-                {submitting ? "Starting checkout…" : "Pay with Stripe"}
+                {starting ? "Starting checkout…" : "Pay with Stripe"}
               </button>
             </div>
           </div>
         </form>
 
+        <p className="mt-3 text-center text-xs text-white/60">
+          Tip: If you select <b>Rent</b>, payment is disabled until an admin approves your rental
+          contract.
+        </p>
+
         <footer className="flex items-center justify-center py-10 text-sm text-white/60">
-          <span className="text-white/70">Tip:</span>&nbsp; If you select <b>Rent</b>, payment is disabled until an admin approves your rental contract.
+          © {new Date().getFullYear()} FuelFlow. All rights reserved.
         </footer>
       </section>
 
       {/* ROI modal */}
       {showROI && <RoiModal option={showROI} onClose={() => setShowROI(null)} />}
 
-      {/* Contract modal */}
+      {/* Contract modal (re-use your existing flow) */}
       {showContract && (
         <ContractModal
           option={showContract}
           onClose={() => setShowContract(null)}
-          onSigned={(e) => markSigned(showContract, e)}
+          onSigned={() => {
+            // After signing, re-fetch statuses by touching email state
+            setTimeout(() => setEmailInput((v) => v), 50);
+          }}
           fuel={fuel}
           litres={litres}
+          // pass current contact details as defaults
+          defaultName={fullNameInput}
+          defaultEmail={emailInput}
+          defaultAddr1={address1Input}
+          defaultAddr2={address2Input}
+          defaultCity={cityInput}
+          defaultPostcode={postcodeInput}
         />
       )}
     </main>
@@ -450,7 +409,7 @@ function TankPanel({
   onStartContract,
   onSelect,
   selected,
-  status, // 'none' | 'signed' | 'approved'
+  statusBadge,
 }: {
   type: "buy" | "rent";
   title: string;
@@ -459,18 +418,22 @@ function TankPanel({
   onStartContract: () => void;
   onSelect: () => void;
   selected: boolean;
-  status: "none" | "signed" | "approved";
+  statusBadge?: string;
 }) {
-  const hasActive = status === "signed" || status === "approved";
-
   return (
-    <div className={`rounded-2xl border p-6 ${selected ? "border-yellow-400 bg-white/5" : "border-white/10 bg-white/5"}`}>
+    <div
+      className={`rounded-2xl border p-6 ${
+        selected ? "border-yellow-400 bg-white/5" : "border-white/10 bg-white/5"
+      }`}
+    >
       <div className="flex items-center justify-between">
         <h3 className="text-2xl font-semibold">{title}</h3>
         <button
           type="button"
           onClick={onSelect}
-          className={`rounded-xl px-3 py-1 text-sm ${selected ? "bg-yellow-400 text-[#041F3E]" : "border border-white/20 bg-white/10"}`}
+          className={`rounded-xl px-3 py-1 text-sm ${
+            selected ? "bg-yellow-400 text-[#041F3E]" : "border border-white/20 bg-white/10"
+          }`}
         >
           {selected ? "Selected" : "Select"}
         </button>
@@ -485,7 +448,7 @@ function TankPanel({
         ))}
       </ul>
 
-      <div className="mt-5 flex flex-wrap items-center gap-3">
+      <div className="mt-4 flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={onOpenROI}
@@ -493,19 +456,25 @@ function TankPanel({
         >
           Open ROI
         </button>
-
-        {/* Replace Start Contract based on status */}
-        {type === "buy" && hasActive && <span className="text-green-400 font-medium">Contract signed</span>}
-        {type === "rent" && status === "signed" && <span className="text-yellow-300 font-medium">Awaiting admin approval</span>}
-        {type === "rent" && status === "approved" && <span className="text-green-400 font-medium">Approved</span>}
-        {status === "none" && (
-          <button
-            type="button"
-            onClick={onStartContract}
-            className="rounded-xl bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400"
+        <button
+          type="button"
+          onClick={onStartContract}
+          className="rounded-xl bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400"
+        >
+          Start Contract
+        </button>
+        {statusBadge && (
+          <span
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              statusBadge === "Approved"
+                ? "bg-green-500/20 text-green-300"
+                : statusBadge.includes("Awaiting")
+                ? "bg-yellow-500/20 text-yellow-300"
+                : "bg-green-500/20 text-green-300"
+            }`}
           >
-            Start Contract
-          </button>
+            {statusBadge}
+          </span>
         )}
       </div>
     </div>
@@ -535,16 +504,34 @@ function RoiModal({ option, onClose }: { option: "buy" | "rent"; onClose: () => 
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <Field label="Market price (GBP/L)">
-            <input type="number" min={0} step="0.01" value={market} onChange={(e) => setMarket(parseFloat(e.target.value || "0"))}
-                   className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              value={market}
+              onChange={(e) => setMarket(parseFloat(e.target.value || "0"))}
+              className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none"
+            />
           </Field>
           <Field label="FuelFlow cheaper by (GBP/L)">
-            <input type="number" min={0} step="0.01" value={diff} onChange={(e) => setDiff(parseFloat(e.target.value || "0"))}
-                   className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              value={diff}
+              onChange={(e) => setDiff(parseFloat(e.target.value || "0"))}
+              className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none"
+            />
           </Field>
           <Field label="Monthly consumption (L)">
-            <input type="number" min={0} step="1" value={consumption} onChange={(e) => setConsumption(parseInt(e.target.value || "0", 10))}
-                   className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
+            <input
+              type="number"
+              min={0}
+              step="1"
+              value={consumption}
+              onChange={(e) => setConsumption(parseInt(e.target.value || "0", 10))}
+              className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none"
+            />
           </Field>
         </div>
 
@@ -575,22 +562,34 @@ function ContractModal({
   onSigned,
   fuel,
   litres,
+  defaultName,
+  defaultEmail,
+  defaultAddr1,
+  defaultAddr2,
+  defaultCity,
+  defaultPostcode,
 }: {
   option: "buy" | "rent";
   onClose: () => void;
-  onSigned: (emailUsed: string) => void;
+  onSigned: () => void;
   fuel: "diesel" | "petrol";
   litres: number;
+  defaultName?: string;
+  defaultEmail?: string;
+  defaultAddr1?: string;
+  defaultAddr2?: string;
+  defaultCity?: string;
+  defaultPostcode?: string;
 }) {
   // lightweight form for contracting
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
+  const [fullName, setFullName] = useState(defaultName || "");
+  const [email, setEmail] = useState(defaultEmail || "");
   const [company, setCompany] = useState("");
   const [phone, setPhone] = useState("");
-  const [address1, setAddress1] = useState("");
-  const [address2, setAddress2] = useState("");
-  const [city, setCity] = useState("");
-  const [postcode, setPostcode] = useState("");
+  const [address1, setAddress1] = useState(defaultAddr1 || "");
+  const [address2, setAddress2] = useState(defaultAddr2 || "");
+  const [city, setCity] = useState(defaultCity || "");
+  const [postcode, setPostcode] = useState(defaultPostcode || "");
 
   const [tankSize, setTankSize] = useState<number>(5000);
   const [monthlyConsumption, setMonthlyConsumption] = useState<number>(10000);
@@ -657,7 +656,7 @@ function ContractModal({
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to save contract.");
       setMsg({ type: "ok", text: "Contract signed and saved." });
-      onSigned(email); // remember email + mark status
+      onSigned();
       setTimeout(onClose, 900);
     } catch (e: any) {
       setMsg({ type: "err", text: e.message || "Failed to save contract." });
@@ -711,23 +710,21 @@ function ContractModal({
               </div>
             </div>
 
-            <h3 className="mt-6 mb-2 text-sm font-semibold text-white/90">Tank & pricing assumptions</h3>
+            <h3 className="mt-6 mb-2 text-sm font-semibold text-white/90">
+              Tank & pricing assumptions
+            </h3>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Tank size (L)">
-                <input type="number" min={0} value={tankSize} onChange={(e) => setTankSize(parseInt(e.target.value || "0", 10))}
-                       className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
+                <input type="number" min={0} value={tankSize} onChange={(e) => setTankSize(parseInt(e.target.value || "0", 10))} className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
               </Field>
               <Field label="Monthly consumption (L)">
-                <input type="number" min={0} value={monthlyConsumption} onChange={(e) => setMonthlyConsumption(parseInt(e.target.value || "0", 10))}
-                       className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
+                <input type="number" min={0} value={monthlyConsumption} onChange={(e) => setMonthlyConsumption(parseInt(e.target.value || "0", 10))} className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
               </Field>
               <Field label="Market price (GBP/L)">
-                <input type="number" step="0.01" min={0} value={market} onChange={(e) => setMarket(parseFloat(e.target.value || "0"))}
-                       className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
+                <input type="number" step="0.01" min={0} value={market} onChange={(e) => setMarket(parseFloat(e.target.value || "0"))} className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
               </Field>
               <Field label="FuelFlow cheaper by (GBP/L)">
-                <input type="number" step="0.01" min={0} value={diff} onChange={(e) => setDiff(parseFloat(e.target.value || "0"))}
-                       className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
+                <input type="number" step="0.01" min={0} value={diff} onChange={(e) => setDiff(parseFloat(e.target.value || "0"))} className="w-full rounded-xl border border-white/15 bg-[#0A2446] p-2 outline-none" />
               </Field>
             </div>
 
@@ -776,7 +773,9 @@ function ContractModal({
                 />
               </div>
 
-              {msg && <p className={msg.type === "ok" ? "text-green-400" : "text-red-300"}>{msg.text}</p>}
+              {msg && (
+                <p className={msg.type === "ok" ? "text-green-400" : "text-red-300"}>{msg.text}</p>
+              )}
 
               <div className="flex items-center justify-end gap-3">
                 <button onClick={onClose} type="button" className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 hover:bg-white/10">
@@ -803,5 +802,4 @@ function ContractModal({
     </div>
   );
 }
-
 
