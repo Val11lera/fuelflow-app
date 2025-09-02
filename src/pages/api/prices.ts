@@ -6,32 +6,25 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
-/** Returns today's prices as { petrol: number, diesel: number } in GBP/L */
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(_: NextApiRequest, res: NextApiResponse) {
   try {
-    // Try the table you have: latest_daily_prices (fuel, total_price)
-    const { data, error } = await supabase
-      .from("latest_daily_prices")
+    let { data, error } = await supabase
+      .from("latest_prices")
       .select("fuel,total_price");
 
-    if (error) throw error;
-
-    const out: Record<string, number> = {};
-    (data || []).forEach((r: any) => {
-      if (r?.fuel && r?.total_price != null) out[r.fuel] = Number(r.total_price);
-    });
-
-    // sane defaults if something is missing
-    if (out.petrol == null && out.diesel == null) {
-      return res.status(404).json({ error: "No prices found" });
+    if (error || !data?.length) {
+      // fallback to latest_daily_prices just in case
+      const fb = await supabase
+        .from("latest_daily_prices")
+        .select("fuel,total_price");
+      if (fb.error || !fb.data?.length) {
+        return res.status(500).json({ error: "No price data" });
+      }
+      return res.status(200).json(fb.data);
     }
 
-    return res.status(200).json({
-      petrol: out.petrol ?? 0,
-      diesel: out.diesel ?? 0,
-    });
+    return res.status(200).json(data);
   } catch (e: any) {
-    console.error("prices api error", e?.message || e);
-    return res.status(500).json({ error: "Failed to load prices" });
+    return res.status(500).json({ error: e?.message || "Server error" });
   }
 }
