@@ -1,6 +1,4 @@
 // src/pages/terms.tsx
-// src/pages/terms.tsx
-// src/pages/terms.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -20,12 +18,8 @@ export default function TermsPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
 
-  // deep-link metadata (keep your originals)
-  const [ticketId, setTicketId] = useState<string | null>(null);
-  const [source, setSource] = useState<string | null>(null);
-
-  // where to go back after accepting
-  const [returnTo, setReturnTo] = useState<string>("/order");
+  // where to return after acceptance
+  const [returnTo, setReturnTo] = useState<string>("/client-dashboard");
 
   // hCaptcha
   const [captchaToken, setCaptchaToken] = useState<string>("");
@@ -34,18 +28,16 @@ export default function TermsPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    setTicketId(params.get("ticket_id"));
-    setSource(params.get("source"));
     const r = params.get("return");
-    const em = params.get("email");
-    if (r) setReturnTo(r);
-    if (em) setEmail(em);
+    const e = params.get("email");
+    if (r) setReturnTo(r.startsWith("/") ? r : "/client-dashboard");
+    if (e) setEmail(e);
 
     const obs = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) setScrolledEnough(true);
+        if (entries.some((x) => x.isIntersecting)) setScrolledEnough(true);
       },
-      { threshold: 0.2 }
+      { threshold: 0.25 }
     );
     if (endRef.current) obs.observe(endRef.current);
     return () => obs.disconnect();
@@ -68,9 +60,7 @@ export default function TermsPage() {
           version: VERSION,
           name: name || null,
           email: email || null,
-          ticket_id: ticketId,
-          source,
-          captchaToken, // sent (server may ignore if not verifying)
+          captchaToken,
         }),
       });
 
@@ -82,11 +72,11 @@ export default function TermsPage() {
       setSubmitted(true);
       setCaptchaToken("");
 
-      // redirect straight back so the order page unlocks the checkbox
-      const back = `${returnTo}?accepted=1${
-        email ? `&email=${encodeURIComponent(email)}` : ""
-      }`;
-      window.location.href = back;
+      // auto-return with flags so /order can unlock the checkbox & restore email
+      const ret = `${returnTo}?accepted=1${email ? `&email=${encodeURIComponent(email)}` : ""}`;
+      setTimeout(() => {
+        window.location.href = ret;
+      }, 900);
     } catch (e: any) {
       setError(e?.message || "Something went wrong.");
     } finally {
@@ -114,31 +104,16 @@ export default function TermsPage() {
           <div className="ml-1 text-lg font-semibold">Terms & Conditions</div>
 
           <div className="ml-auto flex gap-2">
-            <a
-              href={returnTo}
+            <button
+              onClick={() => window.print()}
               className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
             >
-              Back to order
-            </a>
-            <a
-              href="https://fuelflow.co.uk"
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-            >
-              Back to fuelflow.co.uk
-            </a>
-            <a
-              href="/quote"
-              className="rounded-lg bg-yellow-500 px-3 py-2 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
-            >
-              Go to Quote
-            </a>
+              Print / Save PDF
+            </button>
           </div>
         </div>
       </header>
 
-        {/* MAIN */}
       <main className="relative z-10 mx-auto max-w-6xl px-5 py-8 md:py-10">
         {/* Title Row */}
         <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -147,15 +122,6 @@ export default function TermsPage() {
             <p className="text-white/70">
               Version {VERSION} · Last updated {LAST_UPDATED}
             </p>
-          </div>
-
-          <div className="flex items-center gap-2 text-sm">
-            <button
-              onClick={() => window.print()}
-              className="rounded-lg bg-white/10 px-3 py-2 hover:bg-white/15"
-            >
-              Print / Save PDF
-            </button>
           </div>
         </div>
 
@@ -171,101 +137,106 @@ export default function TermsPage() {
           {/* Accept Card */}
           <aside className="lg:col-span-4">
             <div className="sticky top-6 rounded-2xl border border-white/10 bg-white/[0.06] p-6 shadow-2xl backdrop-blur-sm">
-              <h3 className="text-lg font-semibold mb-2">Accept these terms</h3>
-              <p className="text-sm text-white/80 mb-4">
-                Please read the terms. You’ll need to scroll near the end, pass hCaptcha and tick
-                the box before accepting.
-              </p>
+              {!submitted ? (
+                <>
+                  <h3 className="text-lg font-semibold mb-2">Accept these terms</h3>
+                  <p className="text-sm text-white/80 mb-4">
+                    Please read the terms. You’ll need to scroll near the end, pass hCaptcha and tick
+                    the box before accepting.
+                  </p>
 
-              <div className="flex gap-2 mb-3">
-                <input
-                  id="accept"
-                  type="checkbox"
-                  className="accent-yellow-500 mt-1"
-                  checked={checked}
-                  onChange={(e) => setChecked(e.target.checked)}
-                />
-                <label htmlFor="accept" className="text-sm">
-                  I confirm I have read and agree to FuelFlow’s Terms & Conditions.
-                </label>
-              </div>
+                  <div className="flex gap-2 mb-3">
+                    <input
+                      id="accept"
+                      type="checkbox"
+                      className="accent-yellow-500 mt-1"
+                      checked={checked}
+                      onChange={(e) => setChecked(e.target.checked)}
+                    />
+                    <label htmlFor="accept" className="text-sm">
+                      I confirm I have read and agree to FuelFlow’s Terms & Conditions.
+                    </label>
+                  </div>
 
-              <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-white/70 mb-1">Your name (optional)</label>
-                  <input
-                    className="w-full rounded-lg border border-white/10 bg-white/[0.06] p-2 text-sm placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Jane Smith"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-white/70 mb-1">Email (optional)</label>
-                  <input
-                    type="email"
-                    className="w-full rounded-lg border border-white/10 bg-white/[0.06] p-2 text-sm placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="name@company.com"
-                  />
-                </div>
-              </div>
+                  <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-white/70 mb-1">Your name (optional)</label>
+                      <input
+                        className="w-full rounded-lg border border-white/10 bg-white/[0.06] p-2 text-sm placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder="Jane Smith"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-white/70 mb-1">Email (optional)</label>
+                      <input
+                        type="email"
+                        className="w-full rounded-lg border border-white/10 bg-white/[0.06] p-2 text-sm placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="name@company.com"
+                      />
+                    </div>
+                  </div>
 
-              {!scrolledEnough && (
-                <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.06] p-2 text-xs text-white/70">
-                  Scroll to the end of the terms to enable the Accept button.
-                </div>
+                  {!scrolledEnough && (
+                    <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.06] p-2 text-xs text-white/70">
+                      Scroll to the end of the terms to enable the Accept button.
+                    </div>
+                  )}
+
+                  <div className="mb-3">
+                    <HCaptcha
+                      sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
+                      onVerify={(t) => setCaptchaToken(t)}
+                      onExpire={() => setCaptchaToken("")}
+                      onClose={() => setCaptchaToken("")}
+                      theme="dark"
+                    />
+                  </div>
+
+                  {error && (
+                    <div className="mb-3 rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">
+                      {error}
+                    </div>
+                  )}
+
+                  <button
+                    disabled={!acceptEnabled}
+                    onClick={onAccept}
+                    className="w-full rounded-xl bg-yellow-500 py-2.5 font-semibold text-[#041F3E]
+                               hover:bg-yellow-400 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {submitting ? "Saving…" : "Accept Terms"}
+                  </button>
+
+                  <p className="mt-3 text-xs text-white/60">
+                    By accepting, you enter into a binding agreement with FuelFlow. IP and user-agent
+                    are recorded to evidence acceptance.
+                  </p>
+                </>
+              ) : (
+                <AcceptedCard returnTo={returnTo} />
               )}
+            </div>
 
-              <div className="mb-3">
-                <HCaptcha
-                  sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
-                  onVerify={(t) => setCaptchaToken(t)}
-                  onExpire={() => setCaptchaToken("")}
-                  onClose={() => setCaptchaToken("")}
-                  theme="dark"
-                />
-              </div>
-
-              {error && (
-                <div className="mb-3 rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">
-                  {error}
-                </div>
-              )}
-
-              <button
-                disabled={!acceptEnabled}
-                onClick={onAccept}
-                className="w-full rounded-xl bg-yellow-500 py-2.5 font-semibold text-[#041F3E]
-                           hover:bg-yellow-400 disabled:opacity-60 disabled:cursor-not-allowed"
+            {/* Quick links */}
+            <div className="mt-4 grid grid-cols-1 gap-2">
+              <a
+                className="rounded-lg bg-white/10 px-3 py-2 text-center hover:bg-white/15"
+                href="https://fuelflow.co.uk"
+                target="_blank"
+                rel="noreferrer"
               >
-                {submitting ? "Saving…" : "Accept Terms"}
-              </button>
-
-              {/* Quick links */}
-              <div className="mt-4 grid grid-cols-1 gap-2">
-                <a
-                  className="rounded-lg bg-white/10 px-3 py-2 text-center hover:bg-white/15"
-                  href={returnTo}
-                >
-                  Back to order
-                </a>
-                <a
-                  className="rounded-lg bg-white/10 px-3 py-2 text-center hover:bg-white/15"
-                  href="https://fuelflow.co.uk"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Back to fuelflow.co.uk
-                </a>
-                <a
-                  className="rounded-lg bg-yellow-500 px-3 py-2 text-center font-semibold text-[#041F3E] hover:bg-yellow-400"
-                  href="/quote"
-                >
-                  Go to Quote
-                </a>
-              </div>
+                Back to fuelflow.co.uk
+              </a>
+              <a
+                className="rounded-lg bg-yellow-500 px-3 py-2 text-center font-semibold text-[#041F3E] hover:bg-yellow-400"
+                href={returnTo}
+              >
+                Back to previous page
+              </a>
             </div>
           </aside>
         </div>
@@ -336,7 +307,7 @@ function Section({
   );
 }
 
-/* ------------------- LEGAL BODY (original content preserved) ------------------- */
+/* ------------------- LEGAL BODY (full text) ------------------- */
 
 function LegalBody() {
   return (
@@ -599,6 +570,22 @@ function LegalBody() {
           </li>
         </ul>
       </Section>
+    </div>
+  );
+}
+
+function AcceptedCard({ returnTo }: { returnTo: string }) {
+  return (
+    <div className="text-center">
+      <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-full bg-green-500/20 text-green-300">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+          <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </div>
+      <h4 className="text-lg font-semibold">Thanks — terms accepted</h4>
+      <p className="mt-1 text-sm text-white/70">
+        Returning to <code className="text-white/80">{returnTo}</code>…
+      </p>
     </div>
   );
 }
