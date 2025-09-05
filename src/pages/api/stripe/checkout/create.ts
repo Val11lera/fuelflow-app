@@ -1,5 +1,4 @@
 // src/pages/api/stripe/checkout/create.ts
-// src/pages/api/stripe/checkout/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
@@ -16,9 +15,7 @@ function getBaseUrl(req: NextApiRequest) {
   return `${proto}://${host}`;
 }
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: "2024-06-20",
-});
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, { apiVersion: "2024-06-20" });
 
 const supabase = createClient(
   process.env.SUPABASE_URL as string,
@@ -33,39 +30,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const {
-      fuel,
-      litres,
-      deliveryDate,
-      full_name,
-      email,
-      address_line1,
-      address_line2,
-      city,
-      postcode,
-    } = (req.body || {}) as Record<string, any>;
+      fuel, litres, deliveryDate, full_name, email,
+      address_line1, address_line2, city, postcode,
+    } = req.body || {};
 
     const litresNum = Number(litres);
-    if (!fuel || !Number.isFinite(litresNum) || litresNum <= 0) {
+    if (!fuel || !["petrol", "diesel"].includes(fuel) || !Number.isFinite(litresNum) || litresNum <= 0) {
       return res.status(400).json({ error: "Missing/invalid fuel or litres" });
     }
 
-    // price lookup (view -> fallback)
+    // price lookup from latest_prices, fallback to latest_daily_prices
     let unitPriceGBP: number | null = null;
-
     let p1 = await supabase.from("latest_prices").select("fuel,total_price").eq("fuel", fuel).maybeSingle();
     if (p1.data?.total_price != null) {
       unitPriceGBP = Number(p1.data.total_price);
     } else {
-      const p2 = await supabase
-        .from("latest_daily_prices")
-        .select("fuel,total_price")
-        .eq("fuel", fuel)
-        .maybeSingle();
+      const p2 = await supabase.from("latest_daily_prices").select("fuel,total_price").eq("fuel", fuel).maybeSingle();
       if (p2.data?.total_price != null) unitPriceGBP = Number(p2.data.total_price);
     }
-    if (unitPriceGBP == null) {
-      return res.status(500).json({ error: "Price lookup failed" });
-    }
+    if (unitPriceGBP == null) return res.status(500).json({ error: "Price lookup failed" });
 
     const unit_price_pence = Math.round(unitPriceGBP * 100);
     const total_pence = unit_price_pence * litresNum;
@@ -74,7 +57,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const ins = await supabase
       .from("orders")
       .insert({
-        user_email: typeof email === "string" ? email : null,
+        user_email: typeof email === "string" ? email.toLowerCase() : null,
         fuel,
         litres: litresNum,
         unit_price_pence,
@@ -106,7 +89,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               name: `Fuel order — ${fuel}`,
               description: `${litresNum} L @ £${(unit_price_pence / 100).toFixed(2)}/L`,
             },
-            unit_amount: total_pence,
+            unit_amount: total_pence, // charge total as one line
           },
           quantity: 1,
         },
@@ -119,13 +102,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         litres: String(litresNum),
         unit_price_pence: String(unit_price_pence),
         total_pence: String(total_pence),
-        delivery_date: deliveryDate ? String(deliveryDate) : "",
-        full_name: typeof full_name === "string" ? full_name : "",
-        email: typeof email === "string" ? email : "",
-        address_line1: typeof address_line1 === "string" ? address_line1 : "",
-        address_line2: typeof address_line2 === "string" ? address_line2 : "",
-        city: typeof city === "string" ? city : "",
-        postcode: typeof postcode === "string" ? postcode : "",
       },
     });
 
@@ -135,3 +111,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: e?.message || "create_session_failed" });
   }
 }
+
