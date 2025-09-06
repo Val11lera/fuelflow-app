@@ -1,11 +1,14 @@
 // src/pages/api/stripe/checkout/create.ts
 // src/pages/api/stripe/checkout/create.ts
+// src/pages/api/stripe/checkout/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-/** Build absolute URL that works locally and on Vercel */
+/** Absolute base URL that works on Vercel & locally */
 function getBaseUrl(req: NextApiRequest) {
+  const env = process.env.SITE_URL && process.env.SITE_URL.trim();
+  if (env) return env.replace(/\/+$/, "");
   const proto =
     (req.headers["x-forwarded-proto"] as string) ||
     (req.headers["x-forwarded-protocol"] as string) ||
@@ -36,7 +39,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const {
       fuel,               // "petrol" | "diesel"
       litres,             // number
-      deliveryDate,       // ISO string
+      deliveryDate,       // ISO string or null
       full_name,
       email,
       address_line1,
@@ -50,46 +53,48 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "Missing/invalid fuel or litres" });
     }
 
-    // ---- 1) Get current price (view then fallback) ----
+    // ---- 1) Resolve unit price (GBP/L) from views ----
     let unitPriceGBP: number | null = null;
 
-    let { data: price1 } = await supabase
+    const try1 = await supabase
       .from("latest_prices")
       .select("fuel,total_price")
       .eq("fuel", fuel)
       .maybeSingle();
 
-    if (price1?.total_price != null) {
-      unitPriceGBP = Number(price1.total_price);
+    if (try1.data?.total_price != null) {
+      unitPriceGBP = Number(try1.data.total_price);
     } else {
-      const { data: price2, error: err2 } = await supabase
+      const try2 = await supabase
         .from("latest_daily_prices")
         .select("fuel,total_price")
         .eq("fuel", fuel)
         .maybeSingle();
-      if (price2?.total_price != null) {
-        unitPriceGBP = Number(price2.total_price);
-      } else {
-        return res
-          .status(500)
-          .json({ error: `Price lookup failed: ${err2?.message || "not found"}` });
+      if (try2.data?.total_price != null) {
+        unitPriceGBP = Number(try2.data.total_price);
       }
     }
 
-    const unit_price_pence = Math.round((unitPriceGBP as number) * 100);
-    const total_pence = unit_price_pence * litresNum;
+    if (unitPriceGBP == null) {
+      return res.status(500).json({ error: "Price lookup failed" });
+    }
 
-    // ---- 2) Insert order row (status=pending) ----
+    // Pence math (integers for Stripe)
+    const unit_price_pence = Math.round(unitPriceGBP * 100);
+    const total_pence = unit_price_pence * litresNum;
+    const amountGBP = total_pence / 100; // legacy column compatibility
+
+    // ---- 2) Insert order (covering legacy NOT NULLs: product, amount) ----
     const { data: order, error: insErr } = await supabase
       .from("orders")
       .insert({
-        user_email: typeof email === "string" ? email : null,
-        // keep both fields available for your reporting
-        product: fuel,
-        fuel,
+        user_email: typeof email === "string" ? email.toLowerCase() : null,
+        product: fuel,                     // legacy column
+        fuel,                              // preferred column
         litres: litresNum,
         unit_price_pence,
         total_pence,
+        amount: amountGBP,                 // legacy column
         status: "pending",
         delivery_date: deliveryDate ?? null,
         name: typeof full_name === "string" ? full_name : null,
@@ -107,15 +112,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // ---- 3) Create Checkout Session (include session_id placeholder!) ----
+    // ---- 3) Stripe Checkout (include {CHECKOUT_SESSION_ID}) ----
     const base = getBaseUrl(req);
-    const successUrl = `${base}/checkout/success?session_id={CHECKOUT_SESSION_ID}&orderId=${order.id}`;
-    const cancelUrl = `${base}/checkout/cancel?orderId=${order.id}`;
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       customer_email: typeof email === "string" ? email : undefined,
-      client_reference_id: order.id, // handy for webhooks/reconciliation
       line_items: [
         {
           price_data: {
@@ -124,14 +126,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               name: `Fuel order — ${fuel}`,
               description: `${litresNum} L @ £${(unit_price_pence / 100).toFixed(2)}/L`,
             },
-            // total as a single item
+            // we charge the total as one line (you could also multiply unit * litres)
             unit_amount: total_pence,
           },
           quantity: 1,
         },
       ],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
+      // IMPORTANT: pass session_id placeholder so success page can retrieve details
+      success_url: `${base}/checkout/success?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${base}/checkout/cancel?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
       metadata: {
         order_id: order.id,
         fuel: String(fuel),
@@ -157,9 +160,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         },
       },
     });
-
-    // (Optional) You can upsert the cs_id immediately if you like:
-    // await supabase.from("payments").upsert({ cs_id: session.id, order_id: order.id }, { onConflict: "cs_id" });
 
     return res.status(200).json({ url: session.url });
   } catch (e: any) {
