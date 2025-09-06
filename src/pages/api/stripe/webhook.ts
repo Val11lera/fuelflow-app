@@ -1,141 +1,107 @@
-import { buffer } from "micro";
+// src/pages/api/stripe/webhook.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-export const config = { api: { bodyParser: false } };
+export const config = {
+  api: { bodyParser: false }, // Stripe needs the raw body
+};
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 
-// service role (bypasses RLS)
 const supabase = createClient(
   process.env.SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
+function readRawBody(req: NextApiRequest): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(Buffer.from(c)));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
-    return res.status(405).end("Method Not Allowed");
-  }
+  if (req.method !== "POST") return res.status(405).end("Method Not Allowed");
 
   const sig = req.headers["stripe-signature"] as string | undefined;
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!sig || !secret) {
-    return res.status(400).send("Missing Stripe signature or webhook secret");
-  }
+  if (!sig) return res.status(400).send("Missing stripe-signature header");
 
   let event: Stripe.Event;
+
   try {
-    const buf = await buffer(req);
-    event = stripe.webhooks.constructEvent(buf, sig, secret);
+    const raw = await readRawBody(req);
+    event = stripe.webhooks.constructEvent(
+      raw,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET as string
+    );
+    // optional: store raw webhook for audit
+    try {
+      await supabase.from("webhook_events").insert({
+        id: event.id,
+        type: event.type,
+        raw: event as any,
+      });
+    } catch {}
   } catch (err: any) {
-    console.error("Webhook verify error:", err?.message || err);
-    return res.status(400).send(`Webhook Error: ${err?.message ?? "invalid"}`);
-  }
-
-  // idempotency store
-  try {
-    const { data: exists } = await supabase.from("webhook_events").select("id").eq("id", event.id).maybeSingle();
-    if (exists) return res.status(200).json({ received: true, duplicate: true });
-
-    const { error: insEvtErr } = await supabase.from("webhook_events").insert({
-      id: event.id,
-      type: event.type,
-      raw: event as any,
-    });
-    if (insEvtErr) {
-      console.error("DB insert error (webhook_events):", insEvtErr);
-      return res.status(500).send("DB error (webhook_events)");
-    }
-  } catch (e) {
-    console.error("Idempotency check error:", e);
-    return res.status(500).send("Idempotency error");
+    console.error("Webhook signature verification failed.", err?.message);
+    return res.status(400).send(`Webhook Error: ${err?.message ?? "bad signature"}`);
   }
 
   try {
     switch (event.type) {
       case "checkout.session.completed": {
-        const cs = event.data.object as Stripe.Checkout.Session;
-        const piId = cs.payment_intent as string | undefined;
-        let orderId = (cs.metadata?.order_id as string) || undefined;
+        const session = event.data.object as Stripe.Checkout.Session;
+        const pi = session.payment_intent as string | null;
+        const orderId = (session.metadata?.order_id as string) || null;
 
-        // Expand PaymentIntent for reliable email + amount
-        const pi = piId
-          ? await stripe.paymentIntents.retrieve(piId, { expand: ["latest_charge", "charges.data.billing_details"] })
-          : null;
-
-        const email =
-          pi?.receipt_email ??
-          (pi as any)?.charges?.data?.[0]?.billing_details?.email ??
-          cs.customer_details?.email ??
-          null;
-
-        const amountPence =
-          (typeof pi?.amount_received === "number" && pi?.amount_received) ||
-          (typeof pi?.amount === "number" && pi?.amount) ||
-          (typeof cs.amount_total === "number" && cs.amount_total) ||
-          0;
-
-        // upsert payment
         await supabase
           .from("payments")
-          .upsert(
-            {
-              pi_id: pi?.id || "unknown",
-              amount: amountPence,
-              currency: (pi?.currency || cs.currency || "gbp") as string,
-              status: (pi?.status || "succeeded") as string,
-              email,
-              order_id: orderId || null,
-              cs_id: cs.id,
-              meta: {
-                checkout_session: { id: cs.id, metadata: cs.metadata || {} },
-                payment_intent: { id: pi?.id || null, metadata: pi?.metadata || {} },
-              },
-            },
-            { onConflict: "pi_id" }
-          );
+          .insert({
+            cs_id: session.id,
+            pi_id: pi || `pi_${session.id}`, // fallback to keep unique
+            amount: session.amount_total ?? 0,
+            currency: session.currency || "gbp",
+            status: session.payment_status || "complete",
+            email: session.customer_details?.email ?? session.customer_email ?? null,
+            order_id: orderId,
+            meta: { session },
+          })
+          .select("id");
 
-        // mark order paid
-        if (orderId) {
+        if (pi && orderId) {
           await supabase
             .from("orders")
-            .update({ status: "paid", paid_at: new Date().toISOString(), stripe_pi_id: pi?.id || null })
+            .update({ status: "paid", paid_at: new Date().toISOString(), stripe_pi_id: pi })
             .eq("id", orderId);
         }
-
         break;
       }
 
       case "payment_intent.succeeded": {
         const pi = event.data.object as Stripe.PaymentIntent;
         const orderId = (pi.metadata?.order_id as string) || null;
-        const email =
-          pi.receipt_email || (pi as any)?.charges?.data?.[0]?.billing_details?.email || null;
-
-        const amountPence =
-          (typeof pi.amount_received === "number" && pi.amount_received) ||
-          (typeof pi.amount === "number" && pi.amount) ||
-          0;
 
         await supabase
           .from("payments")
           .upsert(
             {
               pi_id: pi.id,
-              amount: amountPence,
-              currency: pi.currency,
+              amount: pi.amount_received ?? pi.amount ?? 0,
+              currency: pi.currency || "gbp",
               status: pi.status,
-              email,
+              email: (pi.receipt_email as string) || null,
               order_id: orderId,
-              cs_id: null,
-              meta: { payment_intent: { id: pi.id, metadata: pi.metadata || {} } },
+              meta: { payment_intent: pi },
             },
             { onConflict: "pi_id" }
-          );
+          )
+          .select("id");
 
         if (orderId) {
           await supabase
@@ -147,14 +113,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       default:
-        // ignore others
+        // no-op for other events
         break;
     }
 
     return res.status(200).json({ received: true });
-  } catch (err: any) {
-    console.error("Processing error:", err);
-    return res.status(500).send("Webhook processing error");
+  } catch (e: any) {
+    console.error("Webhook handling error:", e);
+    return res.status(500).json({ error: e?.message || "webhook_failed" });
   }
 }
 
