@@ -7,7 +7,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------------- Types ---------------- */
+/* ---------------- Types (local, for casts only) ---------------- */
 
 type TankOption = "none" | "buy" | "rent";
 type Fuel = "diesel" | "petrol";
@@ -68,9 +68,9 @@ const termsVersion = "v1.1";
 export default function OrderPage() {
   const qp = useSearchParams();
 
-  // tiles (illustrative; your Stripe/API uses live price)
-  const unitPricePetrol = 2.27; // for display tiles only
-  const unitPriceDiesel = 2.44; // for display tiles only
+  // tiles (illustrative; live price is used server-side)
+  const unitPricePetrol = 2.27;
+  const unitPriceDiesel = 2.44;
 
   // form state
   const [fuel, setFuel] = useState<Fuel>("diesel");
@@ -109,7 +109,7 @@ export default function OrderPage() {
   // checkout
   const [startingCheckout, setStartingCheckout] = useState(false);
 
-  /* --------------- Persist form (so returning from /terms doesn’t clear) --------------- */
+  /* --------------- Persist form --------------- */
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -151,17 +151,15 @@ export default function OrderPage() {
   /* --------------- Accept terms on return from /terms --------------- */
 
   useEffect(() => {
-    // read /terms?return=/order&email=... -> /order?accepted=1&email=...
     const acceptedParam = qp.get("accepted");
     const emailParam = qp.get("email");
     if (emailParam && !email) setEmail(emailParam);
     if (acceptedParam === "1" && emailParam) {
-      // set local flag so future loads don’t need network
       localStorage.setItem(`terms:${termsVersion}:${emailParam}`, "1");
     }
   }, [qp, email]);
 
-  // Whenever email changes, verify acceptance (local then DB)
+  // Verify acceptance (local then DB)
   useEffect(() => {
     if (!email) return;
     void checkTerms(email);
@@ -177,8 +175,9 @@ export default function OrderPage() {
       }
       if (!supabase) return;
 
+      // IMPORTANT: no generic type argument here
       const { data, error } = await supabase
-        .from<TermsRow>("terms_acceptances")
+        .from("terms_acceptances")
         .select("id,email,accepted_at,version")
         .eq("email", e)
         .eq("version", termsVersion)
@@ -209,22 +208,23 @@ export default function OrderPage() {
       return;
     }
     (async () => {
+      // IMPORTANT: no generic type argument here
       const { data, error } = await supabase
-        .from<ContractRow>("contracts")
+        .from("contracts")
         .select("id,tank_option,status,email,created_at")
         .eq("email", email.toLowerCase())
-        .in("status", ["signed", "approved"] as ContractRow["status"][]);
+        .in("status", ["signed", "approved"]);
 
       if (error) {
-        // If RLS prevents this select, we’ll just not block the UI
         console.warn("contracts check error:", error.message);
         setActiveBuy(false);
         setActiveRent(false);
         return;
       }
 
-      setActiveBuy(Boolean(data?.some((r: ContractRow) => r.tank_option === "buy")));
-      setActiveRent(Boolean(data?.some((r: ContractRow) => r.tank_option === "rent")));
+      const rows = (data ?? []) as ContractRow[];
+      setActiveBuy(rows.some((r: ContractRow) => r.tank_option === "buy"));
+      setActiveRent(rows.some((r: ContractRow) => r.tank_option === "rent"));
     })();
   }, [email, showContract, contractSavedId]);
 
@@ -309,7 +309,6 @@ export default function OrderPage() {
       if (error) throw error;
       setContractSavedId(data?.id ?? null);
       setShowContract(false);
-      // re-check active flags
     } catch (e: any) {
       alert(e?.message || "Failed to save contract.");
     } finally {
@@ -537,11 +536,7 @@ export default function OrderPage() {
               <input id="terms" type="checkbox" className="h-4 w-4 accent-yellow-500" checked={accepted} readOnly />
               <label htmlFor="terms" className="text-sm">
                 I agree to the{" "}
-                <button
-                  type="button"
-                  onClick={openTerms}
-                  className="underline text-yellow-300 hover:text-yellow-200"
-                >
+                <button type="button" onClick={openTerms} className="underline text-yellow-300 hover:text-yellow-200">
                   Terms &amp; Conditions
                 </button>
                 .
