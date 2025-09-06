@@ -1,8 +1,10 @@
 // src/pages/api/stripe/checkout/create.ts
+// src/pages/api/stripe/checkout/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
+/** Works both on Vercel and locally */
 function getBaseUrl(req: NextApiRequest) {
   const proto =
     (req.headers["x-forwarded-proto"] as string) ||
@@ -15,8 +17,11 @@ function getBaseUrl(req: NextApiRequest) {
   return `${proto}://${host}`;
 }
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, { apiVersion: "2024-06-20" });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
+  apiVersion: "2024-06-20",
+});
 
+// Use service role (server-side only)
 const supabase = createClient(
   process.env.SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
@@ -29,41 +34,67 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
+    // Body from the order form
     const {
-      fuel, litres, deliveryDate, full_name, email,
-      address_line1, address_line2, city, postcode,
-    } = req.body || {};
+      fuel,               // "petrol" | "diesel"
+      litres,             // number
+      deliveryDate,       // ISO string (optional)
+      full_name,
+      email,
+      address_line1,
+      address_line2,
+      city,
+      postcode,
+    } = (req.body ?? {}) as Record<string, unknown>;
 
+    // Validate fuel + litres
+    const f = typeof fuel === "string" ? fuel.toLowerCase() : "";
     const litresNum = Number(litres);
-    if (!fuel || !["petrol", "diesel"].includes(fuel) || !Number.isFinite(litresNum) || litresNum <= 0) {
+    if (!["petrol", "diesel"].includes(f) || !Number.isFinite(litresNum) || litresNum <= 0) {
       return res.status(400).json({ error: "Missing/invalid fuel or litres" });
     }
 
-    // price lookup from latest_prices, fallback to latest_daily_prices
+    // 1) Price lookup (use latest_prices view; fall back to latest_daily_prices)
     let unitPriceGBP: number | null = null;
-    let p1 = await supabase.from("latest_prices").select("fuel,total_price").eq("fuel", fuel).maybeSingle();
-    if (p1.data?.total_price != null) {
-      unitPriceGBP = Number(p1.data.total_price);
-    } else {
-      const p2 = await supabase.from("latest_daily_prices").select("fuel,total_price").eq("fuel", fuel).maybeSingle();
-      if (p2.data?.total_price != null) unitPriceGBP = Number(p2.data.total_price);
-    }
-    if (unitPriceGBP == null) return res.status(500).json({ error: "Price lookup failed" });
 
-    const unit_price_pence = Math.round(unitPriceGBP * 100);
+    const { data: p1 } = await supabase
+      .from("latest_prices")
+      .select("fuel,total_price")
+      .eq("fuel", f)
+      .maybeSingle();
+
+    if (p1?.total_price != null) {
+      unitPriceGBP = Number(p1.total_price);
+    } else {
+      const { data: p2, error: e2 } = await supabase
+        .from("latest_daily_prices")
+        .select("fuel,total_price")
+        .eq("fuel", f)
+        .maybeSingle();
+      if (p2?.total_price != null) {
+        unitPriceGBP = Number(p2.total_price);
+      } else {
+        return res.status(500).json({ error: `Price lookup failed${e2?.message ? `: ${e2.message}` : ""}` });
+      }
+    }
+
+    // Convert to pence (integers)
+    const unit_price_pence = Math.round((unitPriceGBP as number) * 100);
     const total_pence = unit_price_pence * litresNum;
 
-    // insert order
-    const ins = await supabase
+    // 2) Create pending order row
+    // IMPORTANT: we set BOTH product and fuel so either column can be used elsewhere.
+    const { data: order, error: insErr } = await supabase
       .from("orders")
       .insert({
-        user_email: typeof email === "string" ? email.toLowerCase() : null,
-        fuel,
+        user_email: typeof email === "string" ? email : null,
+        product: f,               // <= fixes your NOT NULL "product" constraint
+        fuel: f,                  // keep the modern column too
         litres: litresNum,
         unit_price_pence,
         total_pence,
         status: "pending",
-        delivery_date: deliveryDate ?? null,
+        delivery_date: typeof deliveryDate === "string" ? deliveryDate : null,
         name: typeof full_name === "string" ? full_name : null,
         address_line1: typeof address_line1 === "string" ? address_line1 : null,
         address_line2: typeof address_line2 === "string" ? address_line2 : null,
@@ -73,10 +104,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .select("id")
       .single();
 
-    if (ins.error || !ins.data) {
-      return res.status(500).json({ error: `DB insert failed: ${ins.error?.message || "unknown"}` });
+    if (insErr || !order) {
+      return res.status(500).json({ error: `DB insert failed: ${insErr?.message || "unknown error"}` });
     }
 
+    // 3) Create Stripe Checkout Session
     const base = getBaseUrl(req);
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
@@ -86,22 +118,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           price_data: {
             currency: "gbp",
             product_data: {
-              name: `Fuel order — ${fuel}`,
+              name: `Fuel order — ${f}`,
               description: `${litresNum} L @ £${(unit_price_pence / 100).toFixed(2)}/L`,
             },
-            unit_amount: total_pence, // charge total as one line
+            // We charge the whole total as one line so tax/fees don’t drift
+            unit_amount: total_pence,
           },
           quantity: 1,
         },
       ],
-      success_url: `${base}/checkout/success?orderId=${ins.data.id}`,
-      cancel_url: `${base}/checkout/cancel?orderId=${ins.data.id}`,
+      success_url: `${base}/checkout/success?orderId=${order.id}`,
+      cancel_url: `${base}/checkout/cancel?orderId=${order.id}`,
       metadata: {
-        order_id: ins.data.id,
-        fuel: String(fuel),
+        order_id: order.id,
+        fuel: String(f),
         litres: String(litresNum),
         unit_price_pence: String(unit_price_pence),
         total_pence: String(total_pence),
+        delivery_date: typeof deliveryDate === "string" ? deliveryDate : "",
+        full_name: typeof full_name === "string" ? full_name : "",
+        email: typeof email === "string" ? email : "",
+        address_line1: typeof address_line1 === "string" ? address_line1 : "",
+        address_line2: typeof address_line2 === "string" ? address_line2 : "",
+        city: typeof city === "string" ? city : "",
+        postcode: typeof postcode === "string" ? postcode : "",
       },
     });
 
