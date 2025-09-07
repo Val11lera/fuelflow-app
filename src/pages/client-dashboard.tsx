@@ -55,7 +55,7 @@ function isToday(d: string | Date | null | undefined) {
 }
 
 const INACTIVITY_MS =
-  Number(process.env.NEXT_PUBLIC_IDLE_LOGOUT_MS ?? "") || 15 * 60 * 1000; // 15m
+  Number(process.env.NEXT_PUBLIC_IDLE_LOGOUT_MS ?? "") || 15 * 60 * 1000; // 15 minutes
 
 export default function ClientDashboard() {
   const [userEmail, setUserEmail] = useState<string>("");
@@ -65,7 +65,7 @@ export default function ClientDashboard() {
   // prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
-  const [priceDate, setPriceDate] = useState<string | null>(null); // from daily_prices max(date)
+  const [priceDate, setPriceDate] = useState<string | null>(null); // max(price_date) from daily_prices
   const pricesAreToday = isToday(priceDate);
 
   // orders
@@ -77,7 +77,7 @@ export default function ClientDashboard() {
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
 
-  // ----------------- auto logout on inactivity -----------------
+  // ----------------- auto logout on inactivity (fixed typing) -----------------
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const reset = () => {
@@ -90,19 +90,30 @@ export default function ClientDashboard() {
         }
       }, INACTIVITY_MS);
     };
-    reset();
-    const evts: (keyof WindowEventMap)[] = [
+
+    // window events we listen to
+    const winEvents: (keyof WindowEventMap)[] = [
       "mousemove",
       "mousedown",
       "keydown",
       "scroll",
       "touchstart",
-      "visibilitychange",
     ];
-    evts.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+
+    // attach
+    winEvents.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+    // visibilitychange is on document, not window
+    const onVisibility = () => reset();
+    document.addEventListener("visibilitychange", onVisibility, { passive: true });
+
+    // start the timer immediately
+    reset();
+
+    // cleanup
     return () => {
       if (idleTimer.current) clearTimeout(idleTimer.current);
-      evts.forEach((e) => window.removeEventListener(e, reset));
+      winEvents.forEach((e) => window.removeEventListener(e, reset));
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 
@@ -122,11 +133,10 @@ export default function ClientDashboard() {
         const emailLower = (auth.user.email || "").toLowerCase();
         setUserEmail(emailLower);
 
-        // Prices (keep your original sources that worked)
-        let { data: lp, error: lpErr } = await supabase
+        // Prices (keep your original working sources)
+        let { data: lp } = await supabase
           .from("latest_prices")
           .select("fuel,total_price");
-        if (lpErr) lp = null;
 
         if (!lp?.length) {
           const { data: dp } = await supabase
@@ -136,7 +146,6 @@ export default function ClientDashboard() {
         }
 
         if (lp?.length) {
-          // reset
           setPetrolPrice(null);
           setDieselPrice(null);
           (lp as { fuel: Fuel | string; total_price: number }[]).forEach((r) => {
@@ -146,8 +155,7 @@ export default function ClientDashboard() {
           });
         }
 
-        // Get the latest price date from daily_prices (no updated_at used)
-        // If RLS prevents it, we just leave date null and skip the banner disabling.
+        // Read the latest price date from daily_prices (for banner + "As of")
         try {
           const { data: maxRow } = await supabase
             .from("daily_prices")
@@ -157,10 +165,10 @@ export default function ClientDashboard() {
             .maybeSingle();
           if (maxRow?.price_date) setPriceDate(maxRow.price_date);
         } catch {
-          // ignore; date will remain null
+          // If RLS blocks it, priceDate stays null; page continues to work.
         }
 
-        // Orders (new fields first)
+        // Orders (your original logic)
         const { data: rawOrders, error: ordErr } = await supabase
           .from("orders")
           .select(
@@ -175,7 +183,7 @@ export default function ClientDashboard() {
         const ordersArr = (rawOrders || []) as OrderRow[];
         const ids = ordersArr.map((o) => o.id).filter(Boolean);
 
-        // Map Stripe payments by order_id (for exact fallback)
+        // Map Stripe payments by order_id (exact fallback)
         let payMap = new Map<string, PaymentRow>();
         if (ids.length) {
           const { data: pays } = await supabase
@@ -217,8 +225,8 @@ export default function ClientDashboard() {
     })();
   }, []);
 
-  // quick refresh handler (simple)
-  async function refresh() {
+  // quick refresh handler
+  function refresh() {
     window.location.reload();
   }
 
@@ -230,7 +238,7 @@ export default function ClientDashboard() {
     }
   }
 
-  // ---------- Usage & Spend (12 months, selected year / prev year only) ----------
+  // ---------- Usage & Spend (12 months, current or previous year) ----------
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
 
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
@@ -304,7 +312,7 @@ export default function ClientDashboard() {
           </div>
         )}
 
-        {/* prices */}
+        {/* Prices cards */}
         <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Card title="Petrol (95)">
             <div className="text-3xl font-bold">
@@ -492,5 +500,4 @@ function Card(props: { title: string; children: React.ReactNode }) {
     </div>
   );
 }
-
 
