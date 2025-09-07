@@ -1,5 +1,4 @@
 // src/pages/order.tsx
-// src/pages/order.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -7,9 +6,9 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------------- Types (local, for casts only) ---------------- */
+/* ---------------- Types ---------------- */
 
-type TankOption = "none" | "buy" | "rent";
+type TankOption = "buy" | "rent";
 type Fuel = "diesel" | "petrol";
 
 type ContractRow = {
@@ -22,7 +21,7 @@ type ContractRow = {
 
 type TermsRow = { id: string; email: string; accepted_at: string; version: string };
 
-/* --------------- Supabase (browser) --------------- */
+/* --------------- Supabase --------------- */
 
 const supabase =
   typeof window !== "undefined"
@@ -58,7 +57,7 @@ function GBP(n: number) {
   }).format(n);
 }
 
-const STORAGE_KEY = "order:form:v1";
+const STORAGE_KEY = "order:form:v2";
 const termsVersion = "v1.1";
 
 /* =======================================================
@@ -68,7 +67,7 @@ const termsVersion = "v1.1";
 export default function OrderPage() {
   const qp = useSearchParams();
 
-  // tiles (illustrative; live price is used server-side)
+  // price tiles (illustrative; server-side uses live price)
   const unitPricePetrol = 2.27;
   const unitPriceDiesel = 2.44;
 
@@ -84,8 +83,8 @@ export default function OrderPage() {
   const [postcode, setPostcode] = useState("");
   const [city, setCity] = useState("");
 
-  // terms
-  const [accepted, setAccepted] = useState(false);
+  // prerequisites
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [checkingTerms, setCheckingTerms] = useState(false);
 
   // contract state
@@ -102,9 +101,9 @@ export default function OrderPage() {
   const [marketPrice, setMarketPrice] = useState<number>(1.35);
   const [cheaperBy, setCheaperBy] = useState<number>(0.09);
 
-  // “active contract” flags (signed or approved)
-  const [activeBuy, setActiveBuy] = useState<boolean>(false);
-  const [activeRent, setActiveRent] = useState<boolean>(false);
+  // “active” contract flags for UI
+  const [hasBuySignedOrApproved, setHasBuySignedOrApproved] = useState(false);
+  const [hasRentApproved, setHasRentApproved] = useState(false);
 
   // checkout
   const [startingCheckout, setStartingCheckout] = useState(false);
@@ -155,7 +154,7 @@ export default function OrderPage() {
     const emailParam = qp.get("email");
     if (emailParam && !email) setEmail(emailParam);
     if (acceptedParam === "1" && emailParam) {
-      localStorage.setItem(`terms:${termsVersion}:${emailParam}`, "1");
+      localStorage.setItem(`terms:${termsVersion}:${emailParam.toLowerCase()}`, "1");
     }
   }, [qp, email]);
 
@@ -168,26 +167,28 @@ export default function OrderPage() {
   async function checkTerms(e: string) {
     setCheckingTerms(true);
     try {
-      const cached = localStorage.getItem(`terms:${termsVersion}:${e}`);
+      const key = `terms:${termsVersion}:${e.toLowerCase()}`;
+      const cached = localStorage.getItem(key);
       if (cached === "1") {
-        setAccepted(true);
+        setAcceptedTerms(true);
         return;
       }
       if (!supabase) return;
 
-      // IMPORTANT: no generic type argument here
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from("terms_acceptances")
         .select("id,email,accepted_at,version")
-        .eq("email", e)
+        .eq("email", e.toLowerCase())
         .eq("version", termsVersion)
         .order("accepted_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (!error && data) {
-        setAccepted(true);
-        localStorage.setItem(`terms:${termsVersion}:${e}`, "1");
+      if (data) {
+        setAcceptedTerms(true);
+        localStorage.setItem(key, "1");
+      } else {
+        setAcceptedTerms(false);
       }
     } finally {
       setCheckingTerms(false);
@@ -199,34 +200,40 @@ export default function OrderPage() {
     window.location.href = ret;
   }
 
-  /* --------------- Detect already active contracts --------------- */
+  /* --------------- Contract status --------------- */
 
   useEffect(() => {
     if (!supabase || !email) {
-      setActiveBuy(false);
-      setActiveRent(false);
+      setHasBuySignedOrApproved(false);
+      setHasRentApproved(false);
       return;
     }
     (async () => {
-      // IMPORTANT: no generic type argument here
       const { data, error } = await supabase
         .from("contracts")
         .select("id,tank_option,status,email,created_at")
         .eq("email", email.toLowerCase())
-        .in("status", ["signed", "approved"]);
+        .not("status", "eq", "cancelled"); // ignore cancelled
 
       if (error) {
         console.warn("contracts check error:", error.message);
-        setActiveBuy(false);
-        setActiveRent(false);
+        setHasBuySignedOrApproved(false);
+        setHasRentApproved(false);
         return;
       }
 
       const rows = (data ?? []) as ContractRow[];
-      setActiveBuy(rows.some((r: ContractRow) => r.tank_option === "buy"));
-      setActiveRent(rows.some((r: ContractRow) => r.tank_option === "rent"));
+      const buyOK = rows.some(
+        (r) => r.tank_option === "buy" && (r.status === "signed" || r.status === "approved")
+      );
+      const rentOK = rows.some((r) => r.tank_option === "rent" && r.status === "approved");
+
+      setHasBuySignedOrApproved(buyOK);
+      setHasRentApproved(rentOK);
     })();
   }, [email, showContract, contractSavedId]);
+
+  const hasEligibleContract = hasBuySignedOrApproved || hasRentApproved;
 
   /* --------------- ROI metrics --------------- */
 
@@ -255,10 +262,6 @@ export default function OrderPage() {
 
   function openContractWith(type: TankOption) {
     setTankOption(type);
-    if ((type === "buy" && activeBuy) || (type === "rent" && activeRent)) {
-      alert("You already have an active contract for this option.");
-      return;
-    }
     setShowContract(true);
   }
 
@@ -266,7 +269,7 @@ export default function OrderPage() {
     if (!supabase) return;
 
     if (!fullName.trim()) {
-      alert("Please enter your full name above the form before signing.");
+      alert("Please enter your full name in the form before signing.");
       return;
     }
     if (!signatureName.trim()) {
@@ -281,9 +284,9 @@ export default function OrderPage() {
       const { data, error } = await supabase
         .from("contracts")
         .insert({
-          contract_type: tankOption === "buy" ? "buy" : "rent",
+          contract_type: tankOption, // if you keep this column
           customer_name: fullName,
-          email: email || null,
+          email: email ? email.toLowerCase() : null,
           address_line1: address1 || null,
           address_line2: address2 || null,
           city: city || null,
@@ -301,7 +304,8 @@ export default function OrderPage() {
 
           signature_name: signatureName,
           signed_at: new Date().toISOString(),
-          status: "signed",
+          // Key rule: RENT needs APPROVAL first; BUY can order when signed
+          status: tankOption === "rent" ? "signed" : "signed",
         })
         .select("id")
         .single();
@@ -318,16 +322,17 @@ export default function OrderPage() {
 
   /* --------------- Stripe checkout --------------- */
 
-  const payDisabled =
-    !email ||
-    !fullName ||
-    !address1 ||
-    !postcode ||
-    !city ||
-    !deliveryDate ||
-    !Number.isFinite(litres) ||
-    litres <= 0 ||
-    !accepted;
+  const canPay =
+    acceptedTerms &&
+    hasEligibleContract &&
+    email &&
+    fullName &&
+    address1 &&
+    postcode &&
+    city &&
+    deliveryDate &&
+    Number.isFinite(litres) &&
+    litres > 0;
 
   async function startCheckout() {
     try {
@@ -377,84 +382,70 @@ export default function OrderPage() {
           </div>
         </div>
 
-        {/* Buy vs Rent selector */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-          {/* BUY */}
-          <div className={`${card} ${tankOption === "buy" ? cardSelected : ""} relative`}>
-            {activeBuy && (
-              <div className="absolute inset-0 rounded-2xl bg-black/50 grid place-items-center z-10">
-                <div className="text-sm text-yellow-300">
-                  You already have an active <b>Buy</b> contract.
-                </div>
+        {/* Prerequisites */}
+        <section className={`${card} mb-6`}>
+          <h3 className="text-lg font-semibold mb-2">Requirements</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Terms */}
+            <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">Terms &amp; Conditions</div>
+                <span
+                  className={`${pill} ${
+                    acceptedTerms ? "bg-green-500/20 text-green-300" : "bg-red-500/20 text-red-300"
+                  }`}
+                >
+                  {acceptedTerms ? "accepted" : "missing"}
+                </span>
               </div>
-            )}
-            <div className="flex items-center justify-between">
-              <h3 className="text-xl font-semibold">Buy a Fuel Tank</h3>
-              {tankOption === "buy" ? (
-                <span className={`${pill} bg-yellow-500/20 text-yellow-300`}>Selected</span>
-              ) : (
-                <button className={`${pill} ${buttonGhost} border-none`} onClick={() => setTankOption("buy")}>
-                  Select
+              <p className="text-sm text-white/70 mt-2">
+                You must read and accept the latest Terms before ordering.
+              </p>
+              <div className="mt-3">
+                <button onClick={openTerms} className={`${button} ${buttonGhost}`}>
+                  {acceptedTerms ? "Review Terms" : "Read & accept Terms"}
                 </button>
-              )}
+                {checkingTerms && <span className="ml-3 text-white/60 text-sm">Checking…</span>}
+              </div>
             </div>
-            <ul className="mt-3 space-y-2 text-white/70 text-sm">
-              <li>✔ One-time cost with full ownership.</li>
-              <li>✔ Variety of sizes and specifications.</li>
-              <li>✔ Ideal for long-term and high-volume usage.</li>
-            </ul>
-            <div className="mt-4 flex gap-3">
-              <button className={`${button} ${buttonGhost}`} onClick={() => openRoiWith("buy")} disabled={activeBuy}>
-                Open ROI
-              </button>
-              <button
-                className={`${button} ${buttonPrimary}`}
-                onClick={() => openContractWith("buy")}
-                disabled={activeBuy}
-              >
-                Start Contract
-              </button>
-            </div>
-          </div>
 
-          {/* RENT */}
-          <div className={`${card} ${tankOption === "rent" ? cardSelected : ""} relative`}>
-            {activeRent && (
-              <div className="absolute inset-0 rounded-2xl bg-black/50 grid place-items-center z-10">
-                <div className="text-sm text-yellow-300">
-                  You already have an active <b>Rent</b> contract.
-                </div>
+            {/* Contract */}
+            <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">Contract</div>
+                <span
+                  className={`${pill} ${
+                    hasEligibleContract ? "bg-green-500/20 text-green-300" : "bg-yellow-500/20 text-yellow-300"
+                  }`}
+                >
+                  {hasEligibleContract ? "ready" : "required"}
+                </span>
               </div>
-            )}
-            <div className="flex items-center justify-between">
-              <h3 className="text-xl font-semibold">Rent a Fuel Tank</h3>
-              {tankOption === "rent" ? (
-                <span className={`${pill} bg-yellow-500/20 text-yellow-300`}>Selected</span>
-              ) : (
-                <button className={`${pill} ${buttonGhost} border-none`} onClick={() => setTankOption("rent")}>
-                  Select
+              <p className="text-sm text-white/70 mt-2">
+                Buy: signed contract is enough. Rent: requires admin approval after signing.
+              </p>
+              <div className="mt-3 flex gap-2">
+                <button className={`${button} ${buttonGhost}`} onClick={() => openRoiWith("buy")}>
+                  ROI (Buy)
                 </button>
+                <button className={`${button} ${buttonGhost}`} onClick={() => openRoiWith("rent")}>
+                  ROI (Rent)
+                </button>
+                <button className={`${button} ${buttonPrimary}`} onClick={() => openContractWith("buy")}>
+                  Start Buy
+                </button>
+                <button className={`${button} ${buttonPrimary}`} onClick={() => openContractWith("rent")}>
+                  Start Rent
+                </button>
+              </div>
+              {(hasBuySignedOrApproved || hasRentApproved) && (
+                <p className="mt-2 text-xs text-white/60">
+                  Status: {hasBuySignedOrApproved ? "Buy ✓" : ""} {hasRentApproved ? "Rent ✓ (approved)" : ""}
+                </p>
               )}
             </div>
-            <ul className="mt-3 space-y-2 text-white/70 text-sm">
-              <li>✔ Flexible rental plans (short & long term).</li>
-              <li>✔ Maintenance & support included.</li>
-              <li>✔ Ideal for temp sites & events.</li>
-            </ul>
-            <div className="mt-4 flex gap-3">
-              <button className={`${button} ${buttonGhost}`} onClick={() => openRoiWith("rent")} disabled={activeRent}>
-                Open ROI
-              </button>
-              <button
-                className={`${button} ${buttonPrimary}`}
-                onClick={() => openContractWith("rent")}
-                disabled={activeRent}
-              >
-                Start Contract
-              </button>
-            </div>
           </div>
-        </div>
+        </section>
 
         {/* price tiles */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -463,9 +454,21 @@ export default function OrderPage() {
           <Tile title="Estimated Total" value={GBP(estTotal)} />
         </div>
 
-        {/* order form */}
-        <section className={`${card} px-5 md:px-6 py-6`}>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* order form (locked until prerequisites are satisfied) */}
+        <section className={`${card} relative`}>
+          {!acceptedTerms || !hasEligibleContract ? (
+            <div className="absolute inset-0 z-10 rounded-2xl bg-black/60 grid place-items-center text-center px-6">
+              <div>
+                <div className="text-yellow-300 font-semibold mb-1">Complete the requirements first</div>
+                <p className="text-white/80 text-sm">
+                  {acceptedTerms ? "" : "• Accept the Terms. "}
+                  {!hasEligibleContract ? "• Sign (and if renting, get approval for) a contract." : ""}
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-100">
             <div>
               <label className={label}>Fuel</label>
               <select className={input} value={fuel} onChange={(e) => setFuel(e.target.value as Fuel)}>
@@ -531,32 +534,19 @@ export default function OrderPage() {
               <input className={input} value={city} onChange={(e) => setCity(e.target.value)} />
             </div>
 
-            {/* terms acceptance */}
-            <div className="md:col-span-2 mt-2 flex items-center gap-2">
-              <input id="terms" type="checkbox" className="h-4 w-4 accent-yellow-500" checked={accepted} readOnly />
-              <label htmlFor="terms" className="text-sm">
-                I agree to the{" "}
-                <button type="button" onClick={openTerms} className="underline text-yellow-300 hover:text-yellow-200">
-                  Terms &amp; Conditions
-                </button>
-                .
-              </label>
-            </div>
-            {!accepted && (
-              <p className="md:col-span-2 text-sm text-red-300">
-                You must read and accept the Terms first. {checkingTerms ? "Checking…" : ""}
-              </p>
-            )}
-
-            {/* pay */}
             <div className="md:col-span-2 mt-3">
               <button
                 className={`${button} ${buttonPrimary} w-full md:w-auto`}
-                disabled={payDisabled || startingCheckout}
+                disabled={!canPay || startingCheckout}
                 onClick={startCheckout}
               >
                 {startingCheckout ? "Starting checkout…" : "Pay with Stripe"}
               </button>
+              {!canPay && (
+                <span className="ml-3 text-white/60 text-sm">
+                  Complete requirements and form fields to enable payment.
+                </span>
+              )}
             </div>
           </div>
         </section>
@@ -647,7 +637,7 @@ export default function OrderPage() {
             Figures are estimates and change with market pricing.{" "}
             {tankOption === "rent" ? (
               <>
-                <b>Rental contracts</b> require admin approval (credit checks, site survey). You will be
+                <b>Rental contracts</b> require admin approval (credit checks, site survey). You’ll be
                 notified once approved.
               </>
             ) : (
