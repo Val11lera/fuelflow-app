@@ -30,18 +30,10 @@ type OrderRow = {
 
 type PaymentRow = {
   order_id: string | null;
-  amount: number; // pence from webhook (amount_received)
+  amount: number; // pence
   currency: string;
   status: string;
 };
-
-function displayAmount(row: any) {
-  if (typeof row.total_pence === "number") return (row.total_pence / 100).toFixed(2);
-  if (typeof row.unit_price_pence === "number" && typeof row.litres === "number") {
-    return ((row.unit_price_pence * row.litres) / 100).toFixed(2);
-  }
-  return "0.00";
-}
 
 function isToday(d: string | Date | null | undefined) {
   if (!d) return false;
@@ -59,25 +51,27 @@ const INACTIVITY_MS =
 
 export default function ClientDashboard() {
   const [userEmail, setUserEmail] = useState<string>("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   // prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
-  const [priceDate, setPriceDate] = useState<string | null>(null); // max(price_date) from daily_prices
+  const [priceDate, setPriceDate] = useState<string | null>(null); // latest price date seen
   const pricesAreToday = isToday(priceDate);
 
   // orders
   const [orders, setOrders] = useState<
     (OrderRow & { amountGBP: number; paymentStatus?: string })[]
   >([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // usage / spend year toggle
+  // usage UI
   const currentYear = new Date().getFullYear();
+  const currentMonthIdx = new Date().getMonth(); // 0..11
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
+  const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
-  // ----------------- auto logout on inactivity (fixed typing) -----------------
+  // ----------------- Auto logout on inactivity (typed correctly) -----------------
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const reset = () => {
@@ -91,7 +85,6 @@ export default function ClientDashboard() {
       }, INACTIVITY_MS);
     };
 
-    // window events we listen to
     const winEvents: (keyof WindowEventMap)[] = [
       "mousemove",
       "mousedown",
@@ -99,17 +92,11 @@ export default function ClientDashboard() {
       "scroll",
       "touchstart",
     ];
-
-    // attach
     winEvents.forEach((e) => window.addEventListener(e, reset, { passive: true }));
-    // visibilitychange is on document, not window
     const onVisibility = () => reset();
     document.addEventListener("visibilitychange", onVisibility, { passive: true });
 
-    // start the timer immediately
     reset();
-
-    // cleanup
     return () => {
       if (idleTimer.current) clearTimeout(idleTimer.current);
       winEvents.forEach((e) => window.removeEventListener(e, reset));
@@ -117,7 +104,7 @@ export default function ClientDashboard() {
     };
   }, []);
 
-  // ---------- load profile + prices + orders ----------
+  // ----------------- Data loading -----------------
   useEffect(() => {
     (async () => {
       try {
@@ -133,42 +120,10 @@ export default function ClientDashboard() {
         const emailLower = (auth.user.email || "").toLowerCase();
         setUserEmail(emailLower);
 
-        // Prices (keep your original working sources)
-        let { data: lp } = await supabase
-          .from("latest_prices")
-          .select("fuel,total_price");
+        // PRICES — robust loader with multiple fallbacks
+        await loadLatestPrices();
 
-        if (!lp?.length) {
-          const { data: dp } = await supabase
-            .from("latest_daily_prices")
-            .select("fuel,total_price");
-          if (dp?.length) lp = dp as any;
-        }
-
-        if (lp?.length) {
-          setPetrolPrice(null);
-          setDieselPrice(null);
-          (lp as { fuel: Fuel | string; total_price: number }[]).forEach((r) => {
-            const f = String(r.fuel).toLowerCase();
-            if (f === "petrol") setPetrolPrice(Number(r.total_price));
-            if (f === "diesel") setDieselPrice(Number(r.total_price));
-          });
-        }
-
-        // Read the latest price date from daily_prices (for banner + "As of")
-        try {
-          const { data: maxRow } = await supabase
-            .from("daily_prices")
-            .select("price_date")
-            .order("price_date", { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          if (maxRow?.price_date) setPriceDate(maxRow.price_date);
-        } catch {
-          // If RLS blocks it, priceDate stays null; page continues to work.
-        }
-
-        // Orders (your original logic)
+        // ORDERS (your original logic)
         const { data: rawOrders, error: ordErr } = await supabase
           .from("orders")
           .select(
@@ -183,7 +138,6 @@ export default function ClientDashboard() {
         const ordersArr = (rawOrders || []) as OrderRow[];
         const ids = ordersArr.map((o) => o.id).filter(Boolean);
 
-        // Map Stripe payments by order_id (exact fallback)
         let payMap = new Map<string, PaymentRow>();
         if (ids.length) {
           const { data: pays } = await supabase
@@ -223,7 +177,82 @@ export default function ClientDashboard() {
         setLoading(false);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Robust latest-price loader
+  async function loadLatestPrices() {
+    setPetrolPrice(null);
+    setDieselPrice(null);
+    setPriceDate(null);
+
+    // Try 1: latest_prices (if you keep this view/table)
+    try {
+      const { data } = await supabase
+        .from("latest_prices")
+        .select("fuel,total_price,price_date");
+      if (data && data.length) {
+        applyPriceRows(data as any[]);
+        return;
+      }
+    } catch {}
+
+    // Try 2: latest_fuel_prices_view (if present)
+    try {
+      const { data } = await supabase
+        .from("latest_fuel_prices_view")
+        .select("fuel,total_price,price_date");
+      if (data && data.length) {
+        applyPriceRows(data as any[]);
+        return;
+      }
+    } catch {}
+
+    // Try 3: latest_prices_view (alternate naming)
+    try {
+      const { data } = await supabase
+        .from("latest_prices_view")
+        .select("fuel,total_price,price_date");
+      if (data && data.length) {
+        applyPriceRows(data as any[]);
+        return;
+      }
+    } catch {}
+
+    // Try 4: daily_prices fallback — take latest date per fuel
+    try {
+      const { data } = await supabase
+        .from("daily_prices")
+        .select("fuel,total_price,price_date")
+        .order("price_date", { ascending: false })
+        .limit(200); // read a page and reduce client-side
+
+      if (data && data.length) {
+        // reduce: keep first (latest) row for each fuel
+        const seen = new Map<string, any>();
+        for (const r of data) {
+          const key = String(r.fuel).toLowerCase();
+          if (!seen.has(key)) seen.set(key, r);
+        }
+        const rows = Array.from(seen.values());
+        applyPriceRows(rows);
+        return;
+      }
+    } catch {}
+  }
+
+  function applyPriceRows(rows: { fuel: string; total_price: number; price_date?: string | null }[]) {
+    let latest: string | null = null;
+    rows.forEach((r) => {
+      const f = String(r.fuel).toLowerCase();
+      if (f === "petrol") setPetrolPrice(Number(r.total_price));
+      if (f === "diesel") setDieselPrice(Number(r.total_price));
+      if (r.price_date) {
+        if (!latest || new Date(r.price_date) > new Date(latest)) latest = r.price_date;
+      }
+    });
+    if (latest) setPriceDate(latest);
+  }
 
   // quick refresh handler
   function refresh() {
@@ -238,7 +267,7 @@ export default function ClientDashboard() {
     }
   }
 
-  // ---------- Usage & Spend (12 months, current or previous year) ----------
+  // ---------- Usage & Spend (by month, year) ----------
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
 
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
@@ -262,6 +291,11 @@ export default function ClientDashboard() {
   const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
   const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
 
+  // Condensed vs expanded view
+  const rowsToShow = showAllMonths
+    ? usageByMonth
+    : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
+
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
       <div className="max-w-6xl mx-auto px-4 py-4 space-y-6">
@@ -274,9 +308,9 @@ export default function ClientDashboard() {
           <div className="ml-auto flex gap-2">
             <a
               href="/order"
-              aria-disabled={!pricesAreToday}
+              aria-disabled={!pricesAreToday || petrolPrice == null || dieselPrice == null}
               className={`rounded-lg px-3 py-2 text-sm font-semibold ${
-                pricesAreToday
+                pricesAreToday && petrolPrice != null && dieselPrice != null
                   ? "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
                   : "bg-white/10 text-white/60 cursor-not-allowed"
               }`}
@@ -299,7 +333,7 @@ export default function ClientDashboard() {
         </div>
 
         {/* Prices out-of-date banner */}
-        {!pricesAreToday && (
+        {(!pricesAreToday || petrolPrice == null || dieselPrice == null) && (
           <div className="rounded-xl border border-red-400/40 bg-red-500/10 p-4 text-sm text-red-200">
             <div className="font-semibold mb-1">Prices are out of date</div>
             <div>
@@ -350,7 +384,7 @@ export default function ClientDashboard() {
           </Card>
         </section>
 
-        {/* Usage & Spend */}
+        {/* Usage & Spend (condensed by default) */}
         <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
             <h2 className="text-xl md:text-2xl font-semibold">Usage & Spend</h2>
@@ -380,6 +414,12 @@ export default function ClientDashboard() {
                   {currentYear}
                 </button>
               </div>
+              <button
+                onClick={() => setShowAllMonths((s) => !s)}
+                className="ml-3 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+              >
+                {showAllMonths ? "Show current month" : "Show 12 months"}
+              </button>
             </div>
           </div>
 
@@ -393,8 +433,8 @@ export default function ClientDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {usageByMonth.map((r) => (
-                  <tr key={r.monthIdx} className="border-b border-gray-800/60">
+                {rowsToShow.map((r) => (
+                  <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
                     <td className="py-2 pr-4">
                       {r.monthLabel} {String(selectedYear).slice(2)}
                     </td>
