@@ -2,7 +2,7 @@
 // src/pages/order.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
@@ -67,6 +67,17 @@ function GBP(n: number) {
   }).format(n);
 }
 
+function toDateMaybe(r: any): Date | null {
+  const k =
+    r?.updated_at ??
+    r?.price_date ??
+    r?.created_at ??
+    r?.ts ??
+    r?.at ??
+    null;
+  return k ? new Date(k) : null;
+}
+
 const STORAGE_KEY = "order:form:v2";
 const termsVersion = "v1.1";
 
@@ -77,9 +88,11 @@ const termsVersion = "v1.1";
 export default function OrderPage() {
   const qp = useSearchParams();
 
-  // tiles (illustrative; live price used by backend on checkout)
-  const unitPricePetrol = 2.27;
-  const unitPriceDiesel = 2.44;
+  // live prices
+  const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
+  const [dieselPrice, setDieselPrice] = useState<number | null>(null);
+  const [pricesUpdatedAt, setPricesUpdatedAt] = useState<Date | null>(null);
+  const [loadingPrices, setLoadingPrices] = useState<boolean>(true);
 
   // form state
   const [fuel, setFuel] = useState<Fuel>("diesel");
@@ -130,9 +143,75 @@ export default function OrderPage() {
   const [sitePostcode, setSitePostcode] = useState("");
   const [signatureName, setSignatureName] = useState("");
 
+  /* ---------- live prices ---------- */
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setLoadingPrices(true);
+
+        // try several sources; take first that returns rows
+        const trySelect = async (from: string, select = "*") =>
+          supabase?.from(from as any).select(select).limit(10);
+
+        let rows: any[] | null = null;
+
+        // 1) latest_prices (preferred)
+        let res = await trySelect("latest_prices", "*");
+        if (res && !res.error && res.data?.length) rows = res.data as any[];
+
+        // 2) latest_daily_prices
+        if (!rows) {
+          res = await trySelect("latest_daily_prices", "*");
+          if (res && !res.error && res.data?.length) rows = res.data as any[];
+        }
+
+        // 3) latest_fuel_prices_view
+        if (!rows) {
+          res = await trySelect("latest_fuel_prices_view", "*");
+          if (res && !res.error && res.data?.length) rows = res.data as any[];
+        }
+
+        // 4) latest_prices_view
+        if (!rows) {
+          res = await trySelect("latest_prices_view", "*");
+          if (res && !res.error && res.data?.length) rows = res.data as any[];
+        }
+
+        // 5) daily_prices (max price_date)
+        if (!rows) {
+          const dp = await supabase
+            .from("daily_prices")
+            .select("*")
+            .order("price_date", { ascending: false })
+            .limit(2);
+          if (!dp.error && dp.data?.length) rows = dp.data as any[];
+        }
+
+        if (rows?.length) {
+          let updated: Date | null = null;
+          rows.forEach((r) => {
+            const f = (r.fuel ?? r.product ?? "").toString().toLowerCase();
+            const price = Number(r.total_price ?? r.price ?? r.latest_price ?? r.unit_price);
+            const ts = toDateMaybe(r);
+            if (ts && (!updated || ts > updated)) updated = ts;
+            if (f === "petrol") setPetrolPrice(Number.isFinite(price) ? price : null);
+            if (f === "diesel") setDieselPrice(Number.isFinite(price) ? price : null);
+          });
+          setPricesUpdatedAt(updated);
+        }
+      } finally {
+        setLoadingPrices(false);
+      }
+    })();
+  }, []);
+
   /* ---------- derived ---------- */
 
+  const unitPricePetrol = petrolPrice ?? 0;
+  const unitPriceDiesel = dieselPrice ?? 0;
   const unitPrice = fuel === "diesel" ? unitPriceDiesel : unitPricePetrol;
+
   const estTotal = useMemo(
     () => (Number.isFinite(litres) ? litres * unitPrice : 0),
     [litres, unitPrice]
@@ -209,7 +288,6 @@ export default function OrderPage() {
   // Verify acceptance (cache -> email‐scoped cache -> DB)
   useEffect(() => {
     if (!email) {
-      // allow acceptance if we just came back and cached a generic flag
       const generic = localStorage.getItem(`terms:${termsVersion}:__last__`);
       if (generic === "1") setAccepted(true);
       return;
@@ -285,7 +363,6 @@ export default function OrderPage() {
     !Number.isFinite(litres) ||
     litres <= 0 ||
     !accepted ||
-    // Must have a relevant contract:
     !(activeBuy || activeRent);
 
   async function startCheckout() {
@@ -337,7 +414,7 @@ export default function OrderPage() {
     try {
       setSavingContract(true);
 
-      // insert only safe columns your table already has
+      // insert only safe columns that are already present
       const { error } = await supabase.from("contracts").insert({
         contract_type: option === "buy" ? "buy" : "rent",
         customer_name: fullName,
@@ -364,7 +441,6 @@ export default function OrderPage() {
 
       if (error) throw error;
 
-      // reflect immediately
       if (option === "buy") setActiveBuy(true);
       if (option === "rent") setActiveRent(true);
       setShowWizard(false);
@@ -458,10 +534,13 @@ export default function OrderPage() {
         </section>
 
         {/* Price tiles */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <Tile title="Petrol (95)" value={`${GBP(unitPricePetrol)}`} suffix="/ litre" />
-          <Tile title="Diesel" value={`${GBP(unitPriceDiesel)}`} suffix="/ litre" />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
+          <Tile title="Petrol (95)" value={petrolPrice != null ? GBP(petrolPrice) : "—"} suffix="/ litre" />
+          <Tile title="Diesel" value={dieselPrice != null ? GBP(dieselPrice) : "—"} suffix="/ litre" />
           <Tile title="Estimated Total" value={GBP(estTotal)} />
+        </div>
+        <div className="mb-6 text-xs text-white/60">
+          {loadingPrices ? "Loading prices…" : pricesUpdatedAt ? `Last update: ${pricesUpdatedAt.toLocaleString()}` : "Prices timestamp unavailable."}
         </div>
 
         {/* Order form */}
@@ -883,10 +962,8 @@ function Modal({
 }
 
 /* =========================
-   Wizard (fixed types)
+   Wizard (typed, React as value)
    ========================= */
-
-import type React from "react";
 
 interface WizardStepProps {
   title?: string;
@@ -894,9 +971,7 @@ interface WizardStepProps {
 }
 
 interface WizardProps {
-  children:
-    | React.ReactElement<WizardStepProps>
-    | React.ReactElement<WizardStepProps>[];
+  children: React.ReactElement<WizardStepProps> | React.ReactElement<WizardStepProps>[];
 }
 
 type WizardComponent = React.FC<WizardProps> & {
@@ -952,5 +1027,3 @@ const Wizard: WizardComponent = ({ children }) => {
 Wizard.Step = function Step({ children }: WizardStepProps) {
   return <>{children}</>;
 };
-
-
