@@ -1,4 +1,5 @@
 // src/pages/client-dashboard.tsx
+// src/pages/client-dashboard.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -6,40 +7,41 @@ import { createClient } from "@supabase/supabase-js";
 
 type Fuel = "petrol" | "diesel";
 
-type PriceRow = {
-  fuel: Fuel | string;
-  total_price: number;       // GBP per litre (number, not pence)
-  price_date: string;        // yyyy-mm-dd
-  updated_at?: string | null;
-};
-
-type OrderRow = {
-  id: string;
-  created_at: string;
-  user_email: string | null;
-  fuel: Fuel | string | null;
-  litres: number | null;
-  unit_price_pence: number | null; // stored pence
-  total_pence: number | null;      // stored pence
-  status: string | null;
-};
-
-type PaymentRow = {
-  order_id: string | null;
-  amount: number; // pence
-  currency: string;
-  status: string;
-};
-
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
-const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
+const gbp = new Intl.NumberFormat("en-GB", {
+  style: "currency",
+  currency: "GBP",
+});
 
-const INACTIVITY_MS =
-  Number(process.env.NEXT_PUBLIC_IDLE_LOGOUT_MS ?? "") || 15 * 60 * 1000; // 15m default
+type OrderRow = {
+  id: string;
+  created_at: string;
+  user_email: string;
+  fuel: Fuel | string | null;
+  litres: number | null;
+  unit_price_pence: number | null;
+  total_pence: number | null;
+  status: string | null;
+};
+
+type PaymentRow = {
+  order_id: string | null;
+  amount: number; // pence from webhook (amount_received)
+  currency: string;
+  status: string;
+};
+
+function displayAmount(row: any) {
+  if (typeof row.total_pence === "number") return (row.total_pence / 100).toFixed(2);
+  if (typeof row.unit_price_pence === "number" && typeof row.litres === "number") {
+    return ((row.unit_price_pence * row.litres) / 100).toFixed(2);
+  }
+  return "0.00";
+}
 
 function isToday(d: string | Date | null | undefined) {
   if (!d) return false;
@@ -52,33 +54,33 @@ function isToday(d: string | Date | null | undefined) {
   );
 }
 
+const INACTIVITY_MS =
+  Number(process.env.NEXT_PUBLIC_IDLE_LOGOUT_MS ?? "") || 15 * 60 * 1000; // 15m
+
 export default function ClientDashboard() {
-  // ---------- auth & meta ----------
   const [userEmail, setUserEmail] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // ---------- prices ----------
-  const [prices, setPrices] = useState<Record<Fuel, PriceRow | null>>({
-    petrol: null,
-    diesel: null,
-  });
-  const [priceSourceTried, setPriceSourceTried] = useState<string[]>([]);
+  // prices
+  const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
+  const [dieselPrice, setDieselPrice] = useState<number | null>(null);
+  const [priceDate, setPriceDate] = useState<string | null>(null); // from daily_prices max(date)
+  const pricesAreToday = isToday(priceDate);
 
-  // ---------- orders ----------
+  // orders
   const [orders, setOrders] = useState<
     (OrderRow & { amountGBP: number; paymentStatus?: string })[]
   >([]);
 
-  // ---------- usage view (year toggle) ----------
+  // usage / spend year toggle
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
 
-  // ---------- auto logout ----------
+  // ----------------- auto logout on inactivity -----------------
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   useEffect(() => {
-    const resetTimer = () => {
+    const reset = () => {
       if (idleTimer.current) clearTimeout(idleTimer.current);
       idleTimer.current = setTimeout(async () => {
         try {
@@ -88,10 +90,8 @@ export default function ClientDashboard() {
         }
       }, INACTIVITY_MS);
     };
-
-    // start + bind listeners
-    resetTimer();
-    const evts: (keyof DocumentEventMap)[] = [
+    reset();
+    const evts: (keyof WindowEventMap)[] = [
       "mousemove",
       "mousedown",
       "keydown",
@@ -99,34 +99,68 @@ export default function ClientDashboard() {
       "touchstart",
       "visibilitychange",
     ];
-    evts.forEach((e) => window.addEventListener(e, resetTimer, { passive: true }));
-
+    evts.forEach((e) => window.addEventListener(e, reset, { passive: true }));
     return () => {
       if (idleTimer.current) clearTimeout(idleTimer.current);
-      evts.forEach((e) => window.removeEventListener(e, resetTimer));
+      evts.forEach((e) => window.removeEventListener(e, reset));
     };
   }, []);
 
-  // ---------- load everything ----------
+  // ---------- load profile + prices + orders ----------
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
         setError(null);
 
-        // --- Auth
+        // Auth
         const { data: auth } = await supabase.auth.getUser();
-        if (!auth?.user?.email) {
+        if (!auth?.user) {
           window.location.href = "/login";
           return;
         }
-        const emailLower = auth.user.email.toLowerCase();
+        const emailLower = (auth.user.email || "").toLowerCase();
         setUserEmail(emailLower);
 
-        // --- Prices (simplified: latest date from daily_prices)
-        await loadPrices();
+        // Prices (keep your original sources that worked)
+        let { data: lp, error: lpErr } = await supabase
+          .from("latest_prices")
+          .select("fuel,total_price");
+        if (lpErr) lp = null;
 
-        // --- Orders (for card + tables)
+        if (!lp?.length) {
+          const { data: dp } = await supabase
+            .from("latest_daily_prices")
+            .select("fuel,total_price");
+          if (dp?.length) lp = dp as any;
+        }
+
+        if (lp?.length) {
+          // reset
+          setPetrolPrice(null);
+          setDieselPrice(null);
+          (lp as { fuel: Fuel | string; total_price: number }[]).forEach((r) => {
+            const f = String(r.fuel).toLowerCase();
+            if (f === "petrol") setPetrolPrice(Number(r.total_price));
+            if (f === "diesel") setDieselPrice(Number(r.total_price));
+          });
+        }
+
+        // Get the latest price date from daily_prices (no updated_at used)
+        // If RLS prevents it, we just leave date null and skip the banner disabling.
+        try {
+          const { data: maxRow } = await supabase
+            .from("daily_prices")
+            .select("price_date")
+            .order("price_date", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (maxRow?.price_date) setPriceDate(maxRow.price_date);
+        } catch {
+          // ignore; date will remain null
+        }
+
+        // Orders (new fields first)
         const { data: rawOrders, error: ordErr } = await supabase
           .from("orders")
           .select(
@@ -141,7 +175,7 @@ export default function ClientDashboard() {
         const ordersArr = (rawOrders || []) as OrderRow[];
         const ids = ordersArr.map((o) => o.id).filter(Boolean);
 
-        // link payments by order_id (exact backfill)
+        // Map Stripe payments by order_id (for exact fallback)
         let payMap = new Map<string, PaymentRow>();
         if (ids.length) {
           const { data: pays } = await supabase
@@ -154,7 +188,6 @@ export default function ClientDashboard() {
         }
 
         const withTotals = ordersArr.map((o) => {
-          // preference: orders.total_pence -> payments.amount -> estimate(unit_price_pence*litres)
           const fromOrders = o.total_pence ?? null;
           const fromPayments = payMap.get(o.id || "")?.amount ?? null;
 
@@ -184,112 +217,12 @@ export default function ClientDashboard() {
     })();
   }, []);
 
-  async function loadPrices() {
-    // 1) latest price_date
-    const { data: maxRow, error: maxErr } = await supabase
-      .from("daily_prices")
-      .select("price_date")
-      .order("price_date", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (maxErr) throw maxErr;
-    const latestDate = maxRow?.price_date;
-    if (!latestDate) {
-      setPrices({ petrol: null, diesel: null });
-      setPriceSourceTried(["daily_prices(empty)"]);
-      return;
-    }
-
-    // 2) read both fuels for that date
-    const { data: rows, error: rowsErr } = await supabase
-      .from("daily_prices")
-      .select("fuel,total_price,price_date,updated_at")
-      .eq("price_date", latestDate);
-
-    if (rowsErr) throw rowsErr;
-
-    const next: Record<Fuel, PriceRow | null> = { petrol: null, diesel: null };
-    (rows || []).forEach((r: any) => {
-      const f = String(r.fuel).toLowerCase() as Fuel;
-      if (f === "petrol" || f === "diesel") next[f] = r as PriceRow;
-    });
-
-    setPrices(next);
-    setPriceSourceTried([`daily_prices(${latestDate})`]);
+  // quick refresh handler (simple)
+  async function refresh() {
+    window.location.reload();
   }
 
-  // banner / buttons logic
-  const pricesAreToday =
-    isToday(prices.petrol?.price_date) && isToday(prices.diesel?.price_date);
-
-  // year/month usage (simple)
-  const monthsOfYear = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
-
-  type MonthRow = { monthIdx: number; monthLabel: string; litres: number; spend: number };
-  const usageByMonth: MonthRow[] = useMemo(() => {
-    const base: MonthRow[] = Array.from({ length: 12 }, (_, i) => ({
-      monthIdx: i,
-      monthLabel: monthsOfYear[i],
-      litres: 0,
-      spend: 0,
-    }));
-    for (const o of orders) {
-      const d = new Date(o.created_at);
-      if (d.getFullYear() !== selectedYear) continue;
-      const m = d.getMonth();
-      base[m].litres += o.litres ?? 0;
-      base[m].spend += o.amountGBP ?? 0;
-    }
-    return base;
-  }, [orders, selectedYear]);
-
-  function lastUpdateText(p: PriceRow | null) {
-    if (!p) return "—";
-    // prefer updated_at if set, otherwise price_date
-    const d = p.updated_at ? new Date(p.updated_at) : new Date(p.price_date);
-    return d.toLocaleString();
-  }
-
-  async function onRefresh() {
-    setLoading(true);
-    setError(null);
-    try {
-      await loadPrices();
-      // quick orders refresh without reloading page
-      const { data: auth } = await supabase.auth.getUser();
-      const emailLower = auth?.user?.email?.toLowerCase();
-      if (emailLower) {
-        const { data: rawOrders } = await supabase
-          .from("orders")
-          .select(
-            "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status"
-          )
-          .eq("user_email", emailLower)
-          .order("created_at", { ascending: false })
-          .limit(50);
-        const rows = (rawOrders || []) as OrderRow[];
-        setOrders((prev) => {
-          // recompute amount using stored pence if present
-          return rows.map((o) => ({
-            ...o,
-            amountGBP:
-              o.total_pence != null
-                ? o.total_pence / 100
-                : o.unit_price_pence && o.litres
-                ? (o.unit_price_pence * o.litres) / 100
-                : 0,
-          }));
-        });
-      }
-    } catch (e: any) {
-      setError(e?.message || "Refresh failed.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function onLogout() {
+  async function logout() {
     try {
       await supabase.auth.signOut();
     } finally {
@@ -297,16 +230,40 @@ export default function ClientDashboard() {
     }
   }
 
+  // ---------- Usage & Spend (12 months, selected year / prev year only) ----------
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
+
+  type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
+  const usageByMonth: MonthAgg[] = useMemo(() => {
+    const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({
+      monthIdx: i,
+      monthLabel: months[i],
+      litres: 0,
+      spend: 0,
+    }));
+    orders.forEach((o) => {
+      const d = new Date(o.created_at);
+      if (d.getFullYear() !== selectedYear) return;
+      const m = d.getMonth();
+      base[m].litres += o.litres ?? 0;
+      base[m].spend += o.amountGBP ?? 0;
+    });
+    return base;
+  }, [orders, selectedYear]);
+
+  const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
+  const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
+
   return (
-    <div className="min-h-screen bg-[#0A1324] text-white">
-      {/* Header */}
-      <header className="sticky top-0 z-10 bg-[#0A1324]/70 backdrop-blur border-b border-white/10">
-        <div className="mx-auto max-w-6xl px-4 py-3 flex items-center gap-3">
-          <img src="/logo-email.png" alt="FuelFlow" className="h-8 w-auto" />
-          <div className="text-white/80">
+    <div className="min-h-screen bg-[#0b1220] text-white">
+      <div className="max-w-6xl mx-auto px-4 py-4 space-y-6">
+        {/* Header */}
+        <div className="flex items-center gap-3">
+          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+          <div className="text-sm text-white/70">
             Welcome back, <span className="font-medium">{userEmail}</span>
           </div>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex gap-2">
             <a
               href="/order"
               aria-disabled={!pricesAreToday}
@@ -319,74 +276,55 @@ export default function ClientDashboard() {
               Order Fuel
             </a>
             <button
-              onClick={onRefresh}
+              onClick={refresh}
               className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-              disabled={loading}
             >
               Refresh
             </button>
             <button
-              onClick={onLogout}
+              onClick={logout}
               className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
             >
               Log out
             </button>
           </div>
         </div>
-      </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-5 space-y-6">
-        {/* Prices banner */}
+        {/* Prices out-of-date banner */}
         {!pricesAreToday && (
           <div className="rounded-xl border border-red-400/40 bg-red-500/10 p-4 text-sm text-red-200">
             <div className="font-semibold mb-1">Prices are out of date</div>
-            <div className="text-red-200/90">
+            <div>
               Today’s prices haven’t been loaded yet. Click{" "}
-              <button
-                onClick={onRefresh}
-                className="underline decoration-yellow-400 underline-offset-2 hover:text-white"
-              >
+              <button className="underline decoration-yellow-400 underline-offset-2" onClick={refresh}>
                 Refresh
               </button>{" "}
               to update. Ordering is disabled until today’s prices are available.
             </div>
-            {priceSourceTried.length > 0 && (
-              <div className="mt-2 text-xs text-red-200/80">
-                Tried source: {priceSourceTried.join(", ")}.
-              </div>
-            )}
           </div>
         )}
 
-        {/* Top cards */}
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Petrol */}
-          <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-5">
-            <div className="text-white/80 mb-1">Petrol (95)</div>
+        {/* prices */}
+        <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <Card title="Petrol (95)">
             <div className="text-3xl font-bold">
-              {prices.petrol ? gbp.format(prices.petrol.total_price) : "—"}
-              <span className="text-base font-normal text-white/70"> / litre</span>
+              {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
+              <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            <div className="mt-2 text-xs text-white/60">
-              Last update: {lastUpdateText(prices.petrol)}
+            <div className="mt-1 text-xs text-white/60">
+              {priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : "As of —"}
             </div>
-          </div>
-
-          {/* Diesel */}
-          <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-5">
-            <div className="text-white/80 mb-1">Diesel</div>
+          </Card>
+          <Card title="Diesel">
             <div className="text-3xl font-bold">
-              {prices.diesel ? gbp.format(prices.diesel.total_price) : "—"}
-              <span className="text-base font-normal text-white/70"> / litre</span>
+              {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
+              <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            <div className="mt-2 text-xs text-white/60">
-              Last update: {lastUpdateText(prices.diesel)}
+            <div className="mt-1 text-xs text-white/60">
+              {priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : "As of —"}
             </div>
-          </div>
-
-          {/* Contracts quick-links (optional) */}
-          <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-5">
-            <div className="text-white/80 mb-2">Contracts</div>
+          </Card>
+          <Card title="Contracts">
             <div className="flex gap-2">
               <a
                 href="/order"
@@ -401,16 +339,16 @@ export default function ClientDashboard() {
                 Terms
               </a>
             </div>
-          </div>
+          </Card>
         </section>
 
-        {/* Usage & Spend (12 months, selected year / previous year only) */}
-        <section className="rounded-2xl border border-white/10 bg-white/[0.05] p-5">
-          <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        {/* Usage & Spend */}
+        <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
             <h2 className="text-xl md:text-2xl font-semibold">Usage & Spend</h2>
             <div className="flex items-center gap-2">
               <span className="text-sm text-white/70">Year:</span>
-              <div className="flex rounded-lg bg-white/10 text-sm overflow-hidden">
+              <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
                 <button
                   onClick={() => setSelectedYear(currentYear - 1)}
                   disabled={selectedYear === currentYear - 1}
@@ -439,8 +377,8 @@ export default function ClientDashboard() {
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="text-white/70">
-                <tr className="border-b border-white/10">
+              <thead className="text-gray-300">
+                <tr className="border-b border-gray-700/60">
                   <th className="py-2 pr-4">Month</th>
                   <th className="py-2 pr-4">Litres</th>
                   <th className="py-2 pr-4">Spend</th>
@@ -448,39 +386,25 @@ export default function ClientDashboard() {
               </thead>
               <tbody>
                 {usageByMonth.map((r) => (
-                  <tr key={r.monthIdx} className="border-b border-white/5">
+                  <tr key={r.monthIdx} className="border-b border-gray-800/60">
                     <td className="py-2 pr-4">
                       {r.monthLabel} {String(selectedYear).slice(2)}
                     </td>
-                    <td className="py-2 pr-4">
+                    <td className="py-2 pr-4 align-middle">
                       {Math.round(r.litres).toLocaleString()}
                       <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
                         <div
                           className="h-1.5 rounded bg-yellow-500/80"
-                          style={{
-                            width: `${
-                              (() => {
-                                const max = Math.max(1, ...usageByMonth.map((x) => x.litres));
-                                return (r.litres / max) * 100;
-                              })()
-                            }%`,
-                          }}
+                          style={{ width: `${(r.litres / maxL) * 100}%` }}
                         />
                       </div>
                     </td>
-                    <td className="py-2 pr-4">
+                    <td className="py-2 pr-4 align-middle">
                       {gbp.format(r.spend)}
                       <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
                         <div
                           className="h-1.5 rounded bg-white/40"
-                          style={{
-                            width: `${
-                              (() => {
-                                const max = Math.max(1, ...usageByMonth.map((x) => x.spend));
-                                return (r.spend / max) * 100;
-                              })()
-                            }%`,
-                          }}
+                          style={{ width: `${(r.spend / maxS) * 100}%` }}
                         />
                       </div>
                     </td>
@@ -491,35 +415,34 @@ export default function ClientDashboard() {
           </div>
         </section>
 
-        {/* Errors */}
+        {/* errors */}
         {error && (
-          <div className="rounded-xl border border-red-400/40 bg-red-500/10 p-4 text-sm text-red-200">
+          <div className="bg-red-800/60 border border-red-500 text-red-100 p-4 rounded">
             {error}
           </div>
         )}
 
-        {/* Recent Orders */}
-        <section className="rounded-2xl border border-white/10 bg-white/[0.05] p-5">
-          <div className="mb-4 flex items-center justify-between">
+        {/* recent orders */}
+        <section className="bg-gray-800 rounded-xl p-4 md:p-6">
+          <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl md:text-2xl font-semibold">Recent Orders</h2>
             <button
-              onClick={onRefresh}
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-              disabled={loading}
+              onClick={refresh}
+              className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
             >
               Refresh
             </button>
           </div>
 
           {loading ? (
-            <div className="text-white/70">Loading…</div>
+            <div className="text-gray-300">Loading…</div>
           ) : orders.length === 0 ? (
-            <div className="text-white/70">No orders yet.</div>
+            <div className="text-gray-400">No orders yet.</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
-                <thead className="text-white/70">
-                  <tr className="border-b border-white/10">
+                <thead className="text-gray-300">
+                  <tr className="border-b border-gray-700">
                     <th className="py-2 pr-4">Date</th>
                     <th className="py-2 pr-4">Product</th>
                     <th className="py-2 pr-4">Litres</th>
@@ -529,9 +452,13 @@ export default function ClientDashboard() {
                 </thead>
                 <tbody>
                   {orders.map((o) => (
-                    <tr key={o.id} className="border-b border-white/5">
-                      <td className="py-2 pr-4">{new Date(o.created_at).toLocaleString()}</td>
-                      <td className="py-2 pr-4 capitalize">{(o.fuel as string) || "—"}</td>
+                    <tr key={o.id} className="border-b border-gray-800">
+                      <td className="py-2 pr-4">
+                        {new Date(o.created_at).toLocaleString()}
+                      </td>
+                      <td className="py-2 pr-4 capitalize">
+                        {(o.fuel as string) || "—"}
+                      </td>
                       <td className="py-2 pr-4">{o.litres ?? "—"}</td>
                       <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
                       <td className="py-2 pr-4">
@@ -552,8 +479,18 @@ export default function ClientDashboard() {
             </div>
           )}
         </section>
-      </main>
+      </div>
     </div>
   );
 }
+
+function Card(props: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-gray-800 rounded-xl p-4 md:p-5">
+      <p className="text-gray-400">{props.title}</p>
+      <div className="mt-2">{props.children}</div>
+    </div>
+  );
+}
+
 
