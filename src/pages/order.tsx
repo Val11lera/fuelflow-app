@@ -16,9 +16,17 @@ type Fuel = "diesel" | "petrol";
 type ContractRow = {
   id: string;
   email: string | null;
-  status: "draft" | "signed" | "approved" | "cancelled";
   tank_option: "buy" | "rent";
-  created_at: string;
+  status: "draft" | "signed" | "approved" | "cancelled";
+  customer_name?: string | null;
+  created_at?: string | null;
+  approved_at?: string | null;
+  signed_at?: string | null;
+  tank_size_l?: number | null;
+  monthly_consumption_l?: number | null;
+  fuelflow_price_gbp_l?: number | null;
+  est_monthly_savings_gbp?: number | null;
+  est_payback_months?: number | null;
 };
 
 /* =========================
@@ -51,7 +59,7 @@ const row = "grid grid-cols-1 md:grid-cols-2 gap-4";
    Helpers & constants
    ========================= */
 const termsVersion = "v1.1";
-const STORAGE_KEY = "order:form:v2";
+const STORAGE_KEY = "order:form:v3";
 
 const GBP = (n: number | null | undefined) =>
   n == null || !Number.isFinite(n)
@@ -62,6 +70,16 @@ const GBP = (n: number | null | undefined) =>
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       }).format(n);
+
+const StepBadge = ({ state }: { state: "todo" | "done" | "wait" }) => {
+  const map = {
+    todo: "bg-white/10 text-white/70",
+    done: "bg-green-500/20 text-green-300",
+    wait: "bg-yellow-500/20 text-yellow-300",
+  } as const;
+  const text = state === "todo" ? "to do" : state === "done" ? "done" : "wait";
+  return <span className={`${pill} ${map[state]}`}>{text}</span>;
+};
 
 /* =========================
    Page
@@ -89,29 +107,22 @@ export default function OrderPage() {
   const [accepted, setAccepted] = useState(false);
   const [checkingTerms, setCheckingTerms] = useState(false);
 
-  // contracts state
-  const [activeBuy, setActiveBuy] = useState<boolean>(false);   // signed OR approved
-  const [activeRent, setActiveRent] = useState<boolean>(false); // approved only
+  // contracts
+  const [contracts, setContracts] = useState<ContractRow[]>([]);
+  const [activeBuy, setActiveBuy] = useState(false);   // signed OR approved
+  const [activeRent, setActiveRent] = useState(false); // approved only
+  const [rentAwaitingApproval, setRentAwaitingApproval] = useState<ContractRow | null>(null);
 
   // ROI / Contract modals
   const [showCalc, setShowCalc] = useState(false);
-  const [calcOption, setCalcOption] = useState<TankOption>("buy"); // pick inside modal
-
-  // checkout
-  const [startingCheckout, setStartingCheckout] = useState(false);
-
-  // ROI fields
-  const [tankSizeL, setTankSizeL] = useState<number>(5000);
-  const [monthlyConsumptionL, setMonthlyConsumptionL] = useState<number>(10000);
-  const [marketPrice, setMarketPrice] = useState<number>(1.35);
-  const [cheaperBy, setCheaperBy] = useState<number>(0.09);
+  const [calcOption, setCalcOption] = useState<TankOption>("buy");
 
   // Contract wizard modal
   const [showWizard, setShowWizard] = useState(false);
   const [wizardOption, setWizardOption] = useState<TankOption>("buy");
   const [savingContract, setSavingContract] = useState(false);
 
-  // professional contract extras (saved into JSON if column exists)
+  // professional extras (stored in JSON if available)
   const [phone, setPhone] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [companyNumber, setCompanyNumber] = useState("");
@@ -122,6 +133,15 @@ export default function OrderPage() {
   const [sitePostcode, setSitePostcode] = useState("");
   const [signatureName, setSignatureName] = useState("");
 
+  // checkout
+  const [startingCheckout, setStartingCheckout] = useState(false);
+
+  // ROI numbers
+  const [tankSizeL, setTankSizeL] = useState<number>(5000);
+  const [monthlyConsumptionL, setMonthlyConsumptionL] = useState<number>(10000);
+  const [marketPrice, setMarketPrice] = useState<number>(1.35);
+  const [cheaperBy, setCheaperBy] = useState<number>(0.09);
+
   /* ---------- auth (prefill email) ---------- */
   useEffect(() => {
     (async () => {
@@ -131,32 +151,22 @@ export default function OrderPage() {
     })();
   }, []);
 
-  /* ---------- prices (EXACTLY like your working dashboard) ---------- */
+  /* ---------- prices (like your dashboard) ---------- */
   useEffect(() => {
     (async () => {
       try {
-        // 1) latest_prices
-        let { data: lp } = await supabase
-          .from("latest_prices")
-          .select("fuel,total_price");
-
-        // 2) fallback: latest_daily_prices
+        let { data: lp } = await supabase.from("latest_prices").select("fuel,total_price");
         if (!lp?.length) {
-          const { data: dp } = await supabase
-            .from("latest_daily_prices")
-            .select("fuel,total_price");
+          const { data: dp } = await supabase.from("latest_daily_prices").select("fuel,total_price");
           if (dp?.length) lp = dp as any;
         }
-
         if (lp?.length) {
           for (const r of lp as { fuel: Fuel; total_price: number }[]) {
             if (r.fuel === "petrol") setPetrolPrice(Number(r.total_price));
             if (r.fuel === "diesel") setDieselPrice(Number(r.total_price));
           }
         }
-      } catch {
-        // ignore; tiles will show em-dash
-      }
+      } catch {}
     })();
   }, []);
 
@@ -175,12 +185,11 @@ export default function OrderPage() {
     () => Math.max(0, (monthlyConsumptionL || 0) * (cheaperBy || 0)),
     [monthlyConsumptionL, cheaperBy]
   );
-  const capexRequired = useMemo(
-    () => (calcOption === "buy" || wizardOption === "buy" ? 12000 : 0),
-    [calcOption, wizardOption]
+  const estPaybackMonths = useMemo(
+    () =>
+      fuelflowPrice > 0 && estMonthlySavings > 0 ? Math.round((12000 / estMonthlySavings) * 10) / 10 : null,
+    [estMonthlySavings, fuelflowPrice]
   );
-  const estPaybackMonths =
-    capexRequired && estMonthlySavings > 0 ? capexRequired / estMonthlySavings : null;
 
   /* ---------- load/save draft ---------- */
   useEffect(() => {
@@ -206,22 +215,12 @@ export default function OrderPage() {
     try {
       localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({
-          fuel,
-          litres,
-          deliveryDate,
-          email,
-          fullName,
-          address1,
-          address2,
-          postcode,
-          city,
-        })
+        JSON.stringify({ fuel, litres, deliveryDate, email, fullName, address1, address2, postcode, city })
       );
     } catch {}
   }, [fuel, litres, deliveryDate, email, fullName, address1, address2, postcode, city]);
 
-  /* ---------- Terms acceptance on return ---------- */
+  /* ---------- Terms acceptance ---------- */
   useEffect(() => {
     const acceptedParam = qp.get("accepted");
     const emailParam = qp.get("email");
@@ -263,35 +262,36 @@ export default function OrderPage() {
     window.location.href = ret;
   }
 
-  /* ---------- check active contracts ---------- */
+  /* ---------- load contracts & compute state ---------- */
+  async function refreshContracts() {
+    if (!email) return;
+    const { data } = await supabase
+      .from("contracts")
+      .select(
+        "id,email,tank_option,status,customer_name,created_at,approved_at,signed_at,tank_size_l,monthly_consumption_l,fuelflow_price_gbp_l,est_monthly_savings_gbp,est_payback_months"
+      )
+      .eq("email", email.toLowerCase())
+      .order("created_at", { ascending: false });
+    const rows = (data ?? []) as ContractRow[];
+    setContracts(rows);
+
+    const buyActive = rows.some(
+      (r) => r.tank_option === "buy" && (r.status === "signed" || r.status === "approved")
+    );
+    const rentApproved = rows.some((r) => r.tank_option === "rent" && r.status === "approved");
+    const rentPending = rows.find((r) => r.tank_option === "rent" && r.status === "signed") || null;
+
+    setActiveBuy(buyActive);
+    setActiveRent(rentApproved);
+    setRentAwaitingApproval(rentPending);
+  }
+
   useEffect(() => {
-    if (!supabase || !email) {
-      setActiveBuy(false);
-      setActiveRent(false);
-      return;
-    }
-    (async () => {
-      const { data } = await supabase
-        .from("contracts")
-        .select("tank_option,status")
-        .eq("email", email.toLowerCase());
-
-      const rows = (data ?? []) as ContractRow[];
-
-      // BUY: signed OR approved
-      const buyActive = rows.some(
-        (r) => r.tank_option === "buy" && (r.status === "signed" || r.status === "approved")
-      );
-      // RENT: must be approved
-      const rentActive = rows.some((r) => r.tank_option === "rent" && r.status === "approved");
-
-      setActiveBuy(buyActive);
-      setActiveRent(rentActive);
-    })();
+    refreshContracts();
   }, [email, showWizard]);
 
   /* ---------- checkout ---------- */
-  const requirementsOkay = accepted && (activeBuy || activeRent);
+  const requirementsOkay = accepted && (activeBuy || activeRent); // rent only after approval
 
   const payDisabled =
     !requirementsOkay ||
@@ -340,12 +340,12 @@ export default function OrderPage() {
     }
   }
 
-  /* ---------- save contract (safe columns) ---------- */
+  /* ---------- sign & save contract ---------- */
   async function signAndSaveContract(option: TankOption) {
     if (!supabase) return;
 
     if (!fullName.trim()) {
-      alert("Please enter your full name in the order form before signing.");
+      alert("Please enter your full name in the order form first.");
       return;
     }
     if (!signatureName.trim()) {
@@ -362,14 +362,12 @@ export default function OrderPage() {
       address_line2: address2 || null,
       city: city || null,
       postcode: postcode || null,
-
       tank_size_l: tankSizeL || null,
       monthly_consumption_l: monthlyConsumptionL || null,
       market_price_gbp_l: marketPrice || null,
       fuelflow_price_gbp_l: fuelflowPrice || null,
       est_monthly_savings_gbp: estMonthlySavings || null,
       est_payback_months: estPaybackMonths || null,
-
       terms_version: termsVersion,
       signature_name: signatureName,
       signed_at: new Date().toISOString(),
@@ -391,27 +389,29 @@ export default function OrderPage() {
     try {
       setSavingContract(true);
 
-      // try with extra first
-      let { error } = await supabase
-        .from("contracts")
-        .insert({ ...base, extra: extraPayload } as any);
+      let { error } = await supabase.from("contracts").insert({ ...base, extra: extraPayload } as any);
 
-      // if the column doesn't exist, retry without it
+      // If extra jsonb doesn't exist
       if (error && /extra.*does not exist/i.test(error.message || "")) {
         const retry = await supabase.from("contracts").insert(base as any);
         if (retry.error) throw retry.error;
       } else if (error) {
-        throw error;
-      }
-
-      if (option === "buy") setActiveBuy(true);
-      if (option === "rent") {
-        alert("Rental contract signed. Admin approval is required before ordering.");
-      } else {
-        alert("Purchase contract signed.");
+        // Unique index message -> already active
+        if (/duplicate|already exists|unique/i.test(error.message)) {
+          alert("You already have an active contract of this type.");
+        } else {
+          throw error;
+        }
       }
 
       setShowWizard(false);
+      await refreshContracts();
+
+      if (option === "buy") {
+        alert("Purchase contract signed. You can order immediately.");
+      } else {
+        alert("Rental contract signed. Waiting for admin approval.");
+      }
     } catch (e: any) {
       alert(e?.message || "Failed to save contract.");
     } finally {
@@ -434,74 +434,134 @@ export default function OrderPage() {
           </div>
         </div>
 
-        {/* Requirements */}
-        <section className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-          {/* Terms */}
-          <div className={card}>
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">Terms &amp; Conditions</h3>
-              {!accepted ? (
-                <span className={`${pill} bg-red-500/20 text-red-300`}>missing</span>
-              ) : (
-                <span className={`${pill} bg-green-500/20 text-green-300`}>ok</span>
-              )}
+        {/* Contract Panel – simple, step-by-step */}
+        <section className={card}>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <h3 className="text-lg font-semibold">Contract</h3>
+            <div className="text-sm text-white/70">
+              Buy: active once signed · Rent: needs admin approval after signing
             </div>
-            <p className="mt-2 text-white/70 text-sm">
-              You must read and accept the latest Terms before ordering.
-            </p>
-            <div className="mt-3">
-              <button type="button" className={`${button} ${buttonGhost}`} onClick={openTerms}>
-                Read &amp; accept Terms
-              </button>
-            </div>
-            {!accepted && checkingTerms && (
-              <div className="mt-2 text-xs text-white/60">Checking acceptance…</div>
-            )}
           </div>
 
-          {/* Contract */}
-          <div className={card}>
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">Contract</h3>
-              <span className={`${pill} bg-white/10 text-white/80`}>required</span>
+          <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Step 1: Terms */}
+            <div className="rounded-xl border border-white/10 p-4 bg-white/5">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">Step 1 — Terms</div>
+                <StepBadge state={accepted ? "done" : "todo"} />
+              </div>
+              <p className="text-sm text-white/70 mt-1">You must accept the latest Terms.</p>
+              <button type="button" className={`${button} ${buttonGhost} mt-3`} onClick={openTerms}>
+                Read & accept Terms
+              </button>
+              {!accepted && checkingTerms && (
+                <div className="text-xs text-white/60 mt-2">Checking acceptance…</div>
+              )}
             </div>
-            <p className="mt-2 text-white/70 text-sm">
-              <b>Buy</b>: signed contract is enough. <b>Rent</b>: requires admin approval after signing.
-            </p>
 
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                className={`${button} ${buttonGhost}`}
-                onClick={() => {
-                  setCalcOption("buy");
-                  setShowCalc(true);
-                }}
-              >
-                ROI / Calculator
-              </button>
-              <button
-                type="button"
-                className={`${button} ${buttonPrimary}`}
-                onClick={() => {
-                  setWizardOption("buy"); // default to buy; you can add a picker if you want
-                  setShowWizard(true);
-                }}
-                disabled={activeBuy}
-                title={activeBuy ? "You already have an active Buy contract." : ""}
-              >
-                Start Contract
-              </button>
-              <span className="ml-2 text-sm text-white/60">
-                Buy: {activeBuy ? <b className="text-green-300">active</b> : "—"} ·{" "}
-                Rent: {activeRent ? <b className="text-green-300">active</b> : "—"}
-              </span>
+            {/* Step 2: Sign contract */}
+            <div className="rounded-xl border border-white/10 p-4 bg-white/5">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">Step 2 — Sign</div>
+                <StepBadge
+                  state={
+                    activeBuy || rentAwaitingApproval || activeRent
+                      ? "done"
+                      : accepted
+                      ? "todo"
+                      : "wait"
+                  }
+                />
+              </div>
+              <p className="text-sm text-white/70 mt-1">
+                Choose a contract type. Buy becomes active immediately; Rent requires approval.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  className={`${button} ${buttonPrimary}`}
+                  disabled={!accepted || activeBuy}
+                  title={!accepted ? "Accept Terms first" : activeBuy ? "Buy contract already active" : ""}
+                  onClick={() => {
+                    setWizardOption("buy");
+                    setShowWizard(true);
+                  }}
+                >
+                  Start Buy
+                </button>
+                <button
+                  className={`${button} ${buttonGhost}`}
+                  disabled={!accepted || !!rentAwaitingApproval || activeRent}
+                  title={
+                    !accepted
+                      ? "Accept Terms first"
+                      : rentAwaitingApproval
+                      ? "Rent contract awaiting approval"
+                      : activeRent
+                      ? "Rent contract already active"
+                      : ""
+                  }
+                  onClick={() => {
+                    setWizardOption("rent");
+                    setShowWizard(true);
+                  }}
+                >
+                  Start Rent
+                </button>
+              </div>
+
+              {/* Current state preview */}
+              <div className="mt-3 text-sm">
+                <div>
+                  Buy:&nbsp;
+                  {activeBuy ? <span className="text-green-300">active</span> : "—"}
+                </div>
+                <div>
+                  Rent:&nbsp;
+                  {activeRent ? (
+                    <span className="text-green-300">active</span>
+                  ) : rentAwaitingApproval ? (
+                    <span className="text-yellow-300">awaiting approval</span>
+                  ) : (
+                    "—"
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Step 3: Approval / Active */}
+            <div className="rounded-xl border border-white/10 p-4 bg-white/5">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">Step 3 — Approval</div>
+                <StepBadge
+                  state={
+                    activeBuy || activeRent
+                      ? "done"
+                      : rentAwaitingApproval
+                      ? "wait"
+                      : accepted
+                      ? "todo"
+                      : "wait"
+                  }
+                />
+              </div>
+
+              {activeBuy ? (
+                <p className="text-sm text-green-300 mt-2">Buy contract active — you can order now.</p>
+              ) : activeRent ? (
+                <p className="text-sm text-green-300 mt-2">Rent contract approved — you can order now.</p>
+              ) : rentAwaitingApproval ? (
+                <p className="text-sm text-yellow-300 mt-2">
+                  Rent contract signed — waiting for admin approval.
+                </p>
+              ) : (
+                <p className="text-sm text-white/70 mt-2">No active contract yet.</p>
+              )}
             </div>
           </div>
         </section>
 
-        {/* Price tiles */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
+        {/* Prices */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 my-6">
           <Tile title="Petrol (95)" value={petrolPrice != null ? GBP(petrolPrice) : "—"} suffix="/ litre" />
           <Tile title="Diesel" value={dieselPrice != null ? GBP(dieselPrice) : "—"} suffix="/ litre" />
           <Tile title="Estimated Total" value={GBP(estTotal)} />
@@ -511,10 +571,7 @@ export default function OrderPage() {
         <section className={`${card} px-5 md:px-6 py-6`}>
           {!requirementsOkay && (
             <div className="mb-4 text-center text-yellow-300 text-sm">
-              Complete the requirements first:
-              <div className="text-white/70 text-xs">
-                • Accept the Terms &nbsp;• Sign a Buy contract (or Rent and wait for approval)
-              </div>
+              Complete the steps above to enable ordering.
             </div>
           )}
 
@@ -529,95 +586,46 @@ export default function OrderPage() {
 
             <div>
               <label className={label}>Litres</label>
-              <input
-                className={input}
-                type="number"
-                min={1}
-                value={litres}
-                onChange={(e) => setLitres(Number(e.target.value))}
-                disabled={!requirementsOkay}
-              />
+              <input className={input} type="number" min={1} value={litres} onChange={(e) => setLitres(Number(e.target.value))} disabled={!requirementsOkay} />
             </div>
 
             <div>
               <label className={label}>Delivery date</label>
-              <input
-                className={input}
-                type="date"
-                value={deliveryDate}
-                onChange={(e) => setDeliveryDate(e.target.value)}
-                disabled={!requirementsOkay}
-              />
+              <input className={input} type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div>
               <label className={label}>Your email (receipt)</label>
-              <input
-                className={input}
-                type="email"
-                placeholder="name@company.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={!requirementsOkay}
-              />
+              <input className={input} type="email" value={email} onChange={(e) => setEmail(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div className="md:col-span-2">
               <label className={label}>Full name</label>
-              <input
-                className={input}
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                disabled={!requirementsOkay}
-              />
+              <input className={input} value={fullName} onChange={(e) => setFullName(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div>
               <label className={label}>Address line 1</label>
-              <input
-                className={input}
-                value={address1}
-                onChange={(e) => setAddress1(e.target.value)}
-                disabled={!requirementsOkay}
-              />
+              <input className={input} value={address1} onChange={(e) => setAddress1(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div>
               <label className={label}>Address line 2</label>
-              <input
-                className={input}
-                value={address2}
-                onChange={(e) => setAddress2(e.target.value)}
-                disabled={!requirementsOkay}
-              />
+              <input className={input} value={address2} onChange={(e) => setAddress2(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div>
               <label className={label}>Postcode</label>
-              <input
-                className={input}
-                value={postcode}
-                onChange={(e) => setPostcode(e.target.value)}
-                disabled={!requirementsOkay}
-              />
+              <input className={input} value={postcode} onChange={(e) => setPostcode(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div>
               <label className={label}>City</label>
-              <input
-                className={input}
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
-                disabled={!requirementsOkay}
-              />
+              <input className={input} value={city} onChange={(e) => setCity(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div className="md:col-span-2 mt-3">
-              <button
-                className={`${button} ${buttonPrimary} w-full md:w-auto`}
-                disabled={payDisabled || startingCheckout}
-                onClick={startCheckout}
-              >
+              <button className={`${button} ${buttonPrimary} w-full md:w-auto`} disabled={payDisabled || startingCheckout} onClick={startCheckout}>
                 {startingCheckout ? "Starting checkout…" : "Pay with Stripe"}
               </button>
             </div>
@@ -632,16 +640,10 @@ export default function OrderPage() {
           <div className="mb-3">
             <label className={label}>Contract type</label>
             <div className="flex gap-2">
-              <button
-                className={`${button} ${calcOption === "buy" ? buttonPrimary : buttonGhost}`}
-                onClick={() => setCalcOption("buy")}
-              >
+              <button className={`${button} ${calcOption === "buy" ? buttonPrimary : buttonGhost}`} onClick={() => setCalcOption("buy")}>
                 Buy
               </button>
-              <button
-                className={`${button} ${calcOption === "rent" ? buttonPrimary : buttonGhost}`}
-                onClick={() => setCalcOption("rent")}
-              >
+              <button className={`${button} ${calcOption === "rent" ? buttonPrimary : buttonGhost}`} onClick={() => setCalcOption("rent")}>
                 Rent
               </button>
             </div>
@@ -650,7 +652,7 @@ export default function OrderPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 my-4">
             <Metric title="FuelFlow price" value={`${GBP(fuelflowPrice)} / L`} />
             <Metric title="Est. monthly savings" value={GBP(estMonthlySavings)} />
-            <Metric title="Capex required" value={calcOption === "rent" ? "£0 (rental)" : GBP(capexRequired)} />
+            <Metric title="Est. payback" value={estPaybackMonths ? `${estPaybackMonths} mo` : "—"} />
           </div>
 
           <div className={row}>
@@ -697,7 +699,7 @@ export default function OrderPage() {
           <EstimateBanner />
 
           <Wizard>
-            {/* Step 1: Contact */}
+            {/* Contact */}
             <Wizard.Step title="Contact">
               <div className={row}>
                 <Field label="Full name">
@@ -712,7 +714,7 @@ export default function OrderPage() {
               </div>
             </Wizard.Step>
 
-            {/* Step 2: Business */}
+            {/* Business */}
             <Wizard.Step title="Business">
               <div className={row}>
                 <Field label="Company name">
@@ -727,7 +729,7 @@ export default function OrderPage() {
               </div>
             </Wizard.Step>
 
-            {/* Step 3: Site & Tank */}
+            {/* Site & Tank */}
             <Wizard.Step title="Site & Tank">
               <div className={row}>
                 <Field label="Site address line 1">
@@ -758,12 +760,12 @@ export default function OrderPage() {
               </div>
             </Wizard.Step>
 
-            {/* Step 4: Signature */}
+            {/* Signature */}
             <Wizard.Step title="Signature">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <Metric title="FuelFlow price" value={`${GBP(fuelflowPrice)} / L`} />
                 <Metric title="Est. monthly savings" value={GBP(estMonthlySavings)} />
-                <Metric title="Capex required" value={wizardOption === "rent" ? "£0 (rental)" : GBP(capexRequired)} />
+                <Metric title="Est. payback" value={estPaybackMonths ? `${estPaybackMonths} mo` : "—"} />
               </div>
 
               <div className="mt-4">
@@ -776,17 +778,18 @@ export default function OrderPage() {
                 />
               </div>
 
-              <div className="mt-6 flex justify-end gap-3">
-                <button className={`${button} ${buttonGhost}`} disabled={savingContract} onClick={() => setShowWizard(false)}>
-                  Cancel
-                </button>
-                <button
-                  className={`${button} ${buttonPrimary}`}
-                  disabled={savingContract}
-                  onClick={() => signAndSaveContract(wizardOption)}
-                >
-                  {savingContract ? "Saving…" : "Sign & Save"}
-                </button>
+              <div className="mt-6 flex justify-between gap-3">
+                <div className="text-white/60 text-sm">
+                  By signing you agree to the Terms and the figures above are estimates.
+                </div>
+                <div className="flex gap-3">
+                  <button className={`${button} ${buttonGhost}`} disabled={savingContract} onClick={() => setShowWizard(false)}>
+                    Cancel
+                  </button>
+                  <button className={`${button} ${buttonPrimary}`} disabled={savingContract} onClick={() => signAndSaveContract(wizardOption)}>
+                    {savingContract ? "Saving…" : "Sign & Save"}
+                  </button>
+                </div>
               </div>
             </Wizard.Step>
           </Wizard>
@@ -907,12 +910,7 @@ const Wizard: WizardComponent = ({ children }) => {
       <div className="rounded-xl border border-white/10 bg-white/4 p-4">{steps[idx]}</div>
 
       <div className="mt-3 flex justify-between">
-        <button
-          className={`${button} ${buttonGhost}`}
-          onClick={() => setIdx(Math.max(0, idx - 1))}
-          disabled={idx === 0}
-          type="button"
-        >
+        <button className={`${button} ${buttonGhost}`} onClick={() => setIdx(Math.max(0, idx - 1))} disabled={idx === 0} type="button">
           Back
         </button>
         <button
