@@ -72,8 +72,6 @@ export default function OrderPage() {
   // live prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
-  const [pricesUpdatedAt, setPricesUpdatedAt] = useState<string | null>(null);
-  const [loadingPrices, setLoadingPrices] = useState<boolean>(true);
 
   // form state
   const [fuel, setFuel] = useState<Fuel>("diesel");
@@ -124,38 +122,40 @@ export default function OrderPage() {
   const [sitePostcode, setSitePostcode] = useState("");
   const [signatureName, setSignatureName] = useState("");
 
-  /* ---------- live prices (same approach as dashboard) ---------- */
+  /* ---------- auth (prefill email) ---------- */
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.auth.getUser();
+      const em = (data?.user?.email || "").toLowerCase();
+      if (em && !email) setEmail(em);
+    })();
+  }, []);
+
+  /* ---------- prices (EXACTLY like your working dashboard) ---------- */
   useEffect(() => {
     (async () => {
       try {
-        setLoadingPrices(true);
-
-        // Preferred: latest_prices
-        let { data: lp, error } = await supabase
+        // 1) latest_prices
+        let { data: lp } = await supabase
           .from("latest_prices")
-          .select("fuel,total_price,updated_at")
-          .limit(2);
+          .select("fuel,total_price");
 
-        // Fallback: latest_daily_prices
-        if (error || !lp?.length) {
-          const fb = await supabase
+        // 2) fallback: latest_daily_prices
+        if (!lp?.length) {
+          const { data: dp } = await supabase
             .from("latest_daily_prices")
-            .select("fuel,total_price,updated_at,price_date")
-            .limit(2);
-          lp = fb.data ?? null;
+            .select("fuel,total_price");
+          if (dp?.length) lp = dp as any;
         }
 
         if (lp?.length) {
-          let ts: string | null = null;
-          lp.forEach((r: any) => {
+          for (const r of lp as { fuel: Fuel; total_price: number }[]) {
             if (r.fuel === "petrol") setPetrolPrice(Number(r.total_price));
             if (r.fuel === "diesel") setDieselPrice(Number(r.total_price));
-            ts = ts || r.updated_at || r.price_date || null;
-          });
-          setPricesUpdatedAt(ts);
+          }
         }
-      } finally {
-        setLoadingPrices(false);
+      } catch {
+        // ignore; tiles will show em-dash
       }
     })();
   }, []);
@@ -340,7 +340,7 @@ export default function OrderPage() {
     }
   }
 
-  /* ---------- save contract (safe set of columns) ---------- */
+  /* ---------- save contract (safe columns) ---------- */
   async function signAndSaveContract(option: TankOption) {
     if (!supabase) return;
 
@@ -354,7 +354,6 @@ export default function OrderPage() {
     }
 
     const base = {
-      // legacy + new
       contract_type: option,
       tank_option: option,
       customer_name: fullName,
@@ -377,7 +376,6 @@ export default function OrderPage() {
       status: "signed" as const,
     };
 
-    // Optional JSON payload (only if you added contracts.extra jsonb)
     const extraPayload = {
       phone,
       companyName,
@@ -408,7 +406,6 @@ export default function OrderPage() {
 
       if (option === "buy") setActiveBuy(true);
       if (option === "rent") {
-        // For rent, admin must approve (via contract_acceptances) before it turns active
         alert("Rental contract signed. Admin approval is required before ordering.");
       } else {
         alert("Purchase contract signed.");
@@ -472,7 +469,6 @@ export default function OrderPage() {
               <b>Buy</b>: signed contract is enough. <b>Rent</b>: requires admin approval after signing.
             </p>
 
-            {/* One clear entry point */}
             <div className="mt-3 flex flex-wrap gap-2">
               <button
                 type="button"
@@ -488,7 +484,7 @@ export default function OrderPage() {
                 type="button"
                 className={`${button} ${buttonPrimary}`}
                 onClick={() => {
-                  setWizardOption("buy");
+                  setWizardOption("buy"); // default to buy; you can add a picker if you want
                   setShowWizard(true);
                 }}
                 disabled={activeBuy}
@@ -509,13 +505,6 @@ export default function OrderPage() {
           <Tile title="Petrol (95)" value={petrolPrice != null ? GBP(petrolPrice) : "—"} suffix="/ litre" />
           <Tile title="Diesel" value={dieselPrice != null ? GBP(dieselPrice) : "—"} suffix="/ litre" />
           <Tile title="Estimated Total" value={GBP(estTotal)} />
-        </div>
-        <div className="mb-6 text-xs text-white/60">
-          {loadingPrices
-            ? "Loading prices…"
-            : pricesUpdatedAt
-            ? `Last update: ${new Date(pricesUpdatedAt).toLocaleString()}`
-            : "Prices timestamp unavailable."}
         </div>
 
         {/* Order form */}
@@ -880,7 +869,7 @@ function Modal({
 }
 
 /* =========================
-   Wizard (typed)
+   Wizard
    ========================= */
 interface WizardStepProps {
   title?: string;
