@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 type Fuel = "petrol" | "diesel";
+type TankOption = "buy" | "rent";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -33,6 +34,19 @@ type PaymentRow = {
   amount: number; // pence
   currency: string;
   status: string;
+};
+
+type TermsRow = {
+  accepted_at: string;
+  version: string | null;
+};
+
+type ContractRow = {
+  tank_option: TankOption;
+  status: "draft" | "signed" | "approved" | "cancelled";
+  signed_at: string | null;
+  approved_at: string | null;
+  created_at: string;
 };
 
 function isToday(d: string | Date | null | undefined) {
@@ -71,7 +85,14 @@ export default function ClientDashboard() {
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
-  // ----------------- Auto logout on inactivity (typed correctly) -----------------
+  // documents (Terms/Contracts)
+  const [termsAcceptedAt, setTermsAcceptedAt] = useState<string | null>(null);
+  const [buyStatus, setBuyStatus] = useState<"none" | "signed" | "approved">("none");
+  const [buyWhen, setBuyWhen] = useState<string | null>(null);
+  const [rentStatus, setRentStatus] = useState<"none" | "signed" | "approved">("none");
+  const [rentWhen, setRentWhen] = useState<string | null>(null);
+
+  // ----------------- Auto logout on inactivity -----------------
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const reset = () => {
@@ -120,10 +141,10 @@ export default function ClientDashboard() {
         const emailLower = (auth.user.email || "").toLowerCase();
         setUserEmail(emailLower);
 
-        // PRICES — robust loader with multiple fallbacks
+        // PRICES
         await loadLatestPrices();
 
-        // ORDERS (your original logic)
+        // ORDERS
         const { data: rawOrders, error: ordErr } = await supabase
           .from("orders")
           .select(
@@ -171,6 +192,9 @@ export default function ClientDashboard() {
         });
 
         setOrders(withTotals);
+
+        // DOCUMENTS (Terms + Contracts)
+        await loadDocumentStatuses(emailLower);
       } catch (e: any) {
         setError(e?.message || "Failed to load dashboard.");
       } finally {
@@ -180,13 +204,13 @@ export default function ClientDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Robust latest-price loader
+  // Latest prices (robust loader)
   async function loadLatestPrices() {
     setPetrolPrice(null);
     setDieselPrice(null);
     setPriceDate(null);
 
-    // Try 1: latest_prices (if you keep this view/table)
+    // Try 1: latest_prices
     try {
       const { data } = await supabase
         .from("latest_prices")
@@ -197,7 +221,7 @@ export default function ClientDashboard() {
       }
     } catch {}
 
-    // Try 2: latest_fuel_prices_view (if present)
+    // Try 2: latest_fuel_prices_view
     try {
       const { data } = await supabase
         .from("latest_fuel_prices_view")
@@ -208,7 +232,7 @@ export default function ClientDashboard() {
       }
     } catch {}
 
-    // Try 3: latest_prices_view (alternate naming)
+    // Try 3: latest_prices_view
     try {
       const { data } = await supabase
         .from("latest_prices_view")
@@ -219,16 +243,14 @@ export default function ClientDashboard() {
       }
     } catch {}
 
-    // Try 4: daily_prices fallback — take latest date per fuel
+    // Try 4: daily_prices fallback
     try {
       const { data } = await supabase
         .from("daily_prices")
         .select("fuel,total_price,price_date")
         .order("price_date", { ascending: false })
-        .limit(200); // read a page and reduce client-side
-
+        .limit(200);
       if (data && data.length) {
-        // reduce: keep first (latest) row for each fuel
         const seen = new Map<string, any>();
         for (const r of data) {
           const key = String(r.fuel).toLowerCase();
@@ -241,7 +263,9 @@ export default function ClientDashboard() {
     } catch {}
   }
 
-  function applyPriceRows(rows: { fuel: string; total_price: number; price_date?: string | null }[]) {
+  function applyPriceRows(
+    rows: { fuel: string; total_price: number; price_date?: string | null }[]
+  ) {
     let latest: string | null = null;
     rows.forEach((r) => {
       const f = String(r.fuel).toLowerCase();
@@ -252,6 +276,84 @@ export default function ClientDashboard() {
       }
     });
     if (latest) setPriceDate(latest);
+  }
+
+  // Document statuses (Terms + Contracts)
+  async function loadDocumentStatuses(emailLower: string) {
+    // Terms: latest acceptance for this email
+    try {
+      const { data } = await supabase
+        .from("terms_acceptances")
+        .select("accepted_at,version")
+        .eq("email", emailLower)
+        .order("accepted_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (data?.accepted_at) setTermsAcceptedAt(data.accepted_at);
+      else setTermsAcceptedAt(null);
+    } catch {
+      setTermsAcceptedAt(null);
+    }
+
+    // Contracts: get latest rows and reduce to buy/rent with precedence: approved > signed > draft/none
+    try {
+      const { data } = await supabase
+        .from("contracts")
+        .select("tank_option,status,signed_at,approved_at,created_at")
+        .eq("email", emailLower)
+        .order("created_at", { ascending: false });
+
+      const rows = (data || []) as ContractRow[];
+      const latestByOption = new Map<TankOption, ContractRow>();
+
+      for (const r of rows) {
+        const prev = latestByOption.get(r.tank_option);
+        if (!prev) {
+          latestByOption.set(r.tank_option, r);
+          continue;
+        }
+        // prefer approved; else signed with newer date; else keep prev
+        const score = (x: ContractRow) =>
+          x.status === "approved" ? 3 : x.status === "signed" ? 2 : 1;
+        if (score(r) > score(prev)) latestByOption.set(r.tank_option, r);
+      }
+
+      const buy = latestByOption.get("buy");
+      const rent = latestByOption.get("rent");
+
+      if (!buy) {
+        setBuyStatus("none");
+        setBuyWhen(null);
+      } else if (buy.status === "approved") {
+        setBuyStatus("approved");
+        setBuyWhen(buy.approved_at || buy.signed_at);
+      } else if (buy.status === "signed") {
+        setBuyStatus("signed");
+        setBuyWhen(buy.signed_at);
+      } else {
+        setBuyStatus("none");
+        setBuyWhen(null);
+      }
+
+      if (!rent) {
+        setRentStatus("none");
+        setRentWhen(null);
+      } else if (rent.status === "approved") {
+        setRentStatus("approved");
+        setRentWhen(rent.approved_at || rent.signed_at);
+      } else if (rent.status === "signed") {
+        setRentStatus("signed");
+        setRentWhen(rent.signed_at);
+      } else {
+        setRentStatus("none");
+        setRentWhen(null);
+      }
+    } catch {
+      setBuyStatus("none");
+      setRentStatus("none");
+      setBuyWhen(null);
+      setRentWhen(null);
+    }
   }
 
   // quick refresh handler
@@ -295,6 +397,16 @@ export default function ClientDashboard() {
   const rowsToShow = showAllMonths
     ? usageByMonth
     : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
+
+  // UI helpers for document badges
+  const badge = (kind: "ok" | "warn" | "missing") =>
+    `inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
+      kind === "ok"
+        ? "bg-green-500/15 text-green-300"
+        : kind === "warn"
+        ? "bg-yellow-500/15 text-yellow-300"
+        : "bg-red-500/15 text-red-300"
+    }`;
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
@@ -366,20 +478,107 @@ export default function ClientDashboard() {
               {priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : "As of —"}
             </div>
           </Card>
-          <Card title="Contracts">
-            <div className="flex gap-2">
-              <a
-                href="/order"
-                className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-              >
-                View / Start
-              </a>
-              <a
-                href="/terms"
-                className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-              >
-                Terms
-              </a>
+
+          {/* DOCUMENTS */}
+          <Card title="Documents">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {/* Terms */}
+              <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="text-sm text-white/80 font-semibold">Terms &amp; Conditions</div>
+                <div className="mt-1">
+                  {termsAcceptedAt ? (
+                    <span className={badge("ok")}>
+                      <span className="h-1.5 w-1.5 rounded-full bg-green-300 inline-block" />
+                      Accepted {new Date(termsAcceptedAt).toLocaleDateString()}
+                    </span>
+                  ) : (
+                    <span className={badge("missing")}>
+                      <span className="h-1.5 w-1.5 rounded-full bg-red-300 inline-block" />
+                      Missing
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2">
+                  <a
+                    className="rounded-lg bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
+                    href={`/terms?return=/client-dashboard${userEmail ? `&email=${encodeURIComponent(userEmail)}` : ""}`}
+                  >
+                    Read &amp; accept
+                  </a>
+                </div>
+              </div>
+
+              {/* Buy contract */}
+              <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="text-sm text-white/80 font-semibold">Buy Contract</div>
+                <div className="mt-1">
+                  {buyStatus === "approved" ? (
+                    <span className={badge("ok")}>
+                      <span className="h-1.5 w-1.5 rounded-full bg-green-300 inline-block" />
+                      Active {buyWhen ? `• ${new Date(buyWhen).toLocaleDateString()}` : ""}
+                    </span>
+                  ) : buyStatus === "signed" ? (
+                    <span className={badge("warn")}>
+                      <span className="h-1.5 w-1.5 rounded-full bg-yellow-300 inline-block" />
+                      Signed {buyWhen ? `• ${new Date(buyWhen).toLocaleDateString()}` : ""}
+                    </span>
+                  ) : (
+                    <span className={badge("missing")}>
+                      <span className="h-1.5 w-1.5 rounded-full bg-red-300 inline-block" />
+                      Not started
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2">
+                  <a
+                    className={`rounded-lg px-3 py-1.5 text-xs ${
+                      buyStatus === "none"
+                        ? "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
+                        : "bg-white/10 hover:bg-white/15"
+                    }`}
+                    href="/order"
+                    title={buyStatus === "none" ? "Start Buy contract" : "Manage contract"}
+                  >
+                    {buyStatus === "none" ? "Start Buy" : "Manage"}
+                  </a>
+                </div>
+              </div>
+
+              {/* Rent contract */}
+              <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                <div className="text-sm text-white/80 font-semibold">Rent Contract</div>
+                <div className="mt-1">
+                  {rentStatus === "approved" ? (
+                    <span className={badge("ok")}>
+                      <span className="h-1.5 w-1.5 rounded-full bg-green-300 inline-block" />
+                      Active {rentWhen ? `• ${new Date(rentWhen).toLocaleDateString()}` : ""}
+                    </span>
+                  ) : rentStatus === "signed" ? (
+                    <span className={badge("warn")}>
+                      <span className="h-1.5 w-1.5 rounded-full bg-yellow-300 inline-block" />
+                      Signed • awaiting approval
+                    </span>
+                  ) : (
+                    <span className={badge("missing")}>
+                      <span className="h-1.5 w-1.5 rounded-full bg-red-300 inline-block" />
+                      Not started
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2">
+                  <a
+                    className={`rounded-lg px-3 py-1.5 text-xs ${
+                      rentStatus === "none"
+                        ? "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
+                        : "bg-white/10 hover:bg-white/15"
+                    }`}
+                    href="/order"
+                    title={rentStatus === "none" ? "Start Rent contract" : "Manage contract"}
+                  >
+                    {rentStatus === "none" ? "Start Rent" : "Manage"}
+                  </a>
+                </div>
+              </div>
             </div>
           </Card>
         </section>
@@ -387,7 +586,7 @@ export default function ClientDashboard() {
         {/* Usage & Spend (condensed by default) */}
         <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
-            <h2 className="text-xl md:text-2xl font-semibold">Usage & Spend</h2>
+            <h2 className="text-xl md:text-2xl font-semibold">Usage &amp; Spend</h2>
             <div className="flex items-center gap-2">
               <span className="text-sm text-white/70">Year:</span>
               <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
