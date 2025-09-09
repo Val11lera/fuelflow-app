@@ -6,7 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 /* ===============================================
-   Client Dashboard — Professional Remix
+   Client Dashboard — Polished + Documents button
    =============================================== */
 
 type Fuel = "petrol" | "diesel";
@@ -26,10 +26,6 @@ const gbp = new Intl.NumberFormat("en-GB", {
   style: "currency",
   currency: "GBP",
 });
-
-/* =========================
-   Types
-   ========================= */
 
 type OrderRow = {
   id: string;
@@ -57,14 +53,9 @@ type ContractRow = {
   approved_at: string | null;
   created_at: string;
   email: string | null;
-  // OPTIONAL fields we’ll use if present:
   pdf_url?: string | null;
   pdf_storage_path?: string | null;
 };
-
-/* =========================
-   Helpers
-   ========================= */
 
 function isToday(d: string | Date | null | undefined) {
   if (!d) return false;
@@ -77,22 +68,9 @@ function isToday(d: string | Date | null | undefined) {
   );
 }
 
-function shortDate(d?: string | null) {
-  if (!d) return "—";
-  try {
-    return new Date(d).toLocaleDateString();
-  } catch {
-    return "—";
-  }
-}
-
 function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
-
-/* =========================
-   Page
-   ========================= */
 
 export default function ClientDashboard() {
   const [userEmail, setUserEmail] = useState<string>("");
@@ -110,7 +88,7 @@ export default function ClientDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // documents state
+  // documents state (for quick summary + Documents button)
   const [termsAcceptedAt, setTermsAcceptedAt] = useState<string | null>(null);
   const [buyContract, setBuyContract] = useState<ContractRow | null>(null);
   const [rentContract, setRentContract] = useState<ContractRow | null>(null);
@@ -121,7 +99,7 @@ export default function ClientDashboard() {
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
-  // ----------------- Auto logout on inactivity -----------------
+  // Auto logout
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const reset = () => {
@@ -134,7 +112,6 @@ export default function ClientDashboard() {
         }
       }, INACTIVITY_MS);
     };
-
     const winEvents: (keyof WindowEventMap)[] = [
       "mousemove",
       "mousedown",
@@ -145,7 +122,6 @@ export default function ClientDashboard() {
     winEvents.forEach((e) => window.addEventListener(e, reset, { passive: true }));
     const onVisibility = () => reset();
     document.addEventListener("visibilitychange", onVisibility, { passive: true });
-
     reset();
     return () => {
       if (idleTimer.current) clearTimeout(idleTimer.current);
@@ -154,7 +130,7 @@ export default function ClientDashboard() {
     };
   }, []);
 
-  // ----------------- Data loading -----------------
+  // Load data
   useEffect(() => {
     (async () => {
       try {
@@ -170,16 +146,16 @@ export default function ClientDashboard() {
         const emailLower = (auth.user.email || "").toLowerCase();
         setUserEmail(emailLower);
 
-        // PRICES
+        // Prices
         await loadLatestPrices();
 
-        // TERMS (latest acceptance for this version)
+        // Terms
         await loadTerms(emailLower);
 
-        // CONTRACTS (latest signed/approved per option)
+        // Contracts
         await loadContracts(emailLower);
 
-        // ORDERS
+        // Orders
         const { data: rawOrders, error: ordErr } = await supabase
           .from("orders")
           .select(
@@ -188,7 +164,6 @@ export default function ClientDashboard() {
           .eq("user_email", emailLower)
           .order("created_at", { ascending: false })
           .limit(50);
-
         if (ordErr) throw ordErr;
 
         const ordersArr = (rawOrders || []) as OrderRow[];
@@ -208,7 +183,6 @@ export default function ClientDashboard() {
         const withTotals = ordersArr.map((o) => {
           const fromOrders = o.total_pence ?? null;
           const fromPayments = payMap.get(o.id || "")?.amount ?? null;
-
           let totalPence: number | null =
             fromOrders ?? (fromPayments as number | null) ?? null;
 
@@ -219,11 +193,7 @@ export default function ClientDashboard() {
           }
 
           const amountGBP = totalPence != null ? totalPence / 100 : 0;
-          return {
-            ...o,
-            amountGBP,
-            paymentStatus: payMap.get(o.id || "")?.status,
-          };
+          return { ...o, amountGBP, paymentStatus: payMap.get(o.id || "")?.status };
         });
 
         setOrders(withTotals);
@@ -239,7 +209,7 @@ export default function ClientDashboard() {
   async function loadTerms(emailLower: string) {
     const { data } = await supabase
       .from("terms_acceptances")
-      .select("id,email,accepted_at,version")
+      .select("accepted_at,version")
       .eq("email", emailLower)
       .eq("version", TERMS_VERSION)
       .order("accepted_at", { ascending: false })
@@ -253,8 +223,8 @@ export default function ClientDashboard() {
       .select("id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path")
       .eq("email", emailLower)
       .order("created_at", { ascending: false });
-
     const rows = (data || []) as ContractRow[];
+
     const latestBuy =
       rows.find((r) => r.tank_option === "buy" && (r.status === "approved" || r.status === "signed")) ??
       rows.find((r) => r.tank_option === "buy") ??
@@ -269,13 +239,10 @@ export default function ClientDashboard() {
     setRentContract(latestRent);
   }
 
-  // Robust latest-price loader
   async function loadLatestPrices() {
     setPetrolPrice(null);
     setDieselPrice(null);
     setPriceDate(null);
-
-    // Try 1: latest_prices
     try {
       const { data } = await supabase
         .from("latest_prices")
@@ -285,8 +252,6 @@ export default function ClientDashboard() {
         return;
       }
     } catch {}
-
-    // Try 2: latest_fuel_prices_view
     try {
       const { data } = await supabase
         .from("latest_fuel_prices_view")
@@ -296,8 +261,6 @@ export default function ClientDashboard() {
         return;
       }
     } catch {}
-
-    // Try 3: latest_prices_view
     try {
       const { data } = await supabase
         .from("latest_prices_view")
@@ -307,15 +270,12 @@ export default function ClientDashboard() {
         return;
       }
     } catch {}
-
-    // Try 4: daily_prices fallback
     try {
       const { data } = await supabase
         .from("daily_prices")
         .select("fuel,total_price,price_date")
         .order("price_date", { ascending: false })
         .limit(200);
-
       if (data && data.length) {
         const seen = new Map<string, any>();
         for (const r of data) {
@@ -323,7 +283,6 @@ export default function ClientDashboard() {
           if (!seen.has(key)) seen.set(key, r);
         }
         applyPriceRows(Array.from(seen.values()));
-        return;
       }
     } catch {}
   }
@@ -346,7 +305,6 @@ export default function ClientDashboard() {
   function refresh() {
     window.location.reload();
   }
-
   async function logout() {
     try {
       await supabase.auth.signOut();
@@ -355,16 +313,12 @@ export default function ClientDashboard() {
     }
   }
 
-  // ---------- Usage & Spend (by month, year) ----------
+  // Usage & spend
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
   const usageByMonth: MonthAgg[] = useMemo(() => {
     const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({
-      monthIdx: i,
-      monthLabel: months[i],
-      litres: 0,
-      spend: 0,
+      monthIdx: i, monthLabel: months[i], litres: 0, spend: 0,
     }));
     orders.forEach((o) => {
       const d = new Date(o.created_at);
@@ -380,19 +334,28 @@ export default function ClientDashboard() {
     (acc, m) => ({ litres: acc.litres + m.litres, spend: acc.spend + m.spend }),
     { litres: 0, spend: 0 }
   );
-
   const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
   const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
-
   const rowsToShow = showAllMonths
     ? usageByMonth
     : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
 
-  /* =========================
-     Render
-     ========================= */
-
   const canOrder = pricesAreToday && petrolPrice != null && dieselPrice != null;
+
+  // Quick documents summary for the button card
+  const docSummary = [
+    termsAcceptedAt ? "Terms accepted" : "Terms pending",
+    buyContract
+      ? buyContract.status === "approved"
+        ? "Buy active"
+        : "Buy signed"
+      : "Buy not signed",
+    rentContract
+      ? rentContract.status === "approved"
+        ? "Rent active"
+        : "Rent signed"
+      : "Rent not signed",
+  ].join(" · ");
 
   return (
     <div className="min-h-screen bg-[#0a0f1c] text-white">
@@ -433,38 +396,45 @@ export default function ClientDashboard() {
             >
               Order fuel
             </a>
+            <a
+              href="/documents"
+              className="rounded-xl px-4 py-2 text-sm font-semibold transition bg-white/10 hover:bg-white/15"
+            >
+              Documents
+            </a>
             <button onClick={refresh} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Refresh</button>
             <button onClick={logout} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Log out</button>
           </div>
         </header>
 
-        {/* Prices out-of-date banner */}
-        {(!pricesAreToday || petrolPrice == null || dieselPrice == null) && (
-          <div className="rounded-2xl border border-red-400/30 bg-red-500/10 p-4 md:p-5 text-sm text-red-200">
-            <div className="font-semibold mb-1">Prices are out of date</div>
-            <p>
-              Today’s prices haven’t been loaded yet.{" "}
-              <button className="underline decoration-yellow-400 underline-offset-2" onClick={refresh}>
-                Refresh
-              </button>{" "}
-              to update. Ordering is disabled until today’s prices are available.
-            </p>
-          </div>
-        )}
-
         {/* KPI strip */}
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard label="YTD Litres" value={ytd.litres ? ytd.litres.toLocaleString() : "—"} />
-          <StatCard label="YTD Spend" value={gbp.format(ytd.spend || 0)} />
-          <StatCard label="Latest Petrol" value={petrolPrice != null ? `${gbp.format(petrolPrice)}/L` : "—"} hint={priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : undefined} />
-          <StatCard label="Latest Diesel" value={dieselPrice != null ? `${gbp.format(dieselPrice)}/L` : "—"} hint={priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : undefined} />
+          <StatCard label="YTD LITRES" value={ytd.litres ? ytd.litres.toLocaleString() : "—"} />
+          <StatCard label="YTD SPEND" value={gbp.format(ytd.spend || 0)} />
+          <StatCard label="LATEST PETROL" value={petrolPrice != null ? `${gbp.format(petrolPrice)}/L` : "—"} hint={priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : undefined} />
+          <StatCard label="LATEST DIESEL" value={dieselPrice != null ? `${gbp.format(dieselPrice)}/L` : "—"} hint={priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : undefined} />
         </section>
 
-        {/* Prices + Docs */}
+        {/* Prices + “Documents” button card */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <PriceCard title="Petrol (95)" price={petrolPrice} priceDate={priceDate} />
           <PriceCard title="Diesel" price={dieselPrice} priceDate={priceDate} />
-          <DocumentsHub termsAcceptedAt={termsAcceptedAt} buy={buyContract} rent={rentContract} />
+
+          {/* Single Documents card */}
+          <div className="rounded-2xl bg-[#0e1627] p-5 ring-1 ring-white/10 flex flex-col justify-between">
+            <div>
+              <p className="text-white/70 text-sm">Documents</p>
+              <div className="mt-1 text-sm text-white/80">{docSummary}</div>
+            </div>
+            <div className="mt-4">
+              <a
+                href="/documents"
+                className="inline-flex items-center rounded-xl bg-white/10 hover:bg-white/15 px-4 py-2 font-semibold"
+              >
+                Open documents
+              </a>
+            </div>
+          </div>
         </section>
 
         {/* Usage */}
@@ -677,155 +647,6 @@ function PriceCard({ title, price, priceDate }: { title: string; price: number |
   );
 }
 
-function StatusDot({ color = "gray" }: { color?: "green" | "yellow" | "red" | "gray" }) {
-  const map = {
-    green: "bg-emerald-400",
-    yellow: "bg-yellow-400",
-    red: "bg-red-400",
-    gray: "bg-white/40",
-  } as const;
-  return <span className={cx("inline-block h-2 w-2 rounded-full", map[color])} />;
-}
-
-function DocTile({
-  icon,
-  title,
-  subtitle,
-  status,
-  ctaLabel,
-  href,
-  muted,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  subtitle?: string;
-  status:
-    | { tone: "ok"; label: string }
-    | { tone: "warn"; label: string }
-    | { tone: "missing"; label: string };
-  ctaLabel: string;
-  href: string;
-  muted?: boolean;
-}) {
-  const toneMap = {
-    ok: { dot: "green", badge: "bg-emerald-500/15 text-emerald-300" },
-    warn: { dot: "yellow", badge: "bg-yellow-500/15 text-yellow-300" },
-    missing: { dot: "red", badge: "bg-red-500/15 text-red-300" },
-  } as const;
-  const tone = toneMap[status.tone];
-
-  return (
-    <div
-      className={cx(
-        "min-h-[148px] rounded-2xl ring-1 p-4 backdrop-blur flex flex-col",
-        muted ? "ring-white/10 bg-white/5" : "ring-white/10 bg-white/10"
-      )}
-    >
-      <div className="flex items-start gap-3">
-        <div className="shrink-0 mt-0.5">{icon}</div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h4 className="font-semibold leading-tight">{title}</h4>
-            <span className={cx("text-xs rounded-full px-2 py-0.5", tone.badge)}>{status.label}</span>
-            <StatusDot color={tone.dot as any} />
-          </div>
-          {subtitle && <p className="text-xs text-white/65 mt-0.5 line-clamp-2">{subtitle}</p>}
-        </div>
-      </div>
-
-      <div className="mt-auto pt-3">
-        <a
-          href={href}
-          className="inline-flex items-center rounded-xl bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-400"
-        >
-          {ctaLabel}
-        </a>
-      </div>
-    </div>
-  );
-}
-
-function DocumentsHub({
-  termsAcceptedAt,
-  buy,
-  rent,
-}: {
-  termsAcceptedAt: string | null;
-  buy: ContractRow | null;
-  rent: ContractRow | null;
-}) {
-  // Status chips
-  const termsStatus = termsAcceptedAt
-    ? ({ tone: "ok", label: "Accepted" } as const)
-    : ({ tone: "missing", label: "Missing" } as const);
-
-  const buyStatus = !buy
-    ? ({ tone: "missing", label: "Not signed" } as const)
-    : buy.status === "approved"
-    ? ({ tone: "ok", label: "Active" } as const)
-    : buy.status === "signed"
-    ? ({ tone: "warn", label: "Signed" } as const)
-    : ({ tone: "missing", label: "Not signed" } as const);
-
-  const rentStatus = !rent
-    ? ({ tone: "missing", label: "Not signed" } as const)
-    : rent.status === "approved"
-    ? ({ tone: "ok", label: "Active" } as const)
-    : rent.status === "signed"
-    ? ({ tone: "warn", label: "Signed" } as const)
-    : ({ tone: "missing", label: "Not signed" } as const);
-
-  // Where should the tile CTA go?
-  const contractHref = (c: ContractRow | null, option: "buy" | "rent") =>
-    c && (c.pdf_url || c.pdf_storage_path) ? `/contracts/${c.id}` : `/order?wizard=${option}`;
-
-  return (
-    <div className="rounded-2xl bg-[#0e1627] p-4 md:p-5 ring-1 ring-white/10">
-      <p className="text-white/70 mb-3">Documents</p>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 auto-rows-fr">
-        <DocTile
-          icon={<DocIcon />}
-          title="Terms & Conditions"
-          subtitle={termsAcceptedAt ? `Accepted · ${shortDate(termsAcceptedAt)}` : "You must accept before ordering"}
-          status={termsStatus}
-          ctaLabel={termsAcceptedAt ? "View" : "Read & accept"}
-          href={termsAcceptedAt ? "/terms" : "/terms?return=/order"}
-        />
-        <DocTile
-          icon={<ShieldIcon />}
-          title="Buy contract"
-          subtitle={
-            buy
-              ? buy.status === "approved"
-                ? `Active · ${shortDate(buy.approved_at)}`
-                : `Signed · ${shortDate(buy.signed_at)}`
-              : "Sign once — then order anytime"
-          }
-          status={buyStatus}
-          ctaLabel={buy && (buy.pdf_url || buy.pdf_storage_path) ? "Open PDF" : buy ? "Manage" : "Start"}
-          href={contractHref(buy, "buy")}
-          muted={!buy}
-        />
-        <DocTile
-          icon={<BuildingIcon />}
-          title="Rent contract"
-          subtitle={
-            rent
-              ? rent.status === "approved"
-                ? `Active · ${shortDate(rent.approved_at)}`
-                : "Signed · awaiting approval"
-              : "Needs admin approval after signing"
-          }
-          status={rentStatus}
-          ctaLabel={rent && (rent.pdf_url || rent.pdf_storage_path) ? "Open PDF" : rent ? "Manage" : "Start"}
-          href={contractHref(rent, "rent")}
-          muted={!rent}
-        />
-      </div>
-    </div>
-  );
-}
-
 function EmptyState({ title, subtitle, action }: { title: string; subtitle?: string; action?: { label: string; href: string } }) {
   return (
     <div className="rounded-2xl border border-white/10 p-6 text-center text-white/80">
@@ -848,37 +669,6 @@ function SkeletonTable() {
         <div key={i} className="h-9 w-full animate-pulse rounded bg-white/5" />
       ))}
     </div>
-  );
-}
-
-/* =========================
-   Tiny inline icons
-   ========================= */
-
-function DocIcon() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm0 0v6h6" opacity=".6" />
-      <path fill="currentColor" d="M8 13h8v2H8zm0-4h5v2H8zm0 8h8v2H8z" />
-    </svg>
-  );
-}
-
-function ShieldIcon() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path fill="currentColor" d="M12 2l7 4v6c0 5-3.5 9-7 10c-3.5-1-7-5-7-10V6z" opacity=".6" />
-      <path fill="currentColor" d="M12 6l4 2v3c0 3.5-2.3 6.3-4 7c-1.7-.7-4-3.5-4-7V8z" />
-    </svg>
-  );
-}
-
-function BuildingIcon() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path fill="currentColor" d="M3 21V7l9-4l9 4v14h-7v-5h-4v5z" opacity=".6" />
-      <path fill="currentColor" d="M9 11h2v2H9zm4 0h2v2h-2zM9 15h2v2H9zm4 0h2v2h-2z" />
-    </svg>
   );
 }
 
