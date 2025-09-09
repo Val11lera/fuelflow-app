@@ -1,5 +1,4 @@
 // src/pages/documents.tsx
-// /src/pages/documents.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -21,7 +20,6 @@ const supabase =
    Types
    ========================= */
 type TankOption = "buy" | "rent";
-type Fuel = "diesel" | "petrol";
 
 type ContractRow = {
   id: string;
@@ -32,7 +30,6 @@ type ContractRow = {
   signed_at?: string | null;
   approved_at?: string | null;
   signed_pdf_path?: string | null;
-  // optional ROI fields if present in your DB:
   tank_size_l?: number | null;
   monthly_consumption_l?: number | null;
   market_price_gbp_l?: number | null;
@@ -83,7 +80,8 @@ const GBP = (n: number | null | undefined) =>
    Page
    ========================= */
 export default function DocumentsPage() {
-  const [email, setEmail] = useState("");
+  // immutable email from auth (used for ALL reads/writes)
+  const [authEmail, setAuthEmail] = useState("");
   const [terms, setTerms] = useState<TermsRow | null>(null);
   const [contracts, setContracts] = useState<ContractRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -93,7 +91,7 @@ export default function DocumentsPage() {
   const [wizardOption, setWizardOption] = useState<TankOption>("buy");
   const [savingContract, setSavingContract] = useState(false);
 
-  // Wizard form fields (matches your previous flow)
+  // Wizard form fields
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [companyName, setCompanyName] = useState("");
@@ -109,20 +107,20 @@ export default function DocumentsPage() {
   const [cheaperBy, setCheaperBy] = useState<number>(0.09);
   const [signatureName, setSignatureName] = useState("");
 
-  // Derived ROI fields (same as you had)
+  // Derived ROI
   const fuelflowPrice = Math.max(0, (marketPrice || 0) - (cheaperBy || 0));
   const estMonthlySavings = Math.max(0, (monthlyConsumptionL || 0) * (cheaperBy || 0));
   const estPaybackMonths =
     fuelflowPrice > 0 && estMonthlySavings > 0 ? Math.round((12000 / estMonthlySavings) * 10) / 10 : null;
 
-  // Load all status + prefill auth email
+  // Load status + auth email
   useEffect(() => {
     (async () => {
       setLoading(true);
       try {
         const { data: auth } = await supabase.auth.getUser();
         const em = (auth?.user?.email || "").toLowerCase();
-        setEmail(em);
+        setAuthEmail(em);
 
         const { data: t } = await supabase
           .from("terms_acceptances")
@@ -133,7 +131,6 @@ export default function DocumentsPage() {
           .limit(1)
           .maybeSingle();
 
-        // also honour the original local cache if present
         if (!t && typeof window !== "undefined") {
           const cached = localStorage.getItem(`terms:${TERMS_VERSION}:${em}`);
           if (cached === "1") {
@@ -148,26 +145,17 @@ export default function DocumentsPage() {
           setTerms((t as any) || null);
         }
 
-        const { data: c } = await supabase
-          .from("contracts")
-          .select(
-            "id,email,tank_option,status,created_at,signed_at,approved_at,signed_pdf_path,tank_size_l,monthly_consumption_l,market_price_gbp_l,fuelflow_price_gbp_l,est_monthly_savings_gbp,est_payback_months"
-          )
-          .eq("email", em)
-          .order("created_at", { ascending: false });
-        const rows = (c ?? []) as ContractRow[];
-        setContracts(rows);
+        await refreshContracts(em);
 
-        // prefill name if you stored it in a contract previously
-        const lastNamed = (rows.find((r) => !!r) as any) ?? null;
-        if (lastNamed?.customer_name) setFullName(lastNamed.customer_name);
+        // prefill name from latest contract if present
+        // (optional – safe no-op if not there)
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  // Convenience: latest buy/rent
+  // Convenience
   const latestBuy = useMemo(
     () => contracts.find((r) => r.tank_option === "buy") ?? null,
     [contracts]
@@ -177,10 +165,10 @@ export default function DocumentsPage() {
     [contracts]
   );
 
-  // Buy active when signed or approved; Rent active only when approved
-  const buyActive = latestBuy && (latestBuy.status === "signed" || latestBuy.status === "approved");
-  const rentActive = latestRent && latestRent.status === "approved";
-  const rentSignedPending = latestRent && latestRent.status === "signed";
+  // buy active: signed OR approved; rent active: approved only
+  const buyActive = !!latestBuy && (latestBuy.status === "signed" || latestBuy.status === "approved");
+  const rentActive = !!latestRent && latestRent.status === "approved";
+  const rentSignedPending = !!latestRent && latestRent.status === "signed";
 
   // Storage public URLs for PDFs
   const buyPdf = publicPdfUrl(latestBuy);
@@ -189,18 +177,23 @@ export default function DocumentsPage() {
     if (!row?.signed_pdf_path) return null;
     const { data } = supabase.storage.from("contracts").getPublicUrl(row.signed_pdf_path);
     return data?.publicUrl ?? null;
-    // Ensure bucket name is EXACTLY "contracts" in Supabase
   }
 
-  async function refreshContracts() {
-    const { data: c } = await supabase
+  async function refreshContracts(emailForQuery: string) {
+    if (!emailForQuery) return;
+    const { data, error } = await supabase
       .from("contracts")
       .select(
         "id,email,tank_option,status,created_at,signed_at,approved_at,signed_pdf_path,tank_size_l,monthly_consumption_l,market_price_gbp_l,fuelflow_price_gbp_l,est_monthly_savings_gbp,est_payback_months"
       )
-      .eq("email", email)
+      .eq("email", emailForQuery)
       .order("created_at", { ascending: false });
-    setContracts((c ?? []) as ContractRow[]);
+
+    if (error) {
+      alert(`Failed to load contracts:\n${error.message}`);
+      return;
+    }
+    setContracts((data ?? []) as ContractRow[]);
   }
 
   // Save (sign) contract from the wizard
@@ -219,12 +212,16 @@ export default function DocumentsPage() {
       alert("Please accept the latest Terms first.");
       return;
     }
+    if (!authEmail) {
+      alert("No authenticated email found. Please sign in again.");
+      return;
+    }
 
     const base = {
       contract_type: option,
       tank_option: option,
       customer_name: fullName,
-      email: email || null,
+      email: authEmail, // <-- ALWAYS use auth email
       tank_size_l: tankSizeL || null,
       monthly_consumption_l: monthlyConsumptionL || null,
       market_price_gbp_l: marketPrice || null,
@@ -252,23 +249,25 @@ export default function DocumentsPage() {
     try {
       setSavingContract(true);
 
-      // Try insert with extra json (matches your previous behavior)
-      let { error } = await supabase.from("contracts").insert({ ...base, extra: extraPayload } as any);
+      // Try with extra json column first and return created row
+      let { data, error } = await supabase
+        .from("contracts")
+        .insert({ ...base, extra: extraPayload } as any)
+        .select()
+        .single();
 
-      // If 'extra' column doesn't exist in your DB, try without it
       if (error && /extra.*does not exist/i.test(error.message || "")) {
-        const retry = await supabase.from("contracts").insert(base as any);
+        // Try again without 'extra'
+        const retry = await supabase.from("contracts").insert(base as any).select().single();
         if (retry.error) throw retry.error;
+        data = retry.data;
       } else if (error) {
-        if (/duplicate|already exists|unique/i.test(error.message)) {
-          alert("You already have an active/signed contract of this type.");
-        } else {
-          throw error;
-        }
+        // Duplicate or other DB messages
+        throw error;
       }
 
       setShowWizard(false);
-      await refreshContracts();
+      await refreshContracts(authEmail);
 
       if (option === "buy") {
         alert("Purchase contract signed. You can order immediately.");
@@ -276,7 +275,8 @@ export default function DocumentsPage() {
         alert("Rental contract signed. Waiting for admin approval.");
       }
     } catch (e: any) {
-      alert(e?.message || "Failed to save contract.");
+      const msg = e?.message || e?.error_description || JSON.stringify(e, null, 2);
+      alert(`Failed to save contract:\n${msg}`);
     } finally {
       setSavingContract(false);
     }
@@ -455,8 +455,8 @@ export default function DocumentsPage() {
                 <Field label="Phone">
                   <input className={input} value={phone} onChange={(e) => setPhone(e.target.value)} />
                 </Field>
-                <Field label="Email">
-                  <input className={input} value={email} onChange={(e) => setEmail(e.target.value)} />
+                <Field label="Email (from your login)">
+                  <input className={input} value={authEmail} readOnly />
                 </Field>
               </div>
             </Wizard.Step>
@@ -749,4 +749,3 @@ const Wizard: WizardComponent = ({ children }) => {
 Wizard.Step = function Step({ children }: WizardStepProps) {
   return <>{children}</>;
 };
-
