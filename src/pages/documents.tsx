@@ -1,9 +1,14 @@
 // src/pages/documents.tsx
+// src/pages/documents.tsx
 "use client";
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
+
+/* =========================
+   Setup
+   ========================= */
 
 type TankOption = "buy" | "rent";
 type ContractStatus = "draft" | "signed" | "approved" | "cancelled";
@@ -16,11 +21,10 @@ type ContractRow = {
   approved_at: string | null;
   created_at: string | null;
   email: string | null;
-  pdf_url?: string | null;
-  pdf_storage_path?: string | null;
 };
 
 const TERMS_VERSION = "v1.1";
+const TERMS_KEY = (email: string) => `terms:${TERMS_VERSION}:${email}`;
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -32,6 +36,10 @@ function shortDate(d?: string | null) {
   try { return new Date(d).toLocaleDateString(); } catch { return "—"; }
 }
 function cx(...c: (string | false | null | undefined)[]) { return c.filter(Boolean).join(" "); }
+
+/* =========================
+   Page
+   ========================= */
 
 export default function DocumentsPage() {
   const [email, setEmail] = useState<string>("");
@@ -47,33 +55,45 @@ export default function DocumentsPage() {
         setLoading(true);
         setErr(null);
 
+        // Auth
         const { data: auth } = await supabase.auth.getUser();
         const em = (auth?.user?.email || "").toLowerCase();
         if (!em) { window.location.href = "/login"; return; }
         setEmail(em);
 
-        // Terms
-        const { data: t } = await supabase
-          .from("terms_acceptances")
-          .select("accepted_at")
-          .eq("email", em)
-          .eq("version", TERMS_VERSION)
-          .order("accepted_at", { ascending: false })
-          .limit(1);
-        setTermsAcceptedAt(t?.[0]?.accepted_at ?? null);
+        // ----- TERMS: check localStorage first (exactly like /order), then DB -----
+        const cached = typeof window !== "undefined" ? localStorage.getItem(TERMS_KEY(em)) : null;
+        if (cached === "1") {
+          // Align with /order: if locally accepted, treat as accepted
+          setTermsAcceptedAt(new Date().toISOString());
+        } else {
+          const { data: t, error: tErr } = await supabase
+            .from("terms_acceptances")
+            .select("accepted_at")
+            .eq("email", em)
+            .eq("version", TERMS_VERSION)
+            .order("accepted_at", { ascending: false })
+            .limit(1);
+          if (tErr) throw tErr;
+          setTermsAcceptedAt(t?.[0]?.accepted_at ?? null);
+        }
 
-        // Contracts
-        const { data: rows } = await supabase
+        // ----- CONTRACTS: minimal columns only (safe on all schemas) -----
+        const { data: rows, error: cErr } = await supabase
           .from("contracts")
-          .select("id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path")
+          .select("id,tank_option,status,signed_at,approved_at,created_at,email")
           .eq("email", em)
           .order("created_at", { ascending: false });
 
+        if (cErr) throw cErr;
+
         const list = (rows || []) as ContractRow[];
+
         const latestBuy =
           list.find((r) => r.tank_option === "buy" && (r.status === "approved" || r.status === "signed")) ??
           list.find((r) => r.tank_option === "buy") ??
           null;
+
         const latestRent =
           list.find((r) => r.tank_option === "rent" && (r.status === "approved" || r.status === "signed")) ??
           list.find((r) => r.tank_option === "rent") ??
@@ -89,44 +109,55 @@ export default function DocumentsPage() {
     })();
   }, []);
 
-  const badge = (tone: "ok" | "warn" | "missing", label: string) =>
-    <span className={cx(
-      "text-xs rounded-full px-2 py-0.5",
-      tone === "ok" && "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/20",
-      tone === "warn" && "bg-yellow-500/15 text-yellow-300 ring-1 ring-yellow-400/20",
-      tone === "missing" && "bg-red-500/15 text-red-300 ring-1 ring-red-400/20",
-    )}>{label}</span>;
+  // ----- UI helpers -----
+  const badge = (tone: "ok" | "warn" | "missing", label: string) => (
+    <span
+      className={cx(
+        "text-xs rounded-full px-2 py-0.5",
+        tone === "ok" && "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/20",
+        tone === "warn" && "bg-yellow-500/15 text-yellow-300 ring-1 ring-yellow-400/20",
+        tone === "missing" && "bg-red-500/15 text-red-300 ring-1 ring-red-400/20"
+      )}
+    >
+      {label}
+    </span>
+  );
 
   const termsTone = termsAcceptedAt ? "ok" : "missing";
   const buyTone = !buy ? "missing" : buy.status === "approved" ? "ok" : "warn";
   const rentTone = !rent ? "missing" : rent.status === "approved" ? "ok" : "warn";
 
-  const ctaHref = (c: ContractRow | null, option: "buy" | "rent") =>
-    c && (c.pdf_url || c.pdf_storage_path) ? `/contracts/${c.id}` : `/order?wizard=${option}`;
+  const buySubtitle =
+    !buy ? "Sign once — then order anytime"
+    : buy.status === "approved" ? `Active · ${shortDate(buy.approved_at)}`
+    : `Signed · ${shortDate(buy.signed_at)}`;
+
+  const rentSubtitle =
+    !rent ? "Needs admin approval after signing"
+    : rent.status === "approved" ? `Active · ${shortDate(rent.approved_at)}`
+    : "Signed · awaiting approval";
 
   return (
-    <main className="min-h-screen bg-[#0b1220] text-white">
-      <div className="mx-auto max-w-6xl px-4 py-6 space-y-6">
+    <main className="min-h-screen bg-[#0a0f1c] text-white">
+      <div className="mx-auto max-w-7xl px-4 py-6 space-y-6">
         {/* Header */}
         <div className="flex items-center gap-3">
           <img src="/logo-email.png" alt="FuelFlow" className="h-7" />
           <h1 className="text-xl md:text-2xl font-semibold">Documents</h1>
           <div className="ml-auto">
-            <Link href="/client-dashboard" className="rounded-lg bg-white/10 hover:bg-white/15 px-3 py-2 text-sm font-semibold">
+            <Link href="/client-dashboard" className="rounded-xl bg-white/10 hover:bg-white/15 px-4 py-2 text-sm font-semibold">
               ← Back to dashboard
             </Link>
           </div>
         </div>
 
-        <section className="rounded-xl bg-gray-800 p-5">
+        <section className="rounded-2xl bg-[#0e1627] p-5 ring-1 ring-white/10">
           {loading ? (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              {[0,1,2].map(i => <div key={i} className="h-40 rounded-xl bg-white/10 animate-pulse" />)}
+              {[0,1,2].map(i => <div key={i} className="h-40 rounded-2xl bg-white/5 animate-pulse" />)}
             </div>
           ) : err ? (
-            <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-red-200">
-              {err}
-            </div>
+            <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-red-200">{err}</div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 auto-rows-fr">
               {/* Terms */}
@@ -135,24 +166,35 @@ export default function DocumentsPage() {
                 title="Terms & Conditions"
                 subtitle={termsAcceptedAt ? `Accepted · ${shortDate(termsAcceptedAt)}` : "You must accept before ordering"}
                 badgeEl={badge(termsTone as any, termsAcceptedAt ? "Accepted" : "Missing")}
-                cta={{ label: termsAcceptedAt ? "View" : "Read & accept", href: termsAcceptedAt ? "/terms" : `/terms?return=/documents&email=${encodeURIComponent(email)}` }}
+                cta={{
+                  label: termsAcceptedAt ? "View" : "Read & accept",
+                  href: termsAcceptedAt ? "/terms" : `/terms?return=/documents&email=${encodeURIComponent(email)}`
+                }}
               />
+
               {/* Buy */}
               <DocCard
                 icon={<ShieldIcon />}
                 title="Buy contract"
-                subtitle={!buy ? "Sign once — then order anytime" : buy.status === "approved" ? `Active · ${shortDate(buy.approved_at)}` : `Signed · ${shortDate(buy.signed_at)}`}
+                subtitle={buySubtitle}
                 badgeEl={badge(buyTone as any, !buy ? "Not signed" : buy.status === "approved" ? "Active" : "Signed")}
-                cta={{ label: buy && (buy.pdf_url || buy.pdf_storage_path) ? "Open PDF" : (!buy ? "Start" : "Manage"), href: ctaHref(buy, "buy") }}
+                cta={{
+                  label: !buy ? "Start" : "Manage",
+                  href: "/order?wizard=buy"
+                }}
                 muted={!buy}
               />
+
               {/* Rent */}
               <DocCard
                 icon={<BuildingIcon />}
                 title="Rent contract"
-                subtitle={!rent ? "Needs admin approval after signing" : rent.status === "approved" ? `Active · ${shortDate(rent.approved_at)}` : "Signed · awaiting approval"}
+                subtitle={rentSubtitle}
                 badgeEl={badge(rentTone as any, !rent ? "Not signed" : rent.status === "approved" ? "Active" : "Signed")}
-                cta={{ label: rent && (rent.pdf_url || rent.pdf_storage_path) ? "Open PDF" : (!rent ? "Start" : "Manage"), href: ctaHref(rent, "rent") }}
+                cta={{
+                  label: !rent ? "Start" : "Manage",
+                  href: "/order?wizard=rent"
+                }}
                 muted={!rent}
               />
             </div>
@@ -163,8 +205,16 @@ export default function DocumentsPage() {
   );
 }
 
+/* =========================
+   Card + Icons
+   ========================= */
 function DocCard({
-  icon, title, subtitle, cta, badgeEl, muted
+  icon,
+  title,
+  subtitle,
+  cta,
+  badgeEl,
+  muted,
 }: {
   icon: React.ReactNode;
   title: string;
@@ -174,22 +224,27 @@ function DocCard({
   muted?: boolean;
 }) {
   return (
-    <div className={cx(
-      "min-h-[168px] rounded-xl p-4 border backdrop-blur flex flex-col",
-      muted ? "border-white/10 bg-white/5" : "border-white/10 bg-white/10"
-    )}>
+    <div
+      className={cx(
+        "min-h-[168px] rounded-2xl p-4 ring-1 backdrop-blur flex flex-col",
+        muted ? "ring-white/10 bg-white/5" : "ring-white/10 bg-white/10"
+      )}
+    >
       <div className="flex items-start gap-3">
         <div className="mt-0.5">{icon}</div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h3 className="font-semibold leading-tight">{title}</h3>
+            <h3 className="font-semibold">{title}</h3>
             {badgeEl}
           </div>
           {subtitle && <p className="text-xs text-white/70 mt-0.5 line-clamp-2">{subtitle}</p>}
         </div>
       </div>
       <div className="mt-auto pt-3">
-        <a href={cta.href} className="inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold">
+        <a
+          href={cta.href}
+          className="inline-flex items-center rounded-xl bg-white/10 hover:bg-white/15 px-4 py-2 font-semibold"
+        >
           {cta.label}
         </a>
       </div>
@@ -197,7 +252,6 @@ function DocCard({
   );
 }
 
-/* Tiny inline icons */
 function DocIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
@@ -222,3 +276,4 @@ function BuildingIcon() {
     </svg>
   );
 }
+
