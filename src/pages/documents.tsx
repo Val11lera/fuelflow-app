@@ -38,9 +38,12 @@ const supabase = createClient(
 /* =========================
    UI tokens
    ========================= */
-const uiBtn = "rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
-const uiBtnPrimary = "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
-const uiBtnGhost = "bg-white/10 hover:bg-white/15 text-white border border-white/10";
+const uiBtn =
+  "rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
+const uiBtnPrimary =
+  "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
+const uiBtnGhost =
+  "bg-white/10 hover:bg-white/15 text-white border border-white/10";
 const uiLabel = "block text-sm font-medium text-white/80 mb-1";
 const uiInput =
   "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30";
@@ -78,7 +81,8 @@ export default function DocumentsPage() {
   const [contracts, setContracts] = useState<ContractRow[]>([]);
   const [activeBuy, setActiveBuy] = useState(false);
   const [activeRent, setActiveRent] = useState(false);
-  const [rentAwaitingApproval, setRentAwaitingApproval] = useState<ContractRow | null>(null);
+  const [rentAwaitingApproval, setRentAwaitingApproval] =
+    useState<ContractRow | null>(null);
 
   // PDF URLs for signed contracts
   const [pdfMap, setPdfMap] = useState<Record<string, string>>({}); // id -> url
@@ -89,7 +93,7 @@ export default function DocumentsPage() {
   const [wizardOption, setWizardOption] = useState<TankOption>("buy");
   const [savingContract, setSavingContract] = useState(false);
 
-  // Wizard fields (kept minimal here; same as before)
+  // Wizard fields
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -103,14 +107,20 @@ export default function DocumentsPage() {
   const [signatureName, setSignatureName] = useState("");
 
   const [tankSizeL, setTankSizeL] = useState<number>(5000);
-  const [monthlyConsumptionL, setMonthlyConsumptionL] = useState<number>(10000);
+  const [monthlyConsumptionL, setMonthlyConsumptionL] =
+    useState<number>(10000);
   const [marketPrice, setMarketPrice] = useState<number>(1.35);
   const [cheaperBy, setCheaperBy] = useState<number>(0.09);
 
   const fuelflowPrice = Math.max(0, (marketPrice || 0) - (cheaperBy || 0));
-  const estMonthlySavings = Math.max(0, (monthlyConsumptionL || 0) * (cheaperBy || 0));
+  const estMonthlySavings = Math.max(
+    0,
+    (monthlyConsumptionL || 0) * (cheaperBy || 0)
+  );
   const estPaybackMonths =
-    fuelflowPrice > 0 && estMonthlySavings > 0 ? Math.round((12000 / estMonthlySavings) * 10) / 10 : null;
+    fuelflowPrice > 0 && estMonthlySavings > 0
+      ? Math.round((12000 / estMonthlySavings) * 10) / 10
+      : null;
 
   /* ---------- auth ---------- */
   useEffect(() => {
@@ -163,8 +173,12 @@ export default function DocumentsPage() {
     const buyActive = rows.some(
       (r) => r.tank_option === "buy" && (r.status === "signed" || r.status === "approved")
     );
-    const rentApproved = rows.some((r) => r.tank_option === "rent" && r.status === "approved");
-    const rentPending = rows.find((r) => r.tank_option === "rent" && r.status === "signed") || null;
+    const rentApproved = rows.some(
+      (r) => r.tank_option === "rent" && r.status === "approved"
+    );
+    const rentPending =
+      rows.find((r) => r.tank_option === "rent" && r.status === "signed") ||
+      null;
 
     setActiveBuy(buyActive);
     setActiveRent(rentApproved);
@@ -203,17 +217,23 @@ export default function DocumentsPage() {
   /* ---------- PDF helper ---------- */
   async function getContractPdfUrl(contractId: string): Promise<string | null> {
     try {
-      // 1) Try public URL fast-path
-      const publicRes = supabase.storage.from("contracts").getPublicUrl(`${contractId}.pdf`);
+      // 1) Try public URL
+      const publicRes = supabase
+        .storage
+        .from("contracts")
+        .getPublicUrl(`${contractId}.pdf`);
       if (publicRes?.data?.publicUrl) return publicRes.data.publicUrl;
 
       // 2) Signed URL (10 min) if bucket is private
-      const signedRes = await supabase.storage.from("contracts").createSignedUrl(`${contractId}.pdf`, 600);
+      const signedRes = await supabase
+        .storage
+        .from("contracts")
+        .createSignedUrl(`${contractId}.pdf`, 600);
       if (signedRes?.data?.signedUrl) return signedRes.data.signedUrl;
     } catch {
       // ignore
     }
-    // 3) Fallback route (implement server-side if needed)
+    // 3) Fallback route (optional server implementation)
     return `/api/contracts/${contractId}/pdf`;
   }
 
@@ -275,7 +295,9 @@ export default function DocumentsPage() {
     try {
       setSavingContract(true);
 
-      let { error } = await supabase.from("contracts").insert({ ...base, extra: extraPayload } as any);
+      let { error } = await supabase
+        .from("contracts")
+        .insert({ ...base, extra: extraPayload } as any);
       if (error && /extra.*does not exist/i.test(error.message || "")) {
         const retry = await supabase.from("contracts").insert(base as any);
         if (retry.error) throw retry.error;
@@ -308,10 +330,19 @@ export default function DocumentsPage() {
       <div className="mx-auto w-full max-w-7xl px-4 pt-8">
         {/* Header */}
         <div className="mb-6 flex items-center gap-3">
-          <img src="/logo-email.png" alt="FuelFlow" width={116} height={28} className="opacity-90" />
+          <img
+            src="/logo-email.png"
+            alt="FuelFlow"
+            width={116}
+            height={28}
+            className="opacity-90"
+          />
           <h1 className="ml-2 text-2xl md:text-3xl font-bold">Documents</h1>
           <div className="ml-auto">
-            <Link href="/client-dashboard" className="inline-flex items-center rounded-2xl bg-white/10 px-4 py-2 hover:bg-white/15">
+            <Link
+              href="/client-dashboard"
+              className="inline-flex items-center rounded-2xl bg-white/10 px-4 py-2 hover:bg-white/15"
+            >
               ← Back to dashboard
             </Link>
           </div>
@@ -324,10 +355,20 @@ export default function DocumentsPage() {
             <Tile
               icon={<DocIcon />}
               title="Terms & Conditions"
-              statusBadge={hasAccepted ? <Badge tone="ok">Accepted</Badge> : <Badge tone="warn">Missing</Badge>}
+              statusBadge={
+                hasAccepted ? (
+                  <Badge tone="ok">Accepted</Badge>
+                ) : (
+                  <Badge tone="warn">Missing</Badge>
+                )
+              }
               subtitle={
                 hasAccepted
-                  ? `Accepted · ${acceptedAt === "cached" ? new Date().toLocaleDateString() : shortDate(acceptedAt)}`
+                  ? `Accepted · ${
+                      acceptedAt === "cached"
+                        ? new Date().toLocaleDateString()
+                        : shortDate(acceptedAt)
+                    }`
                   : "You must accept before ordering"
               }
               actionLabel={hasAccepted ? "View" : "Read & accept"}
@@ -339,8 +380,18 @@ export default function DocumentsPage() {
             <Tile
               icon={<ShieldIcon />}
               title="Buy contract"
-              statusBadge={activeBuy ? <Badge tone="ok">Active</Badge> : hasAny(contracts, "buy") ? <Badge tone="warn">Signed</Badge> : <Badge tone="warn">Not signed</Badge>}
-              subtitle={activeBuy ? "Active — order anytime" : "Sign once — then order anytime"}
+              statusBadge={
+                activeBuy ? (
+                  <Badge tone="ok">Active</Badge>
+                ) : hasAny(contracts, "buy") ? (
+                  <Badge tone="warn">Signed</Badge>
+                ) : (
+                  <Badge tone="warn">Not signed</Badge>
+                )
+              }
+              subtitle={
+                activeBuy ? "Active — order anytime" : "Sign once — then order anytime"
+              }
               actionLabel={activeBuy ? "Active" : "Manage"}
               onAction={() => {
                 setWizardOption("buy");
@@ -348,17 +399,24 @@ export default function DocumentsPage() {
               }}
               disabled={activeBuy}
               tooltip={activeBuy ? "Buy contract already active" : ""}
-              footer={
-                (() => {
-                  const c = contracts.find((r) => r.tank_option === "buy" && (r.status === "signed" || r.status === "approved"));
-                  const href = c ? pdfMap[c.id] : null;
-                  return c && href ? (
-                    <a href={href} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex text-sm underline decoration-yellow-400 underline-offset-2">
-                      Download signed PDF
-                    </a>
-                  ) : null;
-                })()
-              }
+              footer={(() => {
+                const c = contracts.find(
+                  (r) =>
+                    r.tank_option === "buy" &&
+                    (r.status === "signed" || r.status === "approved")
+                );
+                const href = c ? pdfMap[c.id] : null;
+                return c && href ? (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-3 inline-flex text-sm underline decoration-yellow-400 underline-offset-2"
+                  >
+                    Download signed PDF
+                  </a>
+                ) : null;
+              })()}
             />
 
             {/* Rent */}
@@ -374,7 +432,13 @@ export default function DocumentsPage() {
                   <Badge tone="warn">Not signed</Badge>
                 )
               }
-              subtitle={activeRent ? "Active — order anytime" : rentAwaitingApproval ? "Signed · awaiting approval" : "Needs admin approval after signing"}
+              subtitle={
+                activeRent
+                  ? "Active — order anytime"
+                  : rentAwaitingApproval
+                  ? "Signed · awaiting approval"
+                  : "Needs admin approval after signing"
+              }
               actionLabel={
                 activeRent ? "Active" : rentAwaitingApproval ? "Awaiting approval" : "Start"
               }
@@ -390,24 +454,34 @@ export default function DocumentsPage() {
                   ? "Waiting for admin approval"
                   : ""
               }
-              footer={
-                (() => {
-                  const c = contracts.find((r) => r.tank_option === "rent" && (r.status === "signed" || r.status === "approved"));
-                  const href = c ? pdfMap[c.id] : null;
-                  return c && href ? (
-                    <a href={href} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex text-sm underline decoration-yellow-400 underline-offset-2">
-                      Download signed PDF
-                    </a>
-                  ) : null;
-                })()
-              }
+              footer={(() => {
+                const c = contracts.find(
+                  (r) =>
+                    r.tank_option === "rent" &&
+                    (r.status === "signed" || r.status === "approved")
+                );
+                const href = c ? pdfMap[c.id] : null;
+                return c && href ? (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-3 inline-flex text-sm underline decoration-yellow-400 underline-offset-2"
+                  >
+                    Download signed PDF
+                  </a>
+                ) : null;
+              })()}
             />
           </div>
 
           {/* Nudge to order */}
           {hasAccepted && (activeBuy || activeRent) && (
             <div className="mt-8 flex justify-center">
-              <Link href="/order" className={cx(uiBtn, uiBtnPrimary, "px-6 py-3 text-base")}>
+              <Link
+                href="/order"
+                className={cx(uiBtn, uiBtnPrimary, "px-6 py-3 text-base")}
+              >
                 Continue to Order
               </Link>
             </div>
@@ -432,7 +506,7 @@ export default function DocumentsPage() {
         </Modal>
       )}
 
-      {/* Contract wizard modal (unchanged behavior) */}
+      {/* Contract wizard modal */}
       {showWizard && (
         <Modal
           onClose={() => {
@@ -442,66 +516,139 @@ export default function DocumentsPage() {
         >
           <EstimateBanner />
           <Wizard>
+            {/* Contact */}
             <Wizard.Step title="Contact">
               <div className={uiRow}>
                 <Field label="Full name">
-                  <input className={uiInput} value={fullName} onChange={(e) => setFullName(e.target.value)} />
+                  <input
+                    className={uiInput}
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                  />
                 </Field>
                 <Field label="Phone">
-                  <input className={uiInput} value={phone} onChange={(e) => setPhone(e.target.value)} />
+                  <input
+                    className={uiInput}
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                  />
                 </Field>
                 <Field label="Email (receipt)">
-                  <input className={uiInput} value={email} onChange={(e) => setEmail(e.target.value)} />
+                  <input
+                    className={uiInput}
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
                 </Field>
               </div>
             </Wizard.Step>
 
+            {/* Business */}
             <Wizard.Step title="Business">
               <div className={uiRow}>
                 <Field label="Company name">
-                  <input className={uiInput} value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
+                  <input
+                    className={uiInput}
+                    value={companyName}
+                    onChange={(e) => setCompanyName(e.target.value)}
+                  />
                 </Field>
                 <Field label="Company number">
-                  <input className={uiInput} value={companyNumber} onChange={(e) => setCompanyNumber(e.target.value)} />
+                  <input
+                    className={uiInput}
+                    value={companyNumber}
+                    onChange={(e) => setCompanyNumber(e.target.value)}
+                  />
                 </Field>
                 <Field label="VAT number">
-                  <input className={uiInput} value={vatNumber} onChange={(e) => setVatNumber(e.target.value)} />
+                  <input
+                    className={uiInput}
+                    value={vatNumber}
+                    onChange={(e) => setVatNumber(e.target.value)}
+                  />
                 </Field>
               </div>
             </Wizard.Step>
 
+            {/* Site & Tank */}
             <Wizard.Step title="Site & Tank">
               <div className={uiRow}>
                 <Field label="Site address line 1">
-                  <input className={uiInput} value={siteAddress1} onChange={(e) => setSiteAddress1(e.target.value)} />
+                  <input
+                    className={uiInput}
+                    value={siteAddress1}
+                    onChange={(e) => setSiteAddress1(e.target.value)}
+                  />
                 </Field>
                 <Field label="Site address line 2">
-                  <input className={uiInput} value={siteAddress2} onChange={(e) => setSiteAddress2(e.target.value)} />
+                  <input
+                    className={uiInput}
+                    value={siteAddress2}
+                    onChange={(e) => setSiteAddress2(e.target.value)}
+                  />
                 </Field>
                 <Field label="Site city">
-                  <input className={uiInput} value={siteCity} onChange={(e) => setSiteCity(e.target.value)} />
+                  <input
+                    className={uiInput}
+                    value={siteCity}
+                    onChange={(e) => setSiteCity(e.target.value)}
+                  />
                 </Field>
                 <Field label="Site postcode">
-                  <input className={uiInput} value={sitePostcode} onChange={(e) => setSitePostcode(e.target.value)} />
+                  <input
+                    className={uiInput}
+                    value={sitePostcode}
+                    onChange={(e) => setSitePostcode(e.target.value)}
+                  />
                 </Field>
+
                 <Field label="Tank size (L)">
-                  <input className={uiInput} type="number" min={0} value={tankSizeL} onChange={(e) => setTankSizeL(Number(e.target.value))} />
+                  <input
+                    className={uiInput}
+                    type="number"
+                    min={0}
+                    value={tankSizeL}
+                    onChange={(e) => setTankSizeL(Number(e.target.value))}
+                  />
                 </Field>
                 <Field label="Monthly consumption (L)">
-                  <input className={uiInput} type="number" min={0} value={monthlyConsumptionL} onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))} />
+                  <input
+                    className={uiInput}
+                    type="number"
+                    min={0}
+                    value={monthlyConsumptionL}
+                    onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))}
+                  />
                 </Field>
                 <Field label="Market price (GBP/L)">
-                  <input className={uiInput} type="number" min={0} step="0.01" value={marketPrice} onChange={(e) => setMarketPrice(Number(e.target.value))} />
+                  <input
+                    className={uiInput}
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={marketPrice}
+                    onChange={(e) => setMarketPrice(Number(e.target.value))}
+                  />
                 </Field>
                 <Field label="FuelFlow cheaper by (GBP/L)">
-                  <input className={uiInput} type="number" min={0} step="0.01" value={cheaperBy} onChange={(e) => setCheaperBy(Number(e.target.value))} />
+                  <input
+                    className={uiInput}
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={cheaperBy}
+                    onChange={(e) => setCheaperBy(Number(e.target.value))}
+                  />
                 </Field>
               </div>
             </Wizard.Step>
 
+            {/* Signature */}
             <Wizard.Step title="Signature">
               <div className="mt-4">
-                <label className={uiLabel}>Type your full legal name as signature</label>
+                <label className={uiLabel}>
+                  Type your full legal name as signature
+                </label>
                 <input
                   className={uiInput}
                   placeholder="Jane Smith"
@@ -512,13 +659,22 @@ export default function DocumentsPage() {
 
               <div className="mt-6 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                 <div className="text-white/60 text-sm">
-                  By signing you agree to the Terms and the figures above are estimates.
+                  By signing you agree to the Terms and the figures above are
+                  estimates.
                 </div>
                 <div className="flex gap-3">
-                  <button className={cx(uiBtn, uiBtnGhost)} disabled={savingContract} onClick={() => setShowWizard(false)}>
+                  <button
+                    className={cx(uiBtn, uiBtnGhost)}
+                    disabled={savingContract}
+                    onClick={() => setShowWizard(false)}
+                  >
                     Cancel
                   </button>
-                  <button className={cx(uiBtn, uiBtnPrimary)} disabled={savingContract} onClick={() => signAndSaveContract(wizardOption)}>
+                  <button
+                    className={cx(uiBtn, uiBtnPrimary)}
+                    disabled={savingContract}
+                    onClick={() => signAndSaveContract(wizardOption)}
+                  >
                     {savingContract ? "Saving…" : "Sign & Save"}
                   </button>
                 </div>
@@ -547,7 +703,17 @@ function Tile(props: {
   tooltip?: string;
   footer?: React.ReactNode;
 }) {
-  const { icon, title, subtitle, statusBadge, actionLabel, onAction, disabled, tooltip, footer } = props;
+  const {
+    icon,
+    title,
+    subtitle,
+    statusBadge,
+    actionLabel,
+    onAction,
+    disabled,
+    tooltip,
+    footer,
+  } = props;
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
       <div className="flex items-start gap-3">
@@ -558,7 +724,12 @@ function Tile(props: {
             {statusBadge}
           </div>
           <div className="text-sm text-white/70 mt-1">{subtitle}</div>
-          <button className={cx(uiBtn, uiBtnGhost, "mt-3")} onClick={onAction} disabled={disabled} title={tooltip}>
+          <button
+            className={cx(uiBtn, uiBtnGhost, "mt-3")}
+            onClick={onAction}
+            disabled={disabled}
+            title={tooltip}
+          >
             {actionLabel}
           </button>
           {footer}
@@ -568,9 +739,20 @@ function Tile(props: {
   );
 }
 
-function Badge({ tone, children }: { tone: "ok" | "warn"; children: React.ReactNode }) {
-  const cls = tone === "ok" ? "bg-emerald-500/15 text-emerald-300" : "bg-yellow-500/15 text-yellow-300";
-  return <span className={cx("text-xs rounded-full px-2 py-0.5", cls)}>{children}</span>;
+function Badge({
+  tone,
+  children,
+}: {
+  tone: "ok" | "warn";
+  children: React.ReactNode;
+}) {
+  const cls =
+    tone === "ok"
+      ? "bg-emerald-500/15 text-emerald-300"
+      : "bg-yellow-500/15 text-yellow-300";
+  return (
+    <span className={cx("text-xs rounded-full px-2 py-0.5", cls)}>{children}</span>
+  );
 }
 
 function Field({ label: l, children }: { label: string; children: React.ReactNode }) {
@@ -593,11 +775,19 @@ function Modal({
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} aria-hidden="true" />
+      <div
+        className="absolute inset-0 bg-black/60"
+        onClick={onClose}
+        aria-hidden="true"
+      />
       <div className="relative w-[95%] max-w-3xl rounded-2xl bg-[#0B274B] border border-white/10 p-5 shadow-xl">
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">{title}</h3>
-          <button aria-label="Close" className="rounded-lg p-2 text-white/70 hover:bg-white/10" onClick={onClose}>
+          <button
+            aria-label="Close"
+            className="rounded-lg p-2 text-white/70 hover:bg-white/10"
+            onClick={onClose}
+          >
             ✕
           </button>
         </div>
@@ -612,13 +802,17 @@ interface WizardStepProps {
   children: React.ReactNode;
 }
 interface WizardProps {
-  children: React.ReactElement<WizardStepProps> | React.ReactElement<WizardStepProps>[];
+  children:
+    | React.ReactElement<WizardStepProps>
+    | React.ReactElement<WizardStepProps>[];
 }
 type WizardComponent = React.FC<WizardProps> & {
   Step: React.FC<WizardStepProps>;
 };
 const Wizard: WizardComponent = ({ children }) => {
-  const steps = React.Children.toArray(children) as React.ReactElement<WizardStepProps>[];
+  const steps = React.Children.toArray(
+    children
+  ) as React.ReactElement<WizardStepProps>[];
   const [idx, setIdx] = useState(0);
 
   return (
@@ -629,7 +823,11 @@ const Wizard: WizardComponent = ({ children }) => {
           return (
             <div
               key={i}
-              className={`px-3 py-1 rounded-lg text-sm border ${i === idx ? "bg-white/15 border-white/20" : "bg-white/8 border-white/12"}`}
+              className={`px-3 py-1 rounded-lg text-sm border ${
+                i === idx
+                  ? "bg-white/15 border-white/20"
+                  : "bg-white/8 border-white/12"
+              }`}
             >
               {title}
             </div>
@@ -637,10 +835,17 @@ const Wizard: WizardComponent = ({ children }) => {
         })}
       </div>
 
-      <div className="rounded-xl border border-white/10 bg-white/4 p-4">{steps[idx]}</div>
+      <div className="rounded-xl border border-white/10 bg-white/4 p-4">
+        {steps[idx]}
+      </div>
 
       <div className="mt-3 flex justify-between">
-        <button className={cx(uiBtn, uiBtnGhost)} onClick={() => setIdx(Math.max(0, idx - 1))} disabled={idx === 0} type="button">
+        <button
+          className={cx(uiBtn, uiBtnGhost)}
+          onClick={() => setIdx(Math.max(0, idx - 1))}
+          disabled={idx === 0}
+          type="button"
+        >
           Back
         </button>
         <button
@@ -658,6 +863,18 @@ const Wizard: WizardComponent = ({ children }) => {
 Wizard.Step = function Step({ children }: WizardStepProps) {
   return <>{children}</>;
 };
+
+/* Estimate banner (was missing -> added) */
+function EstimateBanner() {
+  return (
+    <div className="relative overflow-hidden mb-3 rounded-xl border border-white/10 bg-gradient-to-r from-yellow-500/10 via-orange-500/10 to-red-500/10 p-3 text-center">
+      <span className="font-semibold text-yellow-300 tracking-wide">
+        ESTIMATE ONLY — prices fluctuate daily based on market conditions
+      </span>
+      <div className="pointer-events-none absolute inset-0 opacity-10 [background-image:repeating-linear-gradient(45deg,transparent,transparent_8px,rgba(255,255,255,.4)_8px,rgba(255,255,255,.4)_10px)]" />
+    </div>
+  );
+}
 
 /* Footer */
 function SiteFooter() {
@@ -689,7 +906,11 @@ function SiteFooter() {
 function DocIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm0 0v6h6" opacity=".6" />
+      <path
+        fill="currentColor"
+        d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm0 0v6h6"
+        opacity=".6"
+      />
       <path fill="currentColor" d="M8 13h8v2H8zm0-4h5v2H8zm0 8h8v2H8z" />
     </svg>
   );
@@ -697,17 +918,30 @@ function DocIcon() {
 function ShieldIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path fill="currentColor" d="M12 2l7 4v6c0 5-3.5 9-7 10c-3.5-1-7-5-7-10V6z" opacity=".6" />
-      <path fill="currentColor" d="M12 6l4 2v3c0 3.5-2.3 6.3-4 7c-1.7-.7-4-3.5-4-7V8z" />
+      <path
+        fill="currentColor"
+        d="M12 2l7 4v6c0 5-3.5 9-7 10c-3.5-1-7-5-7-10V6z"
+        opacity=".6"
+      />
+      <path
+        fill="currentColor"
+        d="M12 6l4 2v3c0 3.5-2.3 6.3-4 7c-1.7-.7-4-3.5-4-7V8z"
+      />
     </svg>
   );
 }
 function BuildingIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path fill="currentColor" d="M3 21V7l9-4l9 4v14h-7v-5h-4v5z" opacity=".6" />
-      <path fill="currentColor" d="M9 11h2v2H9zm4 0h2v2h-2zM9 15h2v2H9zm4 0h2v2h-2z" />
+      <path
+        fill="currentColor"
+        d="M3 21V7l9-4l9 4v14h-7v-5h-4v5z"
+        opacity=".6"
+      />
+      <path
+        fill="currentColor"
+        d="M9 11h2v2H9zm4 0h2v2h-2zM9 15h2v2H9zm4 0h2v2h-2z"
+      />
     </svg>
   );
 }
-
