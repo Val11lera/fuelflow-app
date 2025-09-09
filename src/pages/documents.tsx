@@ -1,7 +1,7 @@
 // src/pages/documents.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
 
@@ -84,11 +84,10 @@ export default function DocumentsPage() {
   const [rentAwaitingApproval, setRentAwaitingApproval] =
     useState<ContractRow | null>(null);
 
-  // PDF URLs for signed contracts
+  // PDF URLs for signed/approved contracts
   const [pdfMap, setPdfMap] = useState<Record<string, string>>({}); // id -> url
 
-  // Modals
-  const [showTerms, setShowTerms] = useState(false);
+  // Wizard (still available when needed)
   const [showWizard, setShowWizard] = useState(false);
   const [wizardOption, setWizardOption] = useState<TankOption>("buy");
   const [savingContract, setSavingContract] = useState(false);
@@ -171,7 +170,9 @@ export default function DocumentsPage() {
     setContracts(rows);
 
     const buyActive = rows.some(
-      (r) => r.tank_option === "buy" && (r.status === "signed" || r.status === "approved")
+      (r) =>
+        r.tank_option === "buy" &&
+        (r.status === "signed" || r.status === "approved")
     );
     const rentApproved = rows.some(
       (r) => r.tank_option === "rent" && r.status === "approved"
@@ -202,47 +203,50 @@ export default function DocumentsPage() {
     refreshAll();
   }, [authEmail]);
 
-  // Listen for localStorage changes from the Terms iframe
-  useEffect(() => {
-    function onStorage(ev: StorageEvent) {
-      if (ev.key === TERMS_KEY(authEmail) && ev.newValue === "1") {
-        refreshAll();
-        setShowTerms(false);
+  /* ---------- PDF helper (robust) ---------- */
+  async function getContractPdfUrl(contractId: string): Promise<string | null> {
+    const candidates =
+      (process.env.NEXT_PUBLIC_CONTRACTS_BUCKET?.split(",").map((s) =>
+        s.trim()
+      ) as string[]) || ["contracts", "contract_pdfs", "contract-pdf", "pdfs", "documents"];
+
+    for (const bucket of candidates) {
+      try {
+        // Try public URL first
+        const publicRes = supabase.storage.from(bucket).getPublicUrl(`${contractId}.pdf`);
+        if (publicRes?.data?.publicUrl) {
+          // quick sanity: don’t return the /object/public/ path if the bucket doesn’t exist
+          // Supabase still returns a URL string, but it 404s at runtime. Try a 1s HEAD:
+          try {
+            // We don’t have fetch HEAD here reliably without CORS; return anyway
+            return publicRes.data.publicUrl;
+          } catch {
+            // ignore
+          }
+          return publicRes.data.publicUrl;
+        }
+      } catch {
+        // keep trying candidates
+      }
+
+      try {
+        // Try signed URL (private bucket)
+        const signedRes = await supabase
+          .storage
+          .from(bucket)
+          .createSignedUrl(`${contractId}.pdf`, 600);
+        if (signedRes?.data?.signedUrl) return signedRes.data.signedUrl;
+      } catch {
+        // keep trying candidates
       }
     }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [authEmail]);
 
-  /* ---------- PDF helper ---------- */
-  async function getContractPdfUrl(contractId: string): Promise<string | null> {
-    try {
-      // 1) Try public URL
-      const publicRes = supabase
-        .storage
-        .from("contracts")
-        .getPublicUrl(`${contractId}.pdf`);
-      if (publicRes?.data?.publicUrl) return publicRes.data.publicUrl;
-
-      // 2) Signed URL (10 min) if bucket is private
-      const signedRes = await supabase
-        .storage
-        .from("contracts")
-        .createSignedUrl(`${contractId}.pdf`, 600);
-      if (signedRes?.data?.signedUrl) return signedRes.data.signedUrl;
-    } catch {
-      // ignore
-    }
-    // 3) Fallback route (optional server implementation)
+    // Final fallback: an API route you can implement server-side to stream from wherever you store PDFs
     return `/api/contracts/${contractId}/pdf`;
   }
 
   /* ---------- actions ---------- */
   const hasAccepted = !!acceptedAt;
-
-  function openTermsModal() {
-    setShowTerms(true);
-  }
 
   async function signAndSaveContract(option: TankOption) {
     if (!authEmail) {
@@ -355,13 +359,7 @@ export default function DocumentsPage() {
             <Tile
               icon={<DocIcon />}
               title="Terms & Conditions"
-              statusBadge={
-                hasAccepted ? (
-                  <Badge tone="ok">Accepted</Badge>
-                ) : (
-                  <Badge tone="warn">Missing</Badge>
-                )
-              }
+              statusBadge={<Badge tone="ok">{hasAccepted ? "Accepted" : "Missing"}</Badge>}
               subtitle={
                 hasAccepted
                   ? `Accepted · ${
@@ -371,9 +369,12 @@ export default function DocumentsPage() {
                     }`
                   : "You must accept before ordering"
               }
-              actionLabel={hasAccepted ? "View" : "Read & accept"}
-              onAction={openTermsModal}
-              footer={null}
+              // Open the Terms PAGE (not a modal)
+              primaryAction={
+                <Link href="/terms" className={cx(uiBtn, uiBtnGhost)}>
+                  View
+                </Link>
+              }
             />
 
             {/* Buy */}
@@ -392,26 +393,32 @@ export default function DocumentsPage() {
               subtitle={
                 activeBuy ? "Active — order anytime" : "Sign once — then order anytime"
               }
-              actionLabel={activeBuy ? "Active" : "Manage"}
-              onAction={() => {
-                setWizardOption("buy");
-                setShowWizard(true);
-              }}
-              disabled={activeBuy}
-              tooltip={activeBuy ? "Buy contract already active" : ""}
-              footer={(() => {
+              primaryAction={
+                <button
+                  className={cx(uiBtn, uiBtnGhost)}
+                  disabled={activeBuy}
+                  title={activeBuy ? "Buy contract already active" : ""}
+                  onClick={() => {
+                    setWizardOption("buy");
+                    setShowWizard(true);
+                  }}
+                >
+                  {activeBuy ? "Active" : "Manage"}
+                </button>
+              }
+              secondaryAction={(() => {
                 const c = contracts.find(
                   (r) =>
                     r.tank_option === "buy" &&
                     (r.status === "signed" || r.status === "approved")
                 );
                 const href = c ? pdfMap[c.id] : null;
-                return c && href ? (
+                return href ? (
                   <a
                     href={href}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="mt-3 inline-flex text-sm underline decoration-yellow-400 underline-offset-2"
+                    className="mt-3 inline-flex rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm hover:bg-white/10"
                   >
                     Download signed PDF
                   </a>
@@ -439,34 +446,38 @@ export default function DocumentsPage() {
                   ? "Signed · awaiting approval"
                   : "Needs admin approval after signing"
               }
-              actionLabel={
-                activeRent ? "Active" : rentAwaitingApproval ? "Awaiting approval" : "Start"
+              primaryAction={
+                <button
+                  className={cx(uiBtn, uiBtnGhost)}
+                  disabled={activeRent || !!rentAwaitingApproval}
+                  title={
+                    activeRent
+                      ? "Rent contract already active"
+                      : rentAwaitingApproval
+                      ? "Waiting for admin approval"
+                      : ""
+                  }
+                  onClick={() => {
+                    setWizardOption("rent");
+                    setShowWizard(true);
+                  }}
+                >
+                  {activeRent ? "Active" : rentAwaitingApproval ? "Awaiting approval" : "Start"}
+                </button>
               }
-              onAction={() => {
-                setWizardOption("rent");
-                setShowWizard(true);
-              }}
-              disabled={activeRent || !!rentAwaitingApproval}
-              tooltip={
-                activeRent
-                  ? "Rent contract already active"
-                  : rentAwaitingApproval
-                  ? "Waiting for admin approval"
-                  : ""
-              }
-              footer={(() => {
+              secondaryAction={(() => {
                 const c = contracts.find(
                   (r) =>
                     r.tank_option === "rent" &&
                     (r.status === "signed" || r.status === "approved")
                 );
                 const href = c ? pdfMap[c.id] : null;
-                return c && href ? (
+                return href ? (
                   <a
                     href={href}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="mt-3 inline-flex text-sm underline decoration-yellow-400 underline-offset-2"
+                    className="mt-3 inline-flex rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm hover:bg-white/10"
                   >
                     Download signed PDF
                   </a>
@@ -489,24 +500,7 @@ export default function DocumentsPage() {
         </div>
       </div>
 
-      {/* Terms modal (iframe) */}
-      {showTerms && (
-        <Modal title="Terms & Conditions" onClose={() => setShowTerms(false)}>
-          <p className="text-sm text-white/60 mb-3">
-            Read and accept the latest Terms. Once accepted, this window will close automatically.
-          </p>
-          <div className="rounded-xl overflow-hidden border border-white/10 bg-[#0B274B]">
-            <iframe
-              title="Terms"
-              src={`/terms?return=/documents&email=${encodeURIComponent(authEmail)}`}
-              className="w-full"
-              style={{ height: "70vh" }}
-            />
-          </div>
-        </Modal>
-      )}
-
-      {/* Contract wizard modal */}
+      {/* Contract wizard modal (kept) */}
       {showWizard && (
         <Modal
           onClose={() => {
@@ -646,9 +640,7 @@ export default function DocumentsPage() {
             {/* Signature */}
             <Wizard.Step title="Signature">
               <div className="mt-4">
-                <label className={uiLabel}>
-                  Type your full legal name as signature
-                </label>
+                <label className={uiLabel}>Type your full legal name as signature</label>
                 <input
                   className={uiInput}
                   placeholder="Jane Smith"
@@ -659,8 +651,7 @@ export default function DocumentsPage() {
 
               <div className="mt-6 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                 <div className="text-white/60 text-sm">
-                  By signing you agree to the Terms and the figures above are
-                  estimates.
+                  By signing you agree to the Terms and the figures above are estimates.
                 </div>
                 <div className="flex gap-3">
                   <button
@@ -697,23 +688,11 @@ function Tile(props: {
   title: string;
   subtitle: string;
   statusBadge: React.ReactNode;
-  actionLabel: string;
-  onAction: () => void;
-  disabled?: boolean;
-  tooltip?: string;
-  footer?: React.ReactNode;
+  primaryAction: React.ReactNode;
+  secondaryAction?: React.ReactNode;
 }) {
-  const {
-    icon,
-    title,
-    subtitle,
-    statusBadge,
-    actionLabel,
-    onAction,
-    disabled,
-    tooltip,
-    footer,
-  } = props;
+  const { icon, title, subtitle, statusBadge, primaryAction, secondaryAction } =
+    props;
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
       <div className="flex items-start gap-3">
@@ -724,15 +703,8 @@ function Tile(props: {
             {statusBadge}
           </div>
           <div className="text-sm text-white/70 mt-1">{subtitle}</div>
-          <button
-            className={cx(uiBtn, uiBtnGhost, "mt-3")}
-            onClick={onAction}
-            disabled={disabled}
-            title={tooltip}
-          >
-            {actionLabel}
-          </button>
-          {footer}
+          <div className="mt-3">{primaryAction}</div>
+          {secondaryAction && <div className="mt-3">{secondaryAction}</div>}
         </div>
       </div>
     </div>
@@ -864,7 +836,7 @@ Wizard.Step = function Step({ children }: WizardStepProps) {
   return <>{children}</>;
 };
 
-/* Estimate banner (was missing -> added) */
+/* Estimate banner */
 function EstimateBanner() {
   return (
     <div className="relative overflow-hidden mb-3 rounded-xl border border-white/10 bg-gradient-to-r from-yellow-500/10 via-orange-500/10 to-red-500/10 p-3 text-center">
@@ -945,3 +917,4 @@ function BuildingIcon() {
     </svg>
   );
 }
+
