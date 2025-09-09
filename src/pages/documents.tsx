@@ -2,7 +2,7 @@
 // src/pages/documents.tsx
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
 
@@ -77,6 +77,11 @@ const GBP = (n: number | null | undefined) =>
 
 function cx(...c: (string | false | null | undefined)[]) {
   return c.filter(Boolean).join(" ");
+}
+
+/** ✅ Missing helper that caused the build error */
+function hasAny(rows: ContractRow[], option: TankOption): boolean {
+  return rows?.some((r) => r.tank_option === option) ?? false;
 }
 
 /* =========================
@@ -303,7 +308,6 @@ export default function DocumentsPage() {
       setShowWizard(false);
 
       if (option === "buy") {
-        // Buy is active immediately -> jump to order
         window.location.href = "/order";
       } else {
         alert("Rental contract signed — waiting for admin approval.");
@@ -398,7 +402,7 @@ export default function DocumentsPage() {
         </div>
 
         {/* Helper nudge to order when everything is ready */}
-        {requirementOkay && (
+        {hasAccepted && (activeBuy || activeRent) && (
           <div className="mt-6 flex justify-center">
             <Link href="/order" className={cx(uiBtn, uiBtnPrimary, "px-6 py-3 text-base")}>
               Continue to Order
