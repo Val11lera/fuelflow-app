@@ -396,7 +396,7 @@ export default function ClientDashboard() {
               Order fuel
             </a>
             <a
-              href="/documents"
+              href="/documents/"
               className="rounded-xl px-4 py-2 text-sm font-semibold transition bg-white/10 hover:bg-white/15"
             >
               Documents
@@ -425,7 +425,7 @@ export default function ClientDashboard() {
             </div>
             <div className="mt-4">
               <a
-                href="/documents"
+                href="/documents/"
                 className="inline-flex items-center rounded-xl bg-white/10 hover:bg-white/15 px-4 py-2 font-semibold"
               >
                 Open documents
