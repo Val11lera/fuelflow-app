@@ -1,5 +1,6 @@
 // src/pages/order.tsx
 // src/pages/order.tsx
+// src/pages/order.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -94,12 +95,15 @@ export default function OrderPage() {
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
-  // form state
+  // auth email (single source of truth for contracts + terms)
+  const [authEmail, setAuthEmail] = useState<string>("");
+
+  // form state (email here is just for the Stripe receipt)
   const [fuel, setFuel] = useState<Fuel>("diesel");
   const [litres, setLitres] = useState<number>(1000);
   const [deliveryDate, setDeliveryDate] = useState("");
 
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(""); // receipt email only
   const [fullName, setFullName] = useState("");
   const [address1, setAddress1] = useState("");
   const [address2, setAddress2] = useState("");
@@ -145,16 +149,19 @@ export default function OrderPage() {
   const [marketPrice, setMarketPrice] = useState<number>(1.35);
   const [cheaperBy, setCheaperBy] = useState<number>(0.09);
 
-  /* ---------- auth (prefill email) ---------- */
+  /* ---------- auth (prefill email & authEmail) ---------- */
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getUser();
       const em = (data?.user?.email || "").toLowerCase();
-      if (em && !email) setEmail(em);
+      if (em) {
+        setAuthEmail(em);
+        if (!email) setEmail(em); // default receipt email to auth email
+      }
     })();
   }, []);
 
-  /* ---------- prices (like your dashboard) ---------- */
+  /* ---------- prices ---------- */
   useEffect(() => {
     (async () => {
       try {
@@ -223,23 +230,25 @@ export default function OrderPage() {
     } catch {}
   }, [fuel, litres, deliveryDate, email, fullName, address1, address2, postcode, city]);
 
-  /* ---------- Terms acceptance ---------- */
+  /* ---------- Terms acceptance (keyed by authEmail) ---------- */
   useEffect(() => {
     const acceptedParam = qp.get("accepted");
-    const emailParam = qp.get("email");
-    if (emailParam && !email) setEmail(emailParam);
-    if (acceptedParam === "1" && emailParam) {
-      localStorage.setItem(TERMS_KEY(emailParam), "1");
+    const emailParam = (qp.get("email") || "").toLowerCase();
+
+    // If terms page redirected here with accepted=1, store against authEmail as well.
+    if (acceptedParam === "1") {
+      if (emailParam) localStorage.setItem(TERMS_KEY(emailParam), "1");
+      if (authEmail) localStorage.setItem(TERMS_KEY(authEmail), "1");
     }
-  }, [qp, email]);
+  }, [qp, authEmail]);
 
   useEffect(() => {
-    if (!email) return;
+    if (!authEmail) return;
     (async () => {
       setCheckingTerms(true);
       try {
-        // align with /documents: localStorage first
-        const cached = localStorage.getItem(TERMS_KEY(email));
+        // localStorage first
+        const cached = localStorage.getItem(TERMS_KEY(authEmail));
         if (cached === "1") {
           setAccepted(true);
           return;
@@ -247,35 +256,35 @@ export default function OrderPage() {
         const { data } = await supabase
           .from("terms_acceptances")
           .select("id")
-          .eq("email", email.toLowerCase())
+          .eq("email", authEmail)
           .eq("version", termsVersion)
           .limit(1)
           .maybeSingle();
         if (data) {
           setAccepted(true);
-          localStorage.setItem(TERMS_KEY(email), "1");
+          localStorage.setItem(TERMS_KEY(authEmail), "1");
         }
       } finally {
         setCheckingTerms(false);
       }
     })();
-  }, [email]);
+  }, [authEmail]);
 
   function openTerms() {
-    const ret = `/terms?return=/order${email ? `&email=${encodeURIComponent(email)}` : ""}`;
+    const emailForTerms = encodeURIComponent(authEmail || email || "");
+    const ret = `/terms?return=/order${emailForTerms ? `&email=${emailForTerms}` : ""}`;
     window.location.href = ret;
-    // terms page will redirect back with accepted=1 and email=...
   }
 
-  /* ---------- load contracts & compute state (aligned) ---------- */
+  /* ---------- load contracts & compute state (always by authEmail) ---------- */
   async function refreshContracts() {
-    if (!email) return;
+    if (!authEmail) return;
     const { data, error } = await supabase
       .from("contracts")
       .select(
         "id,email,tank_option,status,customer_name,created_at,approved_at,signed_at,tank_size_l,monthly_consumption_l,fuelflow_price_gbp_l,est_monthly_savings_gbp,est_payback_months"
       )
-      .eq("email", email.toLowerCase())
+      .eq("email", authEmail) // <- single source of truth
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -303,7 +312,7 @@ export default function OrderPage() {
 
   useEffect(() => {
     refreshContracts();
-  }, [email, showWizard]);
+  }, [authEmail, showWizard]);
 
   /* ---------- checkout ---------- */
   const requirementsOkay = accepted && (activeBuy || activeRent); // rent only after approval
@@ -334,7 +343,7 @@ export default function OrderPage() {
           litres,
           deliveryDate,
           full_name: fullName,
-          email,
+          email, // receipt email
           address_line1: address1,
           address_line2: address2,
           city,
@@ -355,7 +364,7 @@ export default function OrderPage() {
     }
   }
 
-  /* ---------- sign & save contract ---------- */
+  /* ---------- sign & save contract (force authEmail) ---------- */
   async function signAndSaveContract(option: TankOption) {
     if (!supabase) return;
 
@@ -367,12 +376,16 @@ export default function OrderPage() {
       alert("Type your full legal name as signature.");
       return;
     }
+    if (!authEmail) {
+      alert("Missing authenticated email. Please log in again.");
+      return;
+    }
 
     const base = {
       contract_type: option,
       tank_option: option,
       customer_name: fullName,
-      email: email || null,
+      email: authEmail, // <- ALWAYS save under auth email
       address_line1: address1 || null,
       address_line2: address2 || null,
       city: city || null,
@@ -399,6 +412,7 @@ export default function OrderPage() {
       siteCity,
       sitePostcode,
       cheaperByGBPPerL: cheaperBy,
+      receiptEmail: email, // keep the receipt email separate in extra
     };
 
     try {
@@ -411,7 +425,6 @@ export default function OrderPage() {
         const retry = await supabase.from("contracts").insert(base as any);
         if (retry.error) throw retry.error;
       } else if (error) {
-        // Unique index message -> already active
         if (/duplicate|already exists|unique/i.test(error.message)) {
           alert("You already have an active contract of this type.");
         } else {
@@ -718,7 +731,7 @@ export default function OrderPage() {
                 <Field label="Phone">
                   <input className={input} value={phone} onChange={(e) => setPhone(e.target.value)} />
                 </Field>
-                <Field label="Email">
+                <Field label="Email (receipt)">
                   <input className={input} value={email} onChange={(e) => setEmail(e.target.value)} />
                 </Field>
               </div>
