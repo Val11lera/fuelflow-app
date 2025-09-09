@@ -1,9 +1,10 @@
 // src/pages/contracts/[id].tsx
+// src/pages/contracts/[id].tsx
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
 import Link from "next/link";
+import { useRouter } from "next/router";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -16,22 +17,22 @@ type ContractRow = {
   tank_option: "buy" | "rent";
   status: "draft" | "signed" | "approved" | "cancelled";
   pdf_url?: string | null;
-  pdf_storage_path?: string | null; // e.g. "contracts/123.pdf"
+  pdf_storage_path?: string | null;
   created_at?: string | null;
 };
 
 export default function ContractViewer() {
-  const params = useParams<{ id: string }>();
-  const id = params?.id;
+  const router = useRouter();
+  const { id } = router.query as { id?: string };
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [contract, setContract] = useState<ContractRow | null>(null);
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!id) return;
     (async () => {
       try {
-        if (!id) return;
         setLoading(true);
         setErr(null);
 
@@ -45,17 +46,14 @@ export default function ContractViewer() {
         if (!data) throw new Error("Contract not found.");
         setContract(data as ContractRow);
 
-        // Prefer already-saved absolute URL
         if (data.pdf_url) {
           setSignedUrl(data.pdf_url);
           return;
         }
-
-        // Else sign a storage path from bucket "contracts"
         if (data.pdf_storage_path) {
           const { data: signed, error: signErr } = await supabase.storage
             .from("contracts")
-            .createSignedUrl(data.pdf_storage_path, 60 * 10); // 10 min
+            .createSignedUrl(data.pdf_storage_path, 60 * 10);
           if (signErr) throw signErr;
           setSignedUrl(signed?.signedUrl || null);
         } else {
@@ -76,7 +74,9 @@ export default function ContractViewer() {
           <img src="/logo-email.png" alt="FuelFlow" className="h-7" />
           <div className="text-xl font-semibold">Contract</div>
           <div className="ml-auto">
-            <Link href="/client-dashboard" className="text-white/70 hover:text-white">Back to dashboard</Link>
+            <Link href="/documents" className="text-white/70 hover:text-white">
+              Back to documents
+            </Link>
           </div>
         </div>
 
@@ -86,10 +86,8 @@ export default function ContractViewer() {
           <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-red-200">{err}</div>
         ) : (
           <>
-            <div className="rounded-xl bg-white/5 p-4 ring-1 ring-white/10 mb-3">
-              <div className="text-sm text-white/70">
-                ID: <span className="text-white">{contract?.id}</span> · Type: <b>{contract?.tank_option}</b> · Status: <b>{contract?.status}</b>
-              </div>
+            <div className="rounded-xl bg-white/5 p-4 ring-1 ring-white/10 mb-3 text-sm text-white/70">
+              ID: <span className="text-white">{contract?.id}</span> · Type: <b>{contract?.tank_option}</b> · Status: <b>{contract?.status}</b>
             </div>
 
             {signedUrl ? (
@@ -118,3 +116,4 @@ export default function ContractViewer() {
     </main>
   );
 }
+
