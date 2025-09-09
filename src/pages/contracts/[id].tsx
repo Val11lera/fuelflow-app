@@ -24,6 +24,7 @@ type ContractRow = {
 export default function ContractViewer() {
   const router = useRouter();
   const { id } = router.query as { id?: string };
+
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [contract, setContract] = useState<ContractRow | null>(null);
@@ -74,7 +75,7 @@ export default function ContractViewer() {
           <img src="/logo-email.png" alt="FuelFlow" className="h-7" />
           <div className="text-xl font-semibold">Contract</div>
           <div className="ml-auto">
-            <Link href="/documents" className="text-white/70 hover:text-white">
+            <Link href="/documents/" className="text-white/70 hover:text-white">
               Back to documents
             </Link>
           </div>
@@ -83,16 +84,24 @@ export default function ContractViewer() {
         {loading ? (
           <div className="rounded-xl bg-white/5 p-4">Loading…</div>
         ) : err ? (
-          <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-red-200">{err}</div>
+          <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-red-200">
+            {err}
+          </div>
         ) : (
           <>
             <div className="rounded-xl bg-white/5 p-4 ring-1 ring-white/10 mb-3 text-sm text-white/70">
-              ID: <span className="text-white">{contract?.id}</span> · Type: <b>{contract?.tank_option}</b> · Status: <b>{contract?.status}</b>
+              ID: <span className="text-white">{contract?.id}</span> · Type:{" "}
+              <b>{contract?.tank_option}</b> · Status:{" "}
+              <b>{contract?.status}</b>
             </div>
 
             {signedUrl ? (
               <div className="rounded-xl overflow-hidden ring-1 ring-white/10 bg-black/40">
-                <iframe src={signedUrl} className="w-full h-[80vh]" title="Contract PDF" />
+                <iframe
+                  src={signedUrl}
+                  className="w-full h-[80vh]"
+                  title="Contract PDF"
+                />
               </div>
             ) : (
               <div className="rounded-xl bg-white/5 p-4">No PDF available.</div>
@@ -116,4 +125,3 @@ export default function ContractViewer() {
     </main>
   );
 }
-
