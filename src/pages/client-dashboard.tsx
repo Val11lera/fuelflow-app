@@ -5,9 +5,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* =========================
-   Setup
-   ========================= */
+/* ===============================================
+   Client Dashboard — Professional Remix
+   - Crisp layout
+   - Mobile‑first, keyboard & screen‑reader friendly
+   - Clean cards, subtle glass, high contrast
+   - Sticky mobile CTA
+   - Lightweight (pure Tailwind) — no extra deps
+   =============================================== */
 
 type Fuel = "petrol" | "diesel";
 type ContractStatus = "draft" | "signed" | "approved" | "cancelled";
@@ -360,7 +365,7 @@ export default function ClientDashboard() {
   }
 
   // ---------- Usage & Spend (by month, year) ----------
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
   const usageByMonth: MonthAgg[] = useMemo(() => {
@@ -380,6 +385,11 @@ export default function ClientDashboard() {
     return base;
   }, [orders, selectedYear]);
 
+  const ytd = usageByMonth.reduce(
+    (acc, m) => ({ litres: acc.litres + m.litres, spend: acc.spend + m.spend }),
+    { litres: 0, spend: 0 }
+  );
+
   const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
   const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
 
@@ -394,110 +404,85 @@ export default function ClientDashboard() {
   const canOrder = pricesAreToday && petrolPrice != null && dieselPrice != null;
 
   return (
-    <div className="min-h-screen bg-[#0b1220] text-white">
+    <div className="min-h-screen bg-[#0a0f1c] text-white">
+      {/* Accent gradient */}
+      <div aria-hidden className="pointer-events-none fixed inset-0 -z-10">
+        <div className="absolute inset-x-0 -top-32 h-72 bg-gradient-to-b from-yellow-500/10 via-transparent to-transparent blur-3xl" />
+      </div>
+
       {/* Sticky mobile CTA */}
       <div className="md:hidden fixed bottom-4 inset-x-4 z-40">
         <a
           href="/order"
           aria-disabled={!canOrder}
           className={cx(
-            "block text-center rounded-xl py-3 font-semibold shadow-lg",
-            canOrder ? "bg-yellow-500 text-[#041F3E]" : "bg-white/10 text-white/60 cursor-not-allowed"
+            "block text-center rounded-2xl py-3 font-semibold shadow-2xl",
+            canOrder ? "bg-yellow-400 text-[#0a0f1c]" : "bg-white/10 text-white/60 cursor-not-allowed"
           )}
         >
-          Order Fuel
+          Order fuel
         </a>
       </div>
 
-      <div className="max-w-6xl mx-auto px-4 py-4 space-y-6">
+      <div className="mx-auto max-w-7xl px-4 py-5 md:py-8 space-y-6">
         {/* Header */}
-        <div className="flex items-center gap-3">
+        <header className="flex items-center gap-3">
           <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-          <div className="text-sm text-white/70">
-            Welcome back, <span className="font-medium">{userEmail}</span>
-          </div>
+          <span className="text-sm text-white/70 truncate">Welcome back, <b className="font-semibold text-white">{userEmail}</b></span>
           <div className="ml-auto hidden md:flex gap-2">
             <a
               href="/order"
               aria-disabled={!canOrder}
               className={cx(
-                "rounded-lg px-3 py-2 text-sm font-semibold",
-                canOrder ? "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400" : "bg-white/10 text-white/60 cursor-not-allowed"
+                "rounded-xl px-4 py-2 text-sm font-semibold transition",
+                canOrder ? "bg-yellow-400 text-[#0a0f1c] hover:bg-yellow-300" : "bg-white/10 text-white/60 cursor-not-allowed"
               )}
             >
-              Order Fuel
+              Order fuel
             </a>
-            <button
-              onClick={refresh}
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-            >
-              Refresh
-            </button>
-            <button
-              onClick={logout}
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-            >
-              Log out
-            </button>
+            <button onClick={refresh} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Refresh</button>
+            <button onClick={logout} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Log out</button>
           </div>
-        </div>
+        </header>
 
         {/* Prices out-of-date banner */}
         {(!pricesAreToday || petrolPrice == null || dieselPrice == null) && (
-          <div className="rounded-xl border border-red-400/40 bg-red-500/10 p-4 text-sm text-red-200">
+          <div className="rounded-2xl border border-red-400/30 bg-red-500/10 p-4 md:p-5 text-sm text-red-200">
             <div className="font-semibold mb-1">Prices are out of date</div>
-            <div>
-              Today’s prices haven’t been loaded yet. Click{" "}
-              <button className="underline decoration-yellow-400 underline-offset-2" onClick={refresh}>
-                Refresh
-              </button>{" "}
-              to update. Ordering is disabled until today’s prices are available.
-            </div>
+            <p>
+              Today’s prices haven’t been loaded yet. <button className="underline decoration-yellow-400 underline-offset-2" onClick={refresh}>Refresh</button> to update. Ordering is disabled until today’s prices are available.
+            </p>
           </div>
         )}
 
-        {/* Top cards: Prices + Documents Hub */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Card title="Petrol (95)">
-            <div className="text-3xl font-bold">
-              {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
-              <span className="text-base font-normal text-gray-300"> / litre</span>
-            </div>
-            <div className="mt-1 text-xs text-white/60">
-              {priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : "As of —"}
-            </div>
-          </Card>
-
-          <Card title="Diesel">
-            <div className="text-3xl font-bold">
-              {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
-              <span className="text-base font-normal text-gray-300"> / litre</span>
-            </div>
-            <div className="mt-1 text-xs text-white/60">
-              {priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : "As of —"}
-            </div>
-          </Card>
-
-          <DocumentsHub
-            termsAcceptedAt={termsAcceptedAt}
-            buy={buyContract}
-            rent={rentContract}
-          />
+        {/* KPI strip */}
+        <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <StatCard label="YTD Litres" value={ytd.litres ? ytd.litres.toLocaleString() : "—"} />
+          <StatCard label="YTD Spend" value={gbp.format(ytd.spend || 0)} />
+          <StatCard label="Latest Petrol" value={petrolPrice != null ? `${gbp.format(petrolPrice)}/L` : "—"} hint={priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : undefined} />
+          <StatCard label="Latest Diesel" value={dieselPrice != null ? `${gbp.format(dieselPrice)}/L` : "—"} hint={priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : undefined} />
         </section>
 
-        {/* Usage & Spend (condensed by default) */}
-        <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
+        {/* Prices + Docs */}
+        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <PriceCard title="Petrol (95)" price={petrolPrice} priceDate={priceDate} />
+          <PriceCard title="Diesel" price={dieselPrice} priceDate={priceDate} />
+          <DocumentsHub termsAcceptedAt={termsAcceptedAt} buy={buyContract} rent={rentContract} />
+        </section>
+
+        {/* Usage */}
+        <section className="rounded-2xl bg-white/[0.04] p-4 md:p-6 ring-1 ring-white/10">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
-            <h2 className="text-xl md:text-2xl font-semibold">Usage &amp; Spend</h2>
+            <h2 className="text-xl md:text-2xl font-semibold">Usage & Spend</h2>
             <div className="flex items-center gap-2">
-              <span className="text-sm text-white/70">Year:</span>
-              <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
+              <span className="text-sm text-white/70">Year</span>
+              <div className="flex overflow-hidden rounded-xl bg-white/10 text-sm">
                 <button
                   onClick={() => setSelectedYear(currentYear - 1)}
                   disabled={selectedYear === currentYear - 1}
                   className={cx(
                     "px-3 py-1.5",
-                    selectedYear === currentYear - 1 ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
+                    selectedYear === currentYear - 1 ? "bg-yellow-400 text-[#0a0f1c] font-semibold" : "hover:bg-white/15"
                   )}
                 >
                   {currentYear - 1}
@@ -507,52 +492,42 @@ export default function ClientDashboard() {
                   disabled={selectedYear === currentYear}
                   className={cx(
                     "px-3 py-1.5",
-                    selectedYear === currentYear ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
+                    selectedYear === currentYear ? "bg-yellow-400 text-[#0a0f1c] font-semibold" : "hover:bg-white/15"
                   )}
                 >
                   {currentYear}
                 </button>
               </div>
-              <button
-                onClick={() => setShowAllMonths((s) => !s)}
-                className="ml-3 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-              >
-                {showAllMonths ? "Show current month" : "Show 12 months"}
+              <button onClick={() => setShowAllMonths((s) => !s)} className="ml-1 rounded-xl bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
+                {showAllMonths ? "Show current" : "Show 12 months"}
               </button>
             </div>
           </div>
 
+          {/* Bars - responsive, touch friendly */}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="text-gray-300">
-                <tr className="border-b border-gray-700/60">
+              <thead className="text-white/70">
+                <tr className="border-b border-white/10">
                   <th className="py-2 pr-4">Month</th>
                   <th className="py-2 pr-4">Litres</th>
                   <th className="py-2 pr-4">Spend</th>
                 </tr>
               </thead>
               <tbody>
-                {rowsToShow.map((r) => (
-                  <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
-                    <td className="py-2 pr-4">
-                      {r.monthLabel} {String(selectedYear).slice(2)}
-                    </td>
+                { (showAllMonths ? usageByMonth : rowsToShow).map((r) => (
+                  <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-white/5">
+                    <td className="py-2 pr-4">{r.monthLabel} {String(selectedYear).slice(2)}</td>
                     <td className="py-2 pr-4 align-middle">
                       {Math.round(r.litres).toLocaleString()}
-                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                        <div
-                          className="h-1.5 rounded bg-yellow-500/80"
-                          style={{ width: `${(r.litres / maxL) * 100}%` }}
-                        />
+                      <div className="mt-1 h-2 w-full rounded bg-white/10">
+                        <div className="h-2 rounded bg-yellow-400/80" style={{ width: `${(r.litres / maxL) * 100}%` }} />
                       </div>
                     </td>
                     <td className="py-2 pr-4 align-middle">
                       {gbp.format(r.spend)}
-                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                        <div
-                          className="h-1.5 rounded bg-white/40"
-                          style={{ width: `${(r.spend / maxS) * 100}%` }}
-                        />
+                      <div className="mt-1 h-2 w-full rounded bg-white/10">
+                        <div className="h-2 rounded bg-white/40" style={{ width: `${(r.spend / maxS) * 100}%` }} />
                       </div>
                     </td>
                   </tr>
@@ -564,32 +539,31 @@ export default function ClientDashboard() {
 
         {/* errors */}
         {error && (
-          <div className="bg-red-800/60 border border-red-500 text-red-100 p-4 rounded">
+          <div role="alert" className="rounded-2xl bg-red-600/15 border border-red-500/30 text-red-200 p-4">
             {error}
           </div>
         )}
 
-        {/* recent orders */}
-        <section className="bg-gray-800 rounded-xl p-4 md:p-6 mb-24 md:mb-0">
+        {/* Recent Orders */}
+        <section className="rounded-2xl bg-[#0e1627] p-4 md:p-6 ring-1 ring-white/10 mb-24 md:mb-0">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl md:text-2xl font-semibold">Recent Orders</h2>
-            <button
-              onClick={refresh}
-              className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
-            >
-              Refresh
-            </button>
+            <h2 className="text-xl md:text-2xl font-semibold">Recent orders</h2>
+            <button onClick={refresh} className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm">Refresh</button>
           </div>
 
           {loading ? (
-            <div className="text-gray-300">Loading…</div>
+            <SkeletonTable />
           ) : orders.length === 0 ? (
-            <div className="text-gray-400">No orders yet.</div>
+            <EmptyState
+              title="No orders yet"
+              subtitle="Your recent orders will appear here once you place an order."
+              action={{ label: "Place your first order", href: "/order" }}
+            />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
-                <thead className="text-gray-300">
-                  <tr className="border-b border-gray-700">
+                <thead className="text-white/70">
+                  <tr className="border-b border-white/10">
                     <th className="py-2 pr-4">Date</th>
                     <th className="py-2 pr-4">Product</th>
                     <th className="py-2 pr-4">Litres</th>
@@ -599,24 +573,20 @@ export default function ClientDashboard() {
                 </thead>
                 <tbody>
                   {orders.map((o) => (
-                    <tr key={o.id} className="border-b border-gray-800">
-                      <td className="py-2 pr-4">
-                        {new Date(o.created_at).toLocaleString()}
-                      </td>
-                      <td className="py-2 pr-4 capitalize">
-                        {(o.fuel as string) || "—"}
-                      </td>
-                      <td className="py-2 pr-4">{o.litres ?? "—"}</td>
+                    <tr key={o.id} className="border-b border-white/5">
+                      <td className="py-2 pr-4 whitespace-nowrap">{new Date(o.created_at).toLocaleString()}</td>
+                      <td className="py-2 pr-4 capitalize">{(o.fuel as string) || "—"}</td>
+                      <td className="py-2 pr-4">{o.litres?.toLocaleString() ?? "—"}</td>
                       <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
                       <td className="py-2 pr-4">
-                        <span
-                          className={cx(
-                            "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                            (o.status || "").toLowerCase() === "paid"
-                              ? "bg-green-600/70"
-                              : "bg-gray-600/70"
-                          )}
-                        >
+                        <span className={cx(
+                          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+                          (o.status || "").toLowerCase() === "paid" ? "bg-emerald-400/15 text-emerald-300 ring-1 ring-emerald-400/20" : "bg-white/10 text-white/80 ring-1 ring-white/10"
+                        )}>
+                          <span className={cx(
+                            "h-1.5 w-1.5 rounded-full",
+                            (o.status || "").toLowerCase() === "paid" ? "bg-emerald-400" : "bg-white/50"
+                          )} />
                           {(o.status || o.paymentStatus || "pending").toLowerCase()}
                         </span>
                       </td>
@@ -624,6 +594,37 @@ export default function ClientDashboard() {
                   ))}
                 </tbody>
               </table>
+
+              {/* Mobile stacked cards */}
+              <div className="md:hidden space-y-3 mt-4">
+                {orders.map((o) => (
+                  <div key={`${o.id}-m`} className="rounded-xl bg-white/5 p-3 ring-1 ring-white/10">
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="font-medium capitalize">{(o.fuel as string) || "—"}</div>
+                      <span className={cx(
+                        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+                        (o.status || "").toLowerCase() === "paid" ? "bg-emerald-400/15 text-emerald-300 ring-1 ring-emerald-400/20" : "bg-white/10 text-white/80 ring-1 ring-white/10"
+                      )}>
+                        {(o.status || o.paymentStatus || "pending").toLowerCase()}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-white/70">{new Date(o.created_at).toLocaleString()}</div>
+                    <div className="mt-2 grid grid-cols-3 text-sm">
+                      <div>
+                        <div className="text-white/60">Litres</div>
+                        <div className="font-medium">{o.litres?.toLocaleString() ?? "—"}</div>
+                      </div>
+                      <div>
+                        <div className="text-white/60">Amount</div>
+                        <div className="font-medium">{gbp.format(o.amountGBP)}</div>
+                      </div>
+                      <div className="text-right self-end">
+                        <a href={`/orders/${o.id}`} className="underline underline-offset-2 text-white/80">Details</a>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </section>
@@ -636,11 +637,32 @@ export default function ClientDashboard() {
    Components
    ========================= */
 
-function Card(props: { title: string; children: React.ReactNode }) {
+function StatCard({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
   return (
-    <div className="bg-gray-800 rounded-xl p-4 md:p-5">
-      <p className="text-gray-400">{props.title}</p>
-      <div className="mt-2">{props.children}</div>
+    <div className="rounded-2xl bg-white/[0.04] p-3 md:p-4 ring-1 ring-white/10">
+      <div className="text-xs uppercase tracking-wide text-white/60">{label}</div>
+      <div className="mt-1 text-lg md:text-2xl font-semibold">{value}</div>
+      {hint && <div className="mt-0.5 text-[11px] text-white/50">{hint}</div>}
+    </div>
+  );
+}
+
+function PriceCard({ title, price, priceDate }: { title: string; price: number | null; priceDate: string | null }) {
+  return (
+    <div className="rounded-2xl bg-[#0e1627] p-4 md:p-5 ring-1 ring-white/10">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-white/70 text-sm">{title}</p>
+          <div className="mt-1 text-3xl font-bold">
+            {price != null ? gbp.format(price) : "—"}
+            <span className="text-base font-normal text-white/60"> / L</span>
+          </div>
+          <div className="mt-1 text-xs text-white/60">{priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : "As of —"}</div>
+        </div>
+        <div aria-hidden className="h-12 w-12 rounded-xl bg-yellow-400/10 ring-1 ring-yellow-400/20 flex items-center justify-center">
+          <span className="text-yellow-300">£</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -655,22 +677,11 @@ function StatusDot({ color = "gray" }: { color?: "green" | "yellow" | "red" | "g
   return <span className={cx("inline-block h-2.5 w-2.5 rounded-full", map[color])} />;
 }
 
-function DocTile({
-  icon,
-  title,
-  subtitle,
-  status,
-  ctaLabel,
-  href,
-  muted,
-}: {
+function DocTile({ icon, title, subtitle, status, ctaLabel, href, muted, }: {
   icon: React.ReactNode;
   title: string;
   subtitle?: string;
-  status:
-    | { tone: "ok"; label: string }
-    | { tone: "warn"; label: string }
-    | { tone: "missing"; label: string };
+  status: { tone: "ok"; label: string } | { tone: "warn"; label: string } | { tone: "missing"; label: string };
   ctaLabel: string;
   href: string;
   muted?: boolean;
@@ -680,16 +691,10 @@ function DocTile({
     warn: { dot: "yellow", badge: "bg-yellow-500/15 text-yellow-300" },
     missing: { dot: "red", badge: "bg-red-500/15 text-red-300" },
   } as const;
-
   const tone = toneMap[status.tone];
 
   return (
-    <div
-      className={cx(
-        "rounded-xl border p-4 backdrop-blur",
-        muted ? "border-white/10 bg-white/[0.03]" : "border-white/10 bg-white/[0.06]"
-      )}
-    >
+    <div className={cx("rounded-2xl p-4 ring-1 backdrop-blur", muted ? "ring-white/10 bg-white/5" : "ring-white/10 bg-white/10")}> 
       <div className="flex items-start gap-3">
         <div className="mt-0.5">{icon}</div>
         <div className="min-w-0">
@@ -699,10 +704,7 @@ function DocTile({
             <StatusDot color={tone.dot as any} />
           </div>
           {subtitle && <div className="text-xs text-white/60 mt-0.5">{subtitle}</div>}
-          <a
-            href={href}
-            className="mt-3 inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm"
-          >
+          <a href={href} className="mt-3 inline-flex items-center rounded-xl bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-400">
             {ctaLabel}
           </a>
         </div>
@@ -711,21 +713,9 @@ function DocTile({
   );
 }
 
-function DocumentsHub({
-  termsAcceptedAt,
-  buy,
-  rent,
-}: {
-  termsAcceptedAt: string | null;
-  buy: ContractRow | null;
-  rent: ContractRow | null;
-}) {
-  // Terms
-  const termsStatus = termsAcceptedAt
-    ? ({ tone: "ok", label: "Accepted" } as const)
-    : ({ tone: "missing", label: "Missing" } as const);
+function DocumentsHub({ termsAcceptedAt, buy, rent, }: { termsAcceptedAt: string | null; buy: ContractRow | null; rent: ContractRow | null; }) {
+  const termsStatus = termsAcceptedAt ? ({ tone: "ok", label: "Accepted" } as const) : ({ tone: "missing", label: "Missing" } as const);
 
-  // Buy
   const buyStatus = !buy
     ? ({ tone: "missing", label: "Not signed" } as const)
     : buy.status === "approved"
@@ -734,7 +724,6 @@ function DocumentsHub({
     ? ({ tone: "warn", label: "Signed" } as const)
     : ({ tone: "missing", label: "Not signed" } as const);
 
-  // Rent
   const rentStatus = !rent
     ? ({ tone: "missing", label: "Not signed" } as const)
     : rent.status === "approved"
@@ -744,10 +733,9 @@ function DocumentsHub({
     : ({ tone: "missing", label: "Not signed" } as const);
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 md:p-5">
-      <p className="text-gray-400 mb-2">Documents</p>
+    <div className="rounded-2xl bg-[#0e1627] p-4 md:p-5 ring-1 ring-white/10">
+      <p className="text-white/70 mb-2">Documents</p>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {/* Terms */}
         <DocTile
           icon={<DocIcon />}
           title="Terms & Conditions"
@@ -756,8 +744,6 @@ function DocumentsHub({
           ctaLabel={termsAcceptedAt ? "View" : "Read & accept"}
           href={termsAcceptedAt ? "/terms" : "/terms?return=/order"}
         />
-
-        {/* Buy */}
         <DocTile
           icon={<ShieldIcon />}
           title="Buy Contract"
@@ -773,8 +759,6 @@ function DocumentsHub({
           href="/order#contract"
           muted={!buy}
         />
-
-        {/* Rent */}
         <DocTile
           icon={<BuildingIcon />}
           title="Rent Contract"
@@ -795,6 +779,31 @@ function DocumentsHub({
   );
 }
 
+function EmptyState({ title, subtitle, action }: { title: string; subtitle?: string; action?: { label: string; href: string } }) {
+  return (
+    <div className="rounded-2xl border border-white/10 p-6 text-center text-white/80">
+      <div className="mx-auto mb-2 h-10 w-10 rounded-full bg-white/10 flex items-center justify-center">🛢️</div>
+      <h3 className="font-semibold">{title}</h3>
+      {subtitle && <p className="text-sm mt-1 text-white/70">{subtitle}</p>}
+      {action && (
+        <a href={action.href} className="mt-3 inline-flex rounded-xl bg-yellow-400 text-[#0a0f1c] px-4 py-2 text-sm font-semibold">
+          {action.label}
+        </a>
+      )}
+    </div>
+  );
+}
+
+function SkeletonTable() {
+  return (
+    <div className="space-y-2" role="status" aria-label="Loading">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div key={i} className="h-9 w-full animate-pulse rounded bg-white/5" />
+      ))}
+    </div>
+  );
+}
+
 /* =========================
    Tiny inline icons
    ========================= */
@@ -802,15 +811,8 @@ function DocumentsHub({
 function DocIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path
-        fill="currentColor"
-        d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm0 0v6h6"
-        opacity=".6"
-      />
-      <path
-        fill="currentColor"
-        d="M8 13h8v2H8zm0-4h5v2H8zm0 8h8v2H8z"
-      />
+      <path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm0 0v6h6" opacity=".6" />
+      <path fill="currentColor" d="M8 13h8v2H8zm0-4h5v2H8zm0 8h8v2H8z" />
     </svg>
   );
 }
@@ -818,15 +820,8 @@ function DocIcon() {
 function ShieldIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path
-        fill="currentColor"
-        d="M12 2l7 4v6c0 5-3.5 9-7 10c-3.5-1-7-5-7-10V6z"
-        opacity=".6"
-      />
-      <path
-        fill="currentColor"
-        d="M12 6l4 2v3c0 3.5-2.3 6.3-4 7c-1.7-.7-4-3.5-4-7V8z"
-      />
+      <path fill="currentColor" d="M12 2l7 4v6c0 5-3.5 9-7 10c-3.5-1-7-5-7-10V6z" opacity=".6" />
+      <path fill="currentColor" d="M12 6l4 2v3c0 3.5-2.3 6.3-4 7c-1.7-.7-4-3.5-4-7V8z" />
     </svg>
   );
 }
@@ -834,15 +829,8 @@ function ShieldIcon() {
 function BuildingIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path
-        fill="currentColor"
-        d="M3 21V7l9-4l9 4v14h-7v-5h-4v5z"
-        opacity=".6"
-      />
-      <path
-        fill="currentColor"
-        d="M9 11h2v2H9zm4 0h2v2h-2zM9 15h2v2H9zm4 0h2v2h-2z"
-      />
+      <path fill="currentColor" d="M3 21V7l9-4l9 4v14h-7v-5h-4v5z" opacity=".6" />
+      <path fill="currentColor" d="M9 11h2v2H9zm4 0h2v2h-2zM9 15h2v2H9zm4 0h2v2h-2z" />
     </svg>
   );
 }
