@@ -7,11 +7,6 @@ import { createClient } from "@supabase/supabase-js";
 
 /* ===============================================
    Client Dashboard — Professional Remix
-   - Crisp layout
-   - Mobile‑first, keyboard & screen‑reader friendly
-   - Clean cards, subtle glass, high contrast
-   - Sticky mobile CTA
-   - Lightweight (pure Tailwind) — no extra deps
    =============================================== */
 
 type Fuel = "petrol" | "diesel";
@@ -54,13 +49,6 @@ type PaymentRow = {
   status: string;
 };
 
-type TermsRow = {
-  id: string;
-  email: string;
-  accepted_at: string;
-  version: string;
-};
-
 type ContractRow = {
   id: string;
   tank_option: TankOption;
@@ -69,6 +57,9 @@ type ContractRow = {
   approved_at: string | null;
   created_at: string;
   email: string | null;
+  // OPTIONAL fields we’ll use if present:
+  pdf_url?: string | null;
+  pdf_storage_path?: string | null;
 };
 
 /* =========================
@@ -179,13 +170,13 @@ export default function ClientDashboard() {
         const emailLower = (auth.user.email || "").toLowerCase();
         setUserEmail(emailLower);
 
-        // PRICES — robust loader with multiple fallbacks
+        // PRICES
         await loadLatestPrices();
 
-        // TERMS — latest acceptance for this version
+        // TERMS (latest acceptance for this version)
         await loadTerms(emailLower);
 
-        // CONTRACTS — latest signed/approved per option
+        // CONTRACTS (latest signed/approved per option)
         await loadContracts(emailLower);
 
         // ORDERS
@@ -259,7 +250,7 @@ export default function ClientDashboard() {
   async function loadContracts(emailLower: string) {
     const { data } = await supabase
       .from("contracts")
-      .select("id,tank_option,status,signed_at,approved_at,created_at,email")
+      .select("id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path")
       .eq("email", emailLower)
       .order("created_at", { ascending: false });
 
@@ -428,7 +419,9 @@ export default function ClientDashboard() {
         {/* Header */}
         <header className="flex items-center gap-3">
           <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-          <span className="text-sm text-white/70 truncate">Welcome back, <b className="font-semibold text-white">{userEmail}</b></span>
+          <span className="text-sm text-white/70 truncate">
+            Welcome back, <b className="font-semibold text-white">{userEmail}</b>
+          </span>
           <div className="ml-auto hidden md:flex gap-2">
             <a
               href="/order"
@@ -450,7 +443,11 @@ export default function ClientDashboard() {
           <div className="rounded-2xl border border-red-400/30 bg-red-500/10 p-4 md:p-5 text-sm text-red-200">
             <div className="font-semibold mb-1">Prices are out of date</div>
             <p>
-              Today’s prices haven’t been loaded yet. <button className="underline decoration-yellow-400 underline-offset-2" onClick={refresh}>Refresh</button> to update. Ordering is disabled until today’s prices are available.
+              Today’s prices haven’t been loaded yet.{" "}
+              <button className="underline decoration-yellow-400 underline-offset-2" onClick={refresh}>
+                Refresh
+              </button>{" "}
+              to update. Ordering is disabled until today’s prices are available.
             </p>
           </div>
         )}
@@ -504,7 +501,6 @@ export default function ClientDashboard() {
             </div>
           </div>
 
-          {/* Bars - responsive, touch friendly */}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="text-white/70">
@@ -515,7 +511,7 @@ export default function ClientDashboard() {
                 </tr>
               </thead>
               <tbody>
-                { (showAllMonths ? usageByMonth : rowsToShow).map((r) => (
+                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
                   <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-white/5">
                     <td className="py-2 pr-4">{r.monthLabel} {String(selectedYear).slice(2)}</td>
                     <td className="py-2 pr-4 align-middle">
@@ -579,14 +575,20 @@ export default function ClientDashboard() {
                       <td className="py-2 pr-4">{o.litres?.toLocaleString() ?? "—"}</td>
                       <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
                       <td className="py-2 pr-4">
-                        <span className={cx(
-                          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
-                          (o.status || "").toLowerCase() === "paid" ? "bg-emerald-400/15 text-emerald-300 ring-1 ring-emerald-400/20" : "bg-white/10 text-white/80 ring-1 ring-white/10"
-                        )}>
-                          <span className={cx(
-                            "h-1.5 w-1.5 rounded-full",
-                            (o.status || "").toLowerCase() === "paid" ? "bg-emerald-400" : "bg-white/50"
-                          )} />
+                        <span
+                          className={cx(
+                            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+                            (o.status || "").toLowerCase() === "paid"
+                              ? "bg-emerald-400/15 text-emerald-300 ring-1 ring-emerald-400/20"
+                              : "bg-white/10 text-white/80 ring-1 ring-white/10"
+                          )}
+                        >
+                          <span
+                            className={cx(
+                              "h-1.5 w-1.5 rounded-full",
+                              (o.status || "").toLowerCase() === "paid" ? "bg-emerald-400" : "bg-white/50"
+                            )}
+                          />
                           {(o.status || o.paymentStatus || "pending").toLowerCase()}
                         </span>
                       </td>
@@ -601,10 +603,14 @@ export default function ClientDashboard() {
                   <div key={`${o.id}-m`} className="rounded-xl bg-white/5 p-3 ring-1 ring-white/10">
                     <div className="flex items-center justify-between text-sm">
                       <div className="font-medium capitalize">{(o.fuel as string) || "—"}</div>
-                      <span className={cx(
-                        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
-                        (o.status || "").toLowerCase() === "paid" ? "bg-emerald-400/15 text-emerald-300 ring-1 ring-emerald-400/20" : "bg-white/10 text-white/80 ring-1 ring-white/10"
-                      )}>
+                      <span
+                        className={cx(
+                          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+                          (o.status || "").toLowerCase() === "paid"
+                            ? "bg-emerald-400/15 text-emerald-300 ring-1 ring-emerald-400/20"
+                            : "bg-white/10 text-white/80 ring-1 ring-white/10"
+                        )}
+                      >
                         {(o.status || o.paymentStatus || "pending").toLowerCase()}
                       </span>
                     </div>
@@ -619,7 +625,9 @@ export default function ClientDashboard() {
                         <div className="font-medium">{gbp.format(o.amountGBP)}</div>
                       </div>
                       <div className="text-right self-end">
-                        <a href={`/orders/${o.id}`} className="underline underline-offset-2 text-white/80">Details</a>
+                        <a href={`/orders/${o.id}`} className="underline underline-offset-2 text-white/80">
+                          Details
+                        </a>
                       </div>
                     </div>
                   </div>
@@ -657,7 +665,9 @@ function PriceCard({ title, price, priceDate }: { title: string; price: number |
             {price != null ? gbp.format(price) : "—"}
             <span className="text-base font-normal text-white/60"> / L</span>
           </div>
-          <div className="mt-1 text-xs text-white/60">{priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : "As of —"}</div>
+          <div className="mt-1 text-xs text-white/60">
+            {priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : "As of —"}
+          </div>
         </div>
         <div aria-hidden className="h-12 w-12 rounded-xl bg-yellow-400/10 ring-1 ring-yellow-400/20 flex items-center justify-center">
           <span className="text-yellow-300">£</span>
@@ -674,14 +684,25 @@ function StatusDot({ color = "gray" }: { color?: "green" | "yellow" | "red" | "g
     red: "bg-red-400",
     gray: "bg-white/40",
   } as const;
-  return <span className={cx("inline-block h-2.5 w-2.5 rounded-full", map[color])} />;
+  return <span className={cx("inline-block h-2 w-2 rounded-full", map[color])} />;
 }
 
-function DocTile({ icon, title, subtitle, status, ctaLabel, href, muted, }: {
+function DocTile({
+  icon,
+  title,
+  subtitle,
+  status,
+  ctaLabel,
+  href,
+  muted,
+}: {
   icon: React.ReactNode;
   title: string;
   subtitle?: string;
-  status: { tone: "ok"; label: string } | { tone: "warn"; label: string } | { tone: "missing"; label: string };
+  status:
+    | { tone: "ok"; label: string }
+    | { tone: "warn"; label: string }
+    | { tone: "missing"; label: string };
   ctaLabel: string;
   href: string;
   muted?: boolean;
@@ -694,27 +715,49 @@ function DocTile({ icon, title, subtitle, status, ctaLabel, href, muted, }: {
   const tone = toneMap[status.tone];
 
   return (
-    <div className={cx("rounded-2xl p-4 ring-1 backdrop-blur", muted ? "ring-white/10 bg-white/5" : "ring-white/10 bg-white/10")}> 
+    <div
+      className={cx(
+        "min-h-[148px] rounded-2xl ring-1 p-4 backdrop-blur flex flex-col",
+        muted ? "ring-white/10 bg-white/5" : "ring-white/10 bg-white/10"
+      )}
+    >
       <div className="flex items-start gap-3">
-        <div className="mt-0.5">{icon}</div>
-        <div className="min-w-0">
+        <div className="shrink-0 mt-0.5">{icon}</div>
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h4 className="font-semibold">{title}</h4>
+            <h4 className="font-semibold leading-tight">{title}</h4>
             <span className={cx("text-xs rounded-full px-2 py-0.5", tone.badge)}>{status.label}</span>
             <StatusDot color={tone.dot as any} />
           </div>
-          {subtitle && <div className="text-xs text-white/60 mt-0.5">{subtitle}</div>}
-          <a href={href} className="mt-3 inline-flex items-center rounded-xl bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-400">
-            {ctaLabel}
-          </a>
+          {subtitle && <p className="text-xs text-white/65 mt-0.5 line-clamp-2">{subtitle}</p>}
         </div>
+      </div>
+
+      <div className="mt-auto pt-3">
+        <a
+          href={href}
+          className="inline-flex items-center rounded-xl bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-400"
+        >
+          {ctaLabel}
+        </a>
       </div>
     </div>
   );
 }
 
-function DocumentsHub({ termsAcceptedAt, buy, rent, }: { termsAcceptedAt: string | null; buy: ContractRow | null; rent: ContractRow | null; }) {
-  const termsStatus = termsAcceptedAt ? ({ tone: "ok", label: "Accepted" } as const) : ({ tone: "missing", label: "Missing" } as const);
+function DocumentsHub({
+  termsAcceptedAt,
+  buy,
+  rent,
+}: {
+  termsAcceptedAt: string | null;
+  buy: ContractRow | null;
+  rent: ContractRow | null;
+}) {
+  // Status chips
+  const termsStatus = termsAcceptedAt
+    ? ({ tone: "ok", label: "Accepted" } as const)
+    : ({ tone: "missing", label: "Missing" } as const);
 
   const buyStatus = !buy
     ? ({ tone: "missing", label: "Not signed" } as const)
@@ -732,10 +775,14 @@ function DocumentsHub({ termsAcceptedAt, buy, rent, }: { termsAcceptedAt: string
     ? ({ tone: "warn", label: "Signed" } as const)
     : ({ tone: "missing", label: "Not signed" } as const);
 
+  // Where should the tile CTA go?
+  const contractHref = (c: ContractRow | null, option: "buy" | "rent") =>
+    c && (c.pdf_url || c.pdf_storage_path) ? `/contracts/${c.id}` : `/order?wizard=${option}`;
+
   return (
     <div className="rounded-2xl bg-[#0e1627] p-4 md:p-5 ring-1 ring-white/10">
-      <p className="text-white/70 mb-2">Documents</p>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <p className="text-white/70 mb-3">Documents</p>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 auto-rows-fr">
         <DocTile
           icon={<DocIcon />}
           title="Terms & Conditions"
@@ -746,22 +793,22 @@ function DocumentsHub({ termsAcceptedAt, buy, rent, }: { termsAcceptedAt: string
         />
         <DocTile
           icon={<ShieldIcon />}
-          title="Buy Contract"
+          title="Buy contract"
           subtitle={
             buy
               ? buy.status === "approved"
                 ? `Active · ${shortDate(buy.approved_at)}`
                 : `Signed · ${shortDate(buy.signed_at)}`
-              : "Sign once — then you can order anytime"
+              : "Sign once — then order anytime"
           }
           status={buyStatus}
-          ctaLabel={buy ? "Manage" : "Start"}
-          href="/order#contract"
+          ctaLabel={buy && (buy.pdf_url || buy.pdf_storage_path) ? "Open PDF" : buy ? "Manage" : "Start"}
+          href={contractHref(buy, "buy")}
           muted={!buy}
         />
         <DocTile
           icon={<BuildingIcon />}
-          title="Rent Contract"
+          title="Rent contract"
           subtitle={
             rent
               ? rent.status === "approved"
@@ -770,8 +817,8 @@ function DocumentsHub({ termsAcceptedAt, buy, rent, }: { termsAcceptedAt: string
               : "Needs admin approval after signing"
           }
           status={rentStatus}
-          ctaLabel={rent ? "Manage" : "Start"}
-          href="/order#contract"
+          ctaLabel={rent && (rent.pdf_url || rent.pdf_storage_path) ? "Open PDF" : rent ? "Manage" : "Start"}
+          href={contractHref(rent, "rent")}
           muted={!rent}
         />
       </div>
