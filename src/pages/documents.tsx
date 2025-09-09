@@ -1,5 +1,6 @@
 // src/pages/documents.tsx
 // src/pages/documents.tsx
+// src/pages/documents.tsx
 "use client";
 
 import React, { useEffect, useState } from "react";
@@ -42,7 +43,7 @@ function cx(...c: (string | false | null | undefined)[]) { return c.filter(Boole
    ========================= */
 
 export default function DocumentsPage() {
-  const [email, setEmail] = useState<string>("");
+  const [authEmail, setAuthEmail] = useState<string>("");
   const [termsAcceptedAt, setTermsAcceptedAt] = useState<string | null>(null);
   const [buy, setBuy] = useState<ContractRow | null>(null);
   const [rent, setRent] = useState<ContractRow | null>(null);
@@ -59,12 +60,11 @@ export default function DocumentsPage() {
         const { data: auth } = await supabase.auth.getUser();
         const em = (auth?.user?.email || "").toLowerCase();
         if (!em) { window.location.href = "/login"; return; }
-        setEmail(em);
+        setAuthEmail(em);
 
-        // ----- TERMS: check localStorage first (exactly like /order), then DB -----
+        // TERMS: localStorage first (same strategy as /order), then DB
         const cached = typeof window !== "undefined" ? localStorage.getItem(TERMS_KEY(em)) : null;
         if (cached === "1") {
-          // Align with /order: if locally accepted, treat as accepted
           setTermsAcceptedAt(new Date().toISOString());
         } else {
           const { data: t, error: tErr } = await supabase
@@ -78,7 +78,7 @@ export default function DocumentsPage() {
           setTermsAcceptedAt(t?.[0]?.accepted_at ?? null);
         }
 
-        // ----- CONTRACTS: minimal columns only (safe on all schemas) -----
+        // CONTRACTS: query strictly by auth email
         const { data: rows, error: cErr } = await supabase
           .from("contracts")
           .select("id,tank_option,status,signed_at,approved_at,created_at,email")
@@ -168,7 +168,7 @@ export default function DocumentsPage() {
                 badgeEl={badge(termsTone as any, termsAcceptedAt ? "Accepted" : "Missing")}
                 cta={{
                   label: termsAcceptedAt ? "View" : "Read & accept",
-                  href: termsAcceptedAt ? "/terms" : `/terms?return=/documents&email=${encodeURIComponent(email)}`
+                  href: termsAcceptedAt ? "/terms" : `/terms?return=/documents&email=${encodeURIComponent(authEmail)}`
                 }}
               />
 
