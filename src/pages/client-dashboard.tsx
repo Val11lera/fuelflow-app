@@ -22,7 +22,10 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
-const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
+const gbp = new Intl.NumberFormat("en-GB", {
+  style: "currency",
+  currency: "GBP",
+});
 
 type OrderRow = {
   id: string;
@@ -35,7 +38,12 @@ type OrderRow = {
   status: string | null;
 };
 
-type PaymentRow = { order_id: string | null; amount: number; currency: string; status: string };
+type PaymentRow = {
+  order_id: string | null;
+  amount: number; // pence
+  currency: string;
+  status: string;
+};
 
 type ContractRow = {
   id: string;
@@ -59,10 +67,13 @@ function isToday(d: string | Date | null | undefined) {
     date.getDate() === now.getDate()
   );
 }
-function cx(...c: (string | false | null | undefined)[]) { return c.filter(Boolean).join(" "); }
+
+function cx(...classes: (string | false | null | undefined)[]) {
+  return classes.filter(Boolean).join(" ");
+}
 
 export default function ClientDashboard() {
-  const [userEmail, setUserEmail] = useState("");
+  const [userEmail, setUserEmail] = useState<string>("");
 
   // prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
@@ -71,20 +82,22 @@ export default function ClientDashboard() {
   const pricesAreToday = isToday(priceDate);
 
   // orders
-  const [orders, setOrders] = useState<(OrderRow & { amountGBP: number; paymentStatus?: string })[]>([]);
+  const [orders, setOrders] = useState<
+    (OrderRow & { amountGBP: number; paymentStatus?: string })[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // quick documents summary
+  // documents state (for quick summary + Documents button)
   const [termsAcceptedAt, setTermsAcceptedAt] = useState<string | null>(null);
   const [buyContract, setBuyContract] = useState<ContractRow | null>(null);
   const [rentContract, setRentContract] = useState<ContractRow | null>(null);
 
-  // usage
+  // usage UI
   const currentYear = new Date().getFullYear();
-  const currentMonthIdx = new Date().getMonth();
+  const currentMonthIdx = new Date().getMonth(); // 0..11
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
-  const [showAllMonths, setShowAllMonths] = useState(false);
+  const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
   // Auto logout
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -92,17 +105,28 @@ export default function ClientDashboard() {
     const reset = () => {
       if (idleTimer.current) clearTimeout(idleTimer.current);
       idleTimer.current = setTimeout(async () => {
-        try { await supabase.auth.signOut(); } finally { window.location.href = "/login"; }
+        try {
+          await supabase.auth.signOut();
+        } finally {
+          window.location.href = "/login";
+        }
       }, INACTIVITY_MS);
     };
-    const events: (keyof WindowEventMap)[] = ["mousemove","mousedown","keydown","scroll","touchstart"];
-    events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
-    document.addEventListener("visibilitychange", reset, { passive: true });
+    const winEvents: (keyof WindowEventMap)[] = [
+      "mousemove",
+      "mousedown",
+      "keydown",
+      "scroll",
+      "touchstart",
+    ];
+    winEvents.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+    const onVisibility = () => reset();
+    document.addEventListener("visibilitychange", onVisibility, { passive: true });
     reset();
     return () => {
       if (idleTimer.current) clearTimeout(idleTimer.current);
-      events.forEach((e) => window.removeEventListener(e, reset));
-      document.removeEventListener("visibilitychange", reset);
+      winEvents.forEach((e) => window.removeEventListener(e, reset));
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 
@@ -113,19 +137,31 @@ export default function ClientDashboard() {
         setLoading(true);
         setError(null);
 
+        // Auth
         const { data: auth } = await supabase.auth.getUser();
-        if (!auth?.user) { window.location.href = "/login"; return; }
-        const email = (auth.user.email || "").toLowerCase();
-        setUserEmail(email);
+        if (!auth?.user) {
+          window.location.href = "/login";
+          return;
+        }
+        const emailLower = (auth.user.email || "").toLowerCase();
+        setUserEmail(emailLower);
 
+        // Prices
         await loadLatestPrices();
-        await loadTerms(email);
-        await loadContracts(email);
 
+        // Terms
+        await loadTerms(emailLower);
+
+        // Contracts
+        await loadContracts(emailLower);
+
+        // Orders
         const { data: rawOrders, error: ordErr } = await supabase
           .from("orders")
-          .select("id,created_at,user_email,fuel,litres,unit_price_pence,total_pence,status")
-          .eq("user_email", email)
+          .select(
+            "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status"
+          )
+          .eq("user_email", emailLower)
           .order("created_at", { ascending: false })
           .limit(50);
         if (ordErr) throw ordErr;
@@ -137,18 +173,27 @@ export default function ClientDashboard() {
         if (ids.length) {
           const { data: pays } = await supabase
             .from("payments")
-            .select("order_id,amount,currency,status")
+            .select("order_id, amount, currency, status")
             .in("order_id", ids);
-          (pays || []).forEach((p: any) => { if (p.order_id) payMap.set(p.order_id, p); });
+          (pays || []).forEach((p: any) => {
+            if (p.order_id) payMap.set(p.order_id, p);
+          });
         }
 
         const withTotals = ordersArr.map((o) => {
+          const fromOrders = o.total_pence ?? null;
+          const fromPayments = payMap.get(o.id || "")?.amount ?? null;
           let totalPence: number | null =
-            o.total_pence ?? (payMap.get(o.id || "")?.amount as number | null) ?? null;
-          if (totalPence == null && o.unit_price_pence != null && o.litres != null) {
-            totalPence = Math.round(o.unit_price_pence * o.litres);
+            fromOrders ?? (fromPayments as number | null) ?? null;
+
+        if (totalPence == null) {
+            if (o.unit_price_pence != null && o.litres != null) {
+              totalPence = Math.round(o.unit_price_pence * o.litres);
+            }
           }
-          return { ...o, amountGBP: (totalPence ?? 0) / 100, paymentStatus: payMap.get(o.id || "")?.status };
+
+          const amountGBP = totalPence != null ? totalPence / 100 : 0;
+          return { ...o, amountGBP, paymentStatus: payMap.get(o.id || "")?.status };
         });
 
         setOrders(withTotals);
@@ -164,9 +209,11 @@ export default function ClientDashboard() {
   async function loadTerms(emailLower: string) {
     const { data } = await supabase
       .from("terms_acceptances")
-      .select("accepted_at,version").eq("email", emailLower)
+      .select("accepted_at,version")
+      .eq("email", emailLower)
       .eq("version", TERMS_VERSION)
-      .order("accepted_at", { ascending: false }).limit(1);
+      .order("accepted_at", { ascending: false })
+      .limit(1);
     setTermsAcceptedAt(data?.[0]?.accepted_at ?? null);
   }
 
@@ -177,89 +224,146 @@ export default function ClientDashboard() {
       .eq("email", emailLower)
       .order("created_at", { ascending: false });
     const rows = (data || []) as ContractRow[];
+
     const latestBuy =
       rows.find((r) => r.tank_option === "buy" && (r.status === "approved" || r.status === "signed")) ??
-      rows.find((r) => r.tank_option === "buy") ?? null;
+      rows.find((r) => r.tank_option === "buy") ??
+      null;
+
     const latestRent =
       rows.find((r) => r.tank_option === "rent" && (r.status === "approved" || r.status === "signed")) ??
-      rows.find((r) => r.tank_option === "rent") ?? null;
+      rows.find((r) => r.tank_option === "rent") ??
+      null;
+
     setBuyContract(latestBuy);
     setRentContract(latestRent);
   }
 
   async function loadLatestPrices() {
-    setPetrolPrice(null); setDieselPrice(null); setPriceDate(null);
+    setPetrolPrice(null);
+    setDieselPrice(null);
+    setPriceDate(null);
     try {
-      const { data } = await supabase.from("latest_prices").select("fuel,total_price,price_date");
-      if (data?.length) return applyPriceRows(data as any[]);
-    } catch {}
-    try {
-      const { data } = await supabase.from("latest_fuel_prices_view").select("fuel,total_price,price_date");
-      if (data?.length) return applyPriceRows(data as any[]);
-    } catch {}
-    try {
-      const { data } = await supabase.from("latest_prices_view").select("fuel,total_price,price_date");
-      if (data?.length) return applyPriceRows(data as any[]);
+      const { data } = await supabase
+        .from("latest_prices")
+        .select("fuel,total_price,price_date");
+      if (data && data.length) {
+        applyPriceRows(data as any[]);
+        return;
+      }
     } catch {}
     try {
       const { data } = await supabase
-        .from("daily_prices").select("fuel,total_price,price_date")
-        .order("price_date", { ascending: false }).limit(200);
-      if (data?.length) {
+        .from("latest_fuel_prices_view")
+        .select("fuel,total_price,price_date");
+      if (data && data.length) {
+        applyPriceRows(data as any[]);
+        return;
+      }
+    } catch {}
+    try {
+      const { data } = await supabase
+        .from("latest_prices_view")
+        .select("fuel,total_price,price_date");
+      if (data && data.length) {
+        applyPriceRows(data as any[]);
+        return;
+      }
+    } catch {}
+    try {
+      const { data } = await supabase
+        .from("daily_prices")
+        .select("fuel,total_price,price_date")
+        .order("price_date", { ascending: false })
+        .limit(200);
+      if (data && data.length) {
         const seen = new Map<string, any>();
-        for (const r of data) { const k = String(r.fuel).toLowerCase(); if (!seen.has(k)) seen.set(k, r); }
-        applyPriceRows([...seen.values()]);
+        for (const r of data) {
+          const key = String(r.fuel).toLowerCase();
+          if (!seen.has(key)) seen.set(key, r);
+        }
+        applyPriceRows(Array.from(seen.values()));
       }
     } catch {}
   }
-  function applyPriceRows(rows: { fuel: string; total_price: number; price_date?: string | null }[]) {
+
+  function applyPriceRows(
+    rows: { fuel: string; total_price: number; price_date?: string | null }[]
+  ) {
     let latest: string | null = null;
     rows.forEach((r) => {
       const f = String(r.fuel).toLowerCase();
       if (f === "petrol") setPetrolPrice(Number(r.total_price));
       if (f === "diesel") setDieselPrice(Number(r.total_price));
-      if (r.price_date && (!latest || new Date(r.price_date) > new Date(latest))) latest = r.price_date;
+      if (r.price_date) {
+        if (!latest || new Date(r.price_date) > new Date(latest)) latest = r.price_date;
+      }
     });
     if (latest) setPriceDate(latest);
   }
 
-  function refresh() { window.location.reload(); }
-  async function logout() { try { await supabase.auth.signOut(); } finally { window.location.href = "/login"; } }
+  function refresh() {
+    window.location.reload();
+  }
+  async function logout() {
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      window.location.href = "/login";
+    }
+  }
 
   // Usage & spend
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
   const usageByMonth: MonthAgg[] = useMemo(() => {
-    const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({ monthIdx: i, monthLabel: months[i], litres: 0, spend: 0 }));
+    const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({
+      monthIdx: i, monthLabel: months[i], litres: 0, spend: 0,
+    }));
     orders.forEach((o) => {
       const d = new Date(o.created_at);
       if (d.getFullYear() !== selectedYear) return;
-      base[d.getMonth()].litres += o.litres ?? 0;
-      base[d.getMonth()].spend += o.amountGBP ?? 0;
+      const m = d.getMonth();
+      base[m].litres += o.litres ?? 0;
+      base[m].spend += o.amountGBP ?? 0;
     });
     return base;
   }, [orders, selectedYear]);
 
-  const ytd = usageByMonth.reduce((acc, m) => ({ litres: acc.litres + m.litres, spend: acc.spend + m.spend }), { litres: 0, spend: 0 });
+  const ytd = usageByMonth.reduce(
+    (acc, m) => ({ litres: acc.litres + m.litres, spend: acc.spend + m.spend }),
+    { litres: 0, spend: 0 }
+  );
   const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
   const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
-  const rowsToShow = showAllMonths ? usageByMonth : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
+  const rowsToShow = showAllMonths
+    ? usageByMonth
+    : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
+
   const canOrder = pricesAreToday && petrolPrice != null && dieselPrice != null;
 
   const docSummary = [
     termsAcceptedAt ? "Terms accepted" : "Terms pending",
-    buyContract ? (buyContract.status === "approved" ? "Buy active" : "Buy signed") : "Buy not signed",
-    rentContract ? (rentContract.status === "approved" ? "Rent active" : "Rent signed") : "Rent not signed",
+    buyContract
+      ? buyContract.status === "approved"
+        ? "Buy active"
+        : "Buy signed"
+      : "Buy not signed",
+    rentContract
+      ? rentContract.status === "approved"
+        ? "Rent active"
+        : "Rent signed"
+      : "Rent not signed",
   ].join(" · ");
 
   return (
     <div className="min-h-screen bg-[#0a0f1c] text-white">
-      {/* Soft glow */}
+      {/* subtle glow */}
       <div aria-hidden className="pointer-events-none fixed inset-0 -z-10">
-        <div className="absolute inset-x-0 -top-32 h-72 bg-gradient-to-b from-yellow-500/10 via-transparent to-transparent blur-3xl" />
+        <div className="absolute inset-x-0 -top-36 h-72 bg-gradient-to-b from-yellow-500/10 via-transparent to-transparent blur-3xl" />
       </div>
 
-      {/* Mobile CTA */}
+      {/* Sticky mobile CTA */}
       <div className="md:hidden fixed bottom-4 inset-x-4 z-40">
         <a
           href="/order"
@@ -281,8 +385,22 @@ export default function ClientDashboard() {
             Welcome back, <b className="font-semibold text-white">{userEmail}</b>
           </span>
           <div className="ml-auto hidden md:flex gap-2">
-            <a href="/order" aria-disabled={!canOrder} className={cx("rounded-xl px-4 py-2 text-sm font-semibold transition", canOrder ? "bg-yellow-400 text-[#0a0f1c] hover:bg-yellow-300" : "bg-white/10 text-white/60 cursor-not-allowed")}>Order fuel</a>
-            <a href="/documents" className="rounded-xl px-4 py-2 text-sm font-semibold transition bg-white/10 hover:bg-white/15">Documents</a>
+            <a
+              href="/order"
+              aria-disabled={!canOrder}
+              className={cx(
+                "rounded-xl px-4 py-2 text-sm font-semibold transition",
+                canOrder ? "bg-yellow-400 text-[#0a0f1c] hover:bg-yellow-300" : "bg-white/10 text-white/60 cursor-not-allowed"
+              )}
+            >
+              Order fuel
+            </a>
+            <a
+              href="/documents"
+              className="rounded-xl px-4 py-2 text-sm font-semibold transition bg-white/10 hover:bg-white/15"
+            >
+              Documents
+            </a>
             <button onClick={refresh} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Refresh</button>
             <button onClick={logout} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Log out</button>
           </div>
@@ -296,7 +414,7 @@ export default function ClientDashboard() {
           <StatCard label="LATEST DIESEL" value={dieselPrice != null ? `${gbp.format(dieselPrice)}/L` : "—"} hint={priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : undefined} />
         </section>
 
-        {/* Prices + Documents link card */}
+        {/* Prices + “Documents” button */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <PriceCard title="Petrol (95)" price={petrolPrice} priceDate={priceDate} />
           <PriceCard title="Diesel" price={dieselPrice} priceDate={priceDate} />
@@ -306,7 +424,10 @@ export default function ClientDashboard() {
               <div className="mt-1 text-sm text-white/80">{docSummary}</div>
             </div>
             <div className="mt-4">
-              <a href="/documents" className="inline-flex items-center rounded-xl bg-white/10 hover:bg-white/15 px-4 py-2 font-semibold">
+              <a
+                href="/documents"
+                className="inline-flex items-center rounded-xl bg-white/10 hover:bg-white/15 px-4 py-2 font-semibold"
+              >
                 Open documents
               </a>
             </div>
@@ -320,8 +441,20 @@ export default function ClientDashboard() {
             <div className="flex items-center gap-2">
               <span className="text-sm text-white/70">Year</span>
               <div className="flex overflow-hidden rounded-xl bg-white/10 text-sm">
-                <button onClick={() => setSelectedYear(currentYear - 1)} disabled={selectedYear === currentYear - 1} className={cx("px-3 py-1.5", selectedYear === currentYear - 1 ? "bg-yellow-400 text-[#0a0f1c] font-semibold" : "hover:bg-white/15")}>{currentYear - 1}</button>
-                <button onClick={() => setSelectedYear(currentYear)} disabled={selectedYear === currentYear} className={cx("px-3 py-1.5", selectedYear === currentYear ? "bg-yellow-400 text-[#0a0f1c] font-semibold" : "hover:bg-white/15")}>{currentYear}</button>
+                <button
+                  onClick={() => setSelectedYear(currentYear - 1)}
+                  disabled={selectedYear === currentYear - 1}
+                  className={cx("px-3 py-1.5", selectedYear === currentYear - 1 ? "bg-yellow-400 text-[#0a0f1c] font-semibold" : "hover:bg-white/15")}
+                >
+                  {currentYear - 1}
+                </button>
+                <button
+                  onClick={() => setSelectedYear(currentYear)}
+                  disabled={selectedYear === currentYear}
+                  className={cx("px-3 py-1.5", selectedYear === currentYear ? "bg-yellow-400 text-[#0a0f1c] font-semibold" : "hover:bg-white/15")}
+                >
+                  {currentYear}
+                </button>
               </div>
               <button onClick={() => setShowAllMonths((s) => !s)} className="ml-1 rounded-xl bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
                 {showAllMonths ? "Show current" : "Show 12 months"}
@@ -345,13 +478,13 @@ export default function ClientDashboard() {
                     <td className="py-2 pr-4 align-middle">
                       {Math.round(r.litres).toLocaleString()}
                       <div className="mt-1 h-2 w-full rounded bg-white/10">
-                        <div className="h-2 rounded bg-yellow-400/80" style={{ width: `${(r.litres / maxL) * 100}%` }} />
+                        <div className="h-2 rounded bg-yellow-400/80" style={{ width: `${(r.litres / Math.max(1, ...usageByMonth.map(x=>x.litres))) * 100}%` }} />
                       </div>
                     </td>
                     <td className="py-2 pr-4 align-middle">
                       {gbp.format(r.spend)}
                       <div className="mt-1 h-2 w-full rounded bg-white/10">
-                        <div className="h-2 rounded bg-white/40" style={{ width: `${(r.spend / maxS) * 100}%` }} />
+                        <div className="h-2 rounded bg-white/40" style={{ width: `${(r.spend / Math.max(1, ...usageByMonth.map(x=>x.spend))) * 100}%` }} />
                       </div>
                     </td>
                   </tr>
@@ -362,7 +495,11 @@ export default function ClientDashboard() {
         </section>
 
         {/* errors */}
-        {error && <div role="alert" className="rounded-2xl bg-red-600/15 border border-red-500/30 text-red-200 p-4">{error}</div>}
+        {error && (
+          <div role="alert" className="rounded-2xl bg-red-600/15 border border-red-500/30 text-red-200 p-4">
+            {error}
+          </div>
+        )}
 
         {/* Recent Orders */}
         <section className="rounded-2xl bg-[#0e1627] p-4 md:p-6 ring-1 ring-white/10 mb-24 md:mb-0">
@@ -374,7 +511,11 @@ export default function ClientDashboard() {
           {loading ? (
             <SkeletonTable />
           ) : orders.length === 0 ? (
-            <EmptyState title="No orders yet" subtitle="Your recent orders will appear here once you place an order." action={{ label: "Place your first order", href: "/order" }} />
+            <EmptyState
+              title="No orders yet"
+              subtitle="Your recent orders will appear here once you place an order."
+              action={{ label: "Place your first order", href: "/order" }}
+            />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
@@ -395,9 +536,20 @@ export default function ClientDashboard() {
                       <td className="py-2 pr-4">{o.litres?.toLocaleString() ?? "—"}</td>
                       <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
                       <td className="py-2 pr-4">
-                        <span className={cx("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
-                          (o.status || "").toLowerCase() === "paid" ? "bg-emerald-400/15 text-emerald-300 ring-1 ring-emerald-400/20" : "bg-white/10 text-white/80 ring-1 ring-white/10")}>
-                          <span className={cx("h-1.5 w-1.5 rounded-full",(o.status || "").toLowerCase() === "paid" ? "bg-emerald-400" : "bg-white/50")} />
+                        <span
+                          className={cx(
+                            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+                            (o.status || "").toLowerCase() === "paid"
+                              ? "bg-emerald-400/15 text-emerald-300 ring-1 ring-emerald-400/20"
+                              : "bg-white/10 text-white/80 ring-1 ring-white/10"
+                          )}
+                        >
+                          <span
+                            className={cx(
+                              "h-1.5 w-1.5 rounded-full",
+                              (o.status || "").toLowerCase() === "paid" ? "bg-emerald-400" : "bg-white/50"
+                            )}
+                          />
                           {(o.status || o.paymentStatus || "pending").toLowerCase()}
                         </span>
                       </td>
@@ -405,26 +557,6 @@ export default function ClientDashboard() {
                   ))}
                 </tbody>
               </table>
-
-              {/* Mobile cards */}
-              <div className="md:hidden space-y-3 mt-4">
-                {orders.map((o) => (
-                  <div key={`${o.id}-m`} className="rounded-xl bg白/5 p-3 ring-1 ring-white/10">
-                    <div className="flex items-center justify-between text-sm">
-                      <div className="font-medium capitalize">{(o.fuel as string) || "—"}</div>
-                      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-white/10 text-white/80 ring-1 ring-white/10">
-                        {(o.status || o.paymentStatus || "pending").toLowerCase()}
-                      </span>
-                    </div>
-                    <div className="mt-1 text-xs text-white/70">{new Date(o.created_at).toLocaleString()}</div>
-                    <div className="mt-2 grid grid-cols-3 text-sm">
-                      <div><div className="text-white/60">Litres</div><div className="font-medium">{o.litres?.toLocaleString() ?? "—"}</div></div>
-                      <div><div className="text-white/60">Amount</div><div className="font-medium">{gbp.format(o.amountGBP)}</div></div>
-                      <div className="text-right self-end"><a href={`/orders/${o.id}`} className="underline underline-offset-2 text-white/80">Details</a></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
             </div>
           )}
         </section>
@@ -433,7 +565,9 @@ export default function ClientDashboard() {
   );
 }
 
-/* Components */
+/* =========================
+   Components
+   ========================= */
 
 function StatCard({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
   return (
@@ -473,15 +607,22 @@ function EmptyState({ title, subtitle, action }: { title: string; subtitle?: str
       <div className="mx-auto mb-2 h-10 w-10 rounded-full bg-white/10 flex items-center justify-center">🛢️</div>
       <h3 className="font-semibold">{title}</h3>
       {subtitle && <p className="text-sm mt-1 text-white/70">{subtitle}</p>}
-      {action && <a href={action.href} className="mt-3 inline-flex rounded-xl bg-yellow-400 text-[#0a0f1c] px-4 py-2 text-sm font-semibold">{action.label}</a>}
+      {action && (
+        <a href={action.href} className="mt-3 inline-flex rounded-xl bg-yellow-400 text-[#0a0f1c] px-4 py-2 text-sm font-semibold">
+          {action.label}
+        </a>
+      )}
     </div>
   );
 }
 
 function SkeletonTable() {
-  return <div className="space-y-2" role="status" aria-label="Loading">
-    {Array.from({ length: 5 }).map((_, i) => (<div key={i} className="h-9 w-full animate-pulse rounded bg-white/5" />))}
-  </div>;
+  return (
+    <div className="space-y-2" role="status" aria-label="Loading">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div key={i} className="h-9 w-full animate-pulse rounded bg-white/5" />
+      ))}
+    </div>
+  );
 }
-
 
