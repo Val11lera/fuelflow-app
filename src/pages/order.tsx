@@ -1,9 +1,8 @@
 // src/pages/order.tsx
 // src/pages/order.tsx
-// src/pages/order.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
@@ -42,21 +41,21 @@ const supabase =
     : (null as any);
 
 /* =========================
-   UI tokens
+   UI tokens (no duplicate names with other files)
    ========================= */
-const card =
+const uiCard =
   "rounded-2xl border border-white/10 bg-white/5 backdrop-blur px-5 py-4 shadow transition";
-const pill = "inline-flex items-center text-xs font-medium px-2 py-1 rounded-full";
-const button =
+const uiPill = "inline-flex items-center text-xs font-medium px-2 py-1 rounded-full";
+const uiBtn =
   "rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
-const buttonPrimary =
+const uiBtnPrimary =
   "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
-const buttonGhost =
+const uiBtnGhost =
   "bg-white/10 hover:bg-white/15 text-white border border-white/10";
-const input =
+const uiInput =
   "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30";
-const label = "block text-sm font-medium text-white/80 mb-1";
-const row = "grid grid-cols-1 md:grid-cols-2 gap-4";
+const uiLabel = "block text-sm font-medium text-white/80 mb-1";
+const uiRow = "grid grid-cols-1 md:grid-cols-2 gap-4";
 
 /* =========================
    Helpers & constants
@@ -75,14 +74,18 @@ const GBP = (n: number | null | undefined) =>
         maximumFractionDigits: 2,
       }).format(n);
 
+function cx(...c: (string | false | null | undefined)[]) {
+  return c.filter(Boolean).join(" ");
+}
+
 const StepBadge = ({ state }: { state: "todo" | "done" | "wait" }) => {
   const map = {
     todo: "bg-white/10 text-white/70",
     done: "bg-green-500/20 text-green-300",
     wait: "bg-yellow-500/20 text-yellow-300",
   } as const;
-  const text = state === "todo" ? "done next" : state === "done" ? "done" : "waiting";
-  return <span className={`${pill} ${map[state]}`}>{text}</span>;
+  const text = state === "todo" ? "next" : state === "done" ? "done" : "waiting";
+  return <span className={`${uiPill} ${map[state]}`}>{text}</span>;
 };
 
 /* =========================
@@ -95,10 +98,10 @@ export default function OrderPage() {
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
-  // auth email (single source of truth for contracts + terms)
+  // auth email (single source for contracts & terms)
   const [authEmail, setAuthEmail] = useState<string>("");
 
-  // form state (email here is just for the Stripe receipt)
+  // form state (email here is for Stripe receipt only)
   const [fuel, setFuel] = useState<Fuel>("diesel");
   const [litres, setLitres] = useState<number>(1000);
   const [deliveryDate, setDeliveryDate] = useState("");
@@ -120,16 +123,12 @@ export default function OrderPage() {
   const [activeRent, setActiveRent] = useState(false); // approved only
   const [rentAwaitingApproval, setRentAwaitingApproval] = useState<ContractRow | null>(null);
 
-  // ROI / Contract modals
-  const [showCalc, setShowCalc] = useState(false);
-  const [calcOption, setCalcOption] = useState<TankOption>("buy");
-
-  // Contract wizard modal
+  // Wizard (contract) modal
   const [showWizard, setShowWizard] = useState(false);
   const [wizardOption, setWizardOption] = useState<TankOption>("buy");
   const [savingContract, setSavingContract] = useState(false);
 
-  // professional extras (stored in JSON if available)
+  // professional extras
   const [phone, setPhone] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [companyNumber, setCompanyNumber] = useState("");
@@ -143,13 +142,16 @@ export default function OrderPage() {
   // checkout
   const [startingCheckout, setStartingCheckout] = useState(false);
 
-  // ROI numbers
+  // ROI numbers (for wizard)
   const [tankSizeL, setTankSizeL] = useState<number>(5000);
   const [monthlyConsumptionL, setMonthlyConsumptionL] = useState<number>(10000);
   const [marketPrice, setMarketPrice] = useState<number>(1.35);
   const [cheaperBy, setCheaperBy] = useState<number>(0.09);
 
-  /* ---------- auth (prefill email & authEmail) ---------- */
+  // smooth scroll ref for the form
+  const formRef = useRef<HTMLDivElement>(null);
+
+  /* ---------- auth ---------- */
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getUser();
@@ -157,6 +159,9 @@ export default function OrderPage() {
       if (em) {
         setAuthEmail(em);
         if (!email) setEmail(em); // default receipt email to auth email
+      } else {
+        // not logged in
+        window.location.href = "/login";
       }
     })();
   }, []);
@@ -230,12 +235,10 @@ export default function OrderPage() {
     } catch {}
   }, [fuel, litres, deliveryDate, email, fullName, address1, address2, postcode, city]);
 
-  /* ---------- Terms acceptance (keyed by authEmail) ---------- */
+  /* ---------- Terms acceptance ---------- */
   useEffect(() => {
     const acceptedParam = qp.get("accepted");
     const emailParam = (qp.get("email") || "").toLowerCase();
-
-    // If terms page redirected here with accepted=1, store against authEmail as well.
     if (acceptedParam === "1") {
       if (emailParam) localStorage.setItem(TERMS_KEY(emailParam), "1");
       if (authEmail) localStorage.setItem(TERMS_KEY(authEmail), "1");
@@ -247,7 +250,6 @@ export default function OrderPage() {
     (async () => {
       setCheckingTerms(true);
       try {
-        // localStorage first
         const cached = localStorage.getItem(TERMS_KEY(authEmail));
         if (cached === "1") {
           setAccepted(true);
@@ -276,7 +278,7 @@ export default function OrderPage() {
     window.location.href = ret;
   }
 
-  /* ---------- load contracts & compute state (always by authEmail) ---------- */
+  /* ---------- load contracts (always by authEmail) ---------- */
   async function refreshContracts() {
     if (!authEmail) return;
     const { data, error } = await supabase
@@ -284,7 +286,7 @@ export default function OrderPage() {
       .select(
         "id,email,tank_option,status,customer_name,created_at,approved_at,signed_at,tank_size_l,monthly_consumption_l,fuelflow_price_gbp_l,est_monthly_savings_gbp,est_payback_months"
       )
-      .eq("email", authEmail) // <- single source of truth
+      .eq("email", authEmail)
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -314,9 +316,17 @@ export default function OrderPage() {
     refreshContracts();
   }, [authEmail, showWizard]);
 
-  /* ---------- checkout ---------- */
-  const requirementsOkay = accepted && (activeBuy || activeRent); // rent only after approval
+  /* ---------- step logic ---------- */
+  const requirementsOkay = accepted && (activeBuy || activeRent);
+  const currentStep: 1 | 2 | 3 =
+    !accepted ? 1 : !requirementsOkay ? 2 : 3;
 
+  // When the user hits "Continue to order", scroll to form
+  function goToForm() {
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  /* ---------- checkout ---------- */
   const payDisabled =
     !requirementsOkay ||
     !email ||
@@ -331,7 +341,7 @@ export default function OrderPage() {
   async function startCheckout() {
     try {
       if (!requirementsOkay) {
-        alert("Complete the requirements first (Terms + active contract).");
+        alert("Complete the steps first (Terms + active contract).");
         return;
       }
       setStartingCheckout(true);
@@ -343,7 +353,7 @@ export default function OrderPage() {
           litres,
           deliveryDate,
           full_name: fullName,
-          email, // receipt email
+          email,
           address_line1: address1,
           address_line2: address2,
           city,
@@ -385,7 +395,7 @@ export default function OrderPage() {
       contract_type: option,
       tank_option: option,
       customer_name: fullName,
-      email: authEmail, // <- ALWAYS save under auth email
+      email: authEmail, // save under auth email
       address_line1: address1 || null,
       address_line2: address2 || null,
       city: city || null,
@@ -412,7 +422,7 @@ export default function OrderPage() {
       siteCity,
       sitePostcode,
       cheaperByGBPPerL: cheaperBy,
-      receiptEmail: email, // keep the receipt email separate in extra
+      receiptEmail: email,
     };
 
     try {
@@ -420,7 +430,6 @@ export default function OrderPage() {
 
       let { error } = await supabase.from("contracts").insert({ ...base, extra: extraPayload } as any);
 
-      // If extra jsonb doesn't exist
       if (error && /extra.*does not exist/i.test(error.message || "")) {
         const retry = await supabase.from("contracts").insert(base as any);
         if (retry.error) throw retry.error;
@@ -449,12 +458,30 @@ export default function OrderPage() {
 
   /* ---------- render ---------- */
   return (
-    <main className="min-h-screen bg-[#061B34] text-white pb-20">
-      <div className="mx-auto w-full max-w-6xl px-4 pt-10">
+    <main className="min-h-screen bg-[#061B34] text-white pb-24">
+      {/* Sticky mobile CTA to guide the flow */}
+      {!requirementsOkay && (
+        <div className="md:hidden fixed bottom-4 inset-x-4 z-40">
+          <button
+            onClick={() => {
+              if (!accepted) openTerms();
+              else setShowWizard(true);
+            }}
+            className={cx(
+              "w-full text-center rounded-2xl py-3 font-semibold shadow-lg",
+              uiBtnPrimary
+            )}
+          >
+            {currentStep === 1 ? "Accept Terms" : "Choose & Sign Contract"}
+          </button>
+        </div>
+      )}
+
+      <div className="mx-auto w-full max-w-6xl px-4 pt-8">
         {/* Header */}
         <div className="mb-6 flex items-center gap-3">
           <img src="/logo-email.png" alt="FuelFlow" width={116} height={28} className="opacity-90" />
-          <div className="ml-2 text-2xl md:text-3xl font-bold">Place an Order</div>
+          <h1 className="ml-2 text-2xl md:text-3xl font-bold">Place an Order</h1>
           <div className="ml-auto">
             <Link href="/client-dashboard" className="text-white/70 hover:text-white">
               Back to Dashboard
@@ -462,24 +489,38 @@ export default function OrderPage() {
           </div>
         </div>
 
-        {/* Contract Panel — simplified, aligned */}
-        <section className={card}>
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-            <h3 className="text-lg font-semibold">Contract</h3>
-            <div className="text-sm text-white/70">
-              <span className="hidden md:inline">Buy: active once signed · Rent: needs admin approval after signing</span>
+        {/* Stepper container */}
+        <section className={cx(uiCard, "p-5 md:p-6")}>
+          {/* Progress bar */}
+          <div className="mb-5">
+            <div className="h-2 rounded bg-white/10">
+              <div
+                className={cx(
+                  "h-2 rounded",
+                  currentStep >= 3 ? "bg-green-400" : currentStep === 2 ? "bg-yellow-400" : "bg-white/50"
+                )}
+                style={{ width: `${(currentStep / 3) * 100}%` }}
+              />
+            </div>
+            <div className="mt-2 flex justify-between text-xs text-white/60">
+              <span>1. Terms</span>
+              <span>2. Contract</span>
+              <span>3. Order</span>
             </div>
           </div>
 
-          <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Steps */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             {/* Step 1: Terms */}
             <div className="rounded-xl border border-white/10 p-4 bg-white/5">
               <div className="flex items-center justify-between">
                 <div className="font-medium">Step 1 — Terms</div>
                 <StepBadge state={accepted ? "done" : "todo"} />
               </div>
-              <p className="text-sm text-white/70 mt-1">Accept the latest Terms.</p>
-              <button type="button" className={`${button} ${buttonGhost} mt-3`} onClick={openTerms}>
+              <p className="text-sm text-white/70 mt-1">
+                You must accept the latest Terms.
+              </p>
+              <button type="button" className={cx(uiBtn, uiBtnGhost, "mt-3 w-full md:w-auto")} onClick={openTerms}>
                 {accepted ? "View Terms" : "Read & accept Terms"}
               </button>
               {!accepted && checkingTerms && (
@@ -490,7 +531,7 @@ export default function OrderPage() {
             {/* Step 2: Sign */}
             <div className="rounded-xl border border-white/10 p-4 bg-white/5">
               <div className="flex items-center justify-between">
-                <div className="font-medium">Step 2 — Sign</div>
+                <div className="font-medium">Step 2 — Contract</div>
                 <StepBadge
                   state={
                     activeBuy || rentAwaitingApproval || activeRent
@@ -501,10 +542,13 @@ export default function OrderPage() {
                   }
                 />
               </div>
-              <p className="text-sm text-white/70 mt-1">Choose a contract type.</p>
+              <p className="text-sm text-white/70 mt-1">
+                Choose Buy or Rent and sign digitally. Buy is active immediately; Rent needs admin approval.
+              </p>
+
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
-                  className={`${button} ${buttonPrimary}`}
+                  className={cx(uiBtn, uiBtnPrimary)}
                   disabled={!accepted || activeBuy}
                   title={!accepted ? "Accept Terms first" : activeBuy ? "Buy contract already active" : ""}
                   onClick={() => {
@@ -514,8 +558,9 @@ export default function OrderPage() {
                 >
                   {activeBuy ? "Buy active" : "Start Buy"}
                 </button>
+
                 <button
-                  className={`${button} ${buttonGhost}`}
+                  className={cx(uiBtn, uiBtnGhost)}
                   disabled={!accepted || !!rentAwaitingApproval || activeRent}
                   title={
                     !accepted
@@ -535,7 +580,7 @@ export default function OrderPage() {
                 </button>
               </div>
 
-              {/* Current state preview */}
+              {/* State preview */}
               <div className="mt-3 text-sm">
                 <div>Buy: {activeBuy ? <span className="text-green-300">active</span> : "—"}</div>
                 <div>
@@ -551,104 +596,105 @@ export default function OrderPage() {
               </div>
             </div>
 
-            {/* Step 3: Approval / Active */}
+            {/* Step 3: Continue */}
             <div className="rounded-xl border border-white/10 p-4 bg-white/5">
               <div className="flex items-center justify-between">
-                <div className="font-medium">Step 3 — Approval</div>
-                <StepBadge
-                  state={
-                    activeBuy || activeRent
-                      ? "done"
-                      : rentAwaitingApproval
-                      ? "wait"
-                      : accepted
-                      ? "todo"
-                      : "wait"
-                  }
-                />
+                <div className="font-medium">Step 3 — Order</div>
+                <StepBadge state={requirementsOkay ? "done" : accepted ? "wait" : "wait"} />
               </div>
 
-              {activeBuy ? (
-                <p className="text-sm text-green-300 mt-2">Buy contract active — you can order now.</p>
-              ) : activeRent ? (
-                <p className="text-sm text-green-300 mt-2">Rent contract approved — you can order now.</p>
+              {requirementsOkay ? (
+                <>
+                  <p className="text-sm text-green-300 mt-2">You’re good to order — let’s go!</p>
+                  <button className={cx(uiBtn, uiBtnPrimary, "mt-3 w-full md:w-auto")} onClick={goToForm}>
+                    Continue to Order Form
+                  </button>
+                </>
               ) : rentAwaitingApproval ? (
-                <p className="text-sm text-yellow-300 mt-2">
-                  Rent contract signed — waiting for admin approval.
-                </p>
+                <p className="text-sm text-yellow-300 mt-2">Rent signed — awaiting admin approval.</p>
               ) : (
-                <p className="text-sm text-white/70 mt-2">No active contract yet.</p>
+                <p className="text-sm text-white/70 mt-2">Complete steps 1–2 to unlock ordering.</p>
               )}
             </div>
           </div>
         </section>
 
-        {/* Prices */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 my-6">
-          <Tile title="Petrol (95)" value={petrolPrice != null ? GBP(petrolPrice) : "—"} suffix="/ litre" />
-          <Tile title="Diesel" value={dieselPrice != null ? GBP(dieselPrice) : "—"} suffix="/ litre" />
-          <Tile title="Estimated Total" value={GBP(estTotal)} />
-        </div>
+        {/* Order form (revealed only when requirementsOkay) */}
+        <div ref={formRef} />
 
-        {/* Order form */}
-        <section className={`${card} px-5 md:px-6 py-6`}>
+        <section
+          className={cx(
+            uiCard,
+            "px-5 md:px-6 py-6 mt-6",
+            !requirementsOkay && "opacity-50 pointer-events-none"
+          )}
+          aria-disabled={!requirementsOkay}
+        >
+          <h2 className="text-lg font-semibold mb-3">Order details</h2>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <Tile title="Petrol (95)" value={petrolPrice != null ? GBP(petrolPrice) : "—"} suffix="/ litre" />
+            <Tile title="Diesel" value={dieselPrice != null ? GBP(dieselPrice) : "—"} suffix="/ litre" />
+            <Tile title="Estimated Total" value={GBP(estTotal)} />
+          </div>
+
           {!requirementsOkay && (
             <div className="mb-4 text-center text-yellow-300 text-sm">
               Complete the steps above to enable ordering.
             </div>
           )}
 
-          <div className={`${row} ${!requirementsOkay ? "opacity-60" : ""}`}>
+          <div className={`${uiRow}`}>
             <div>
-              <label className={label}>Fuel</label>
-              <select className={input} value={fuel} onChange={(e) => setFuel(e.target.value as Fuel)} disabled={!requirementsOkay}>
+              <label className={uiLabel}>Fuel</label>
+              <select className={uiInput} value={fuel} onChange={(e) => setFuel(e.target.value as Fuel)} disabled={!requirementsOkay}>
                 <option value="diesel">Diesel</option>
                 <option value="petrol">Petrol</option>
               </select>
             </div>
 
             <div>
-              <label className={label}>Litres</label>
-              <input className={input} type="number" min={1} value={litres} onChange={(e) => setLitres(Number(e.target.value))} disabled={!requirementsOkay} />
+              <label className={uiLabel}>Litres</label>
+              <input className={uiInput} type="number" min={1} value={litres} onChange={(e) => setLitres(Number(e.target.value))} disabled={!requirementsOkay} />
             </div>
 
             <div>
-              <label className={label}>Delivery date</label>
-              <input className={input} type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} disabled={!requirementsOkay} />
+              <label className={uiLabel}>Delivery date</label>
+              <input className={uiInput} type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div>
-              <label className={label}>Your email (receipt)</label>
-              <input className={input} type="email" value={email} onChange={(e) => setEmail(e.target.value)} disabled={!requirementsOkay} />
+              <label className={uiLabel}>Your email (receipt)</label>
+              <input className={uiInput} type="email" value={email} onChange={(e) => setEmail(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div className="md:col-span-2">
-              <label className={label}>Full name</label>
-              <input className={input} value={fullName} onChange={(e) => setFullName(e.target.value)} disabled={!requirementsOkay} />
+              <label className={uiLabel}>Full name</label>
+              <input className={uiInput} value={fullName} onChange={(e) => setFullName(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div>
-              <label className={label}>Address line 1</label>
-              <input className={input} value={address1} onChange={(e) => setAddress1(e.target.value)} disabled={!requirementsOkay} />
+              <label className={uiLabel}>Address line 1</label>
+              <input className={uiInput} value={address1} onChange={(e) => setAddress1(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div>
-              <label className={label}>Address line 2</label>
-              <input className={input} value={address2} onChange={(e) => setAddress2(e.target.value)} disabled={!requirementsOkay} />
+              <label className={uiLabel}>Address line 2</label>
+              <input className={uiInput} value={address2} onChange={(e) => setAddress2(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div>
-              <label className={label}>Postcode</label>
-              <input className={input} value={postcode} onChange={(e) => setPostcode(e.target.value)} disabled={!requirementsOkay} />
+              <label className={uiLabel}>Postcode</label>
+              <input className={uiInput} value={postcode} onChange={(e) => setPostcode(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div>
-              <label className={label}>City</label>
-              <input className={input} value={city} onChange={(e) => setCity(e.target.value)} disabled={!requirementsOkay} />
+              <label className={uiLabel}>City</label>
+              <input className={uiInput} value={city} onChange={(e) => setCity(e.target.value)} disabled={!requirementsOkay} />
             </div>
 
             <div className="md:col-span-2 mt-3">
-              <button className={`${button} ${buttonPrimary} w-full md:w-auto`} disabled={payDisabled || startingCheckout} onClick={startCheckout}>
+              <button className={cx(uiBtn, uiBtnPrimary, "w-full md:w-auto")} disabled={payDisabled || startingCheckout} onClick={startCheckout}>
                 {startingCheckout ? "Starting checkout…" : "Pay with Stripe"}
               </button>
             </div>
@@ -656,62 +702,7 @@ export default function OrderPage() {
         </section>
       </div>
 
-      {/* ROI / Calculator modal */}
-      {showCalc && (
-        <Modal onClose={() => setShowCalc(false)} title="Savings Calculator">
-          <EstimateBanner />
-          <div className="mb-3">
-            <label className={label}>Contract type</label>
-            <div className="flex gap-2">
-              <button className={`${button} ${calcOption === "buy" ? buttonPrimary : buttonGhost}`} onClick={() => setCalcOption("buy")}>
-                Buy
-              </button>
-              <button className={`${button} ${calcOption === "rent" ? buttonPrimary : buttonGhost}`} onClick={() => setCalcOption("rent")}>
-                Rent
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 my-4">
-            <Metric title="FuelFlow price" value={`${GBP(fuelflowPrice)} / L`} />
-            <Metric title="Est. monthly savings" value={GBP(estMonthlySavings)} />
-            <Metric title="Est. payback" value={estPaybackMonths ? `${estPaybackMonths} mo` : "—"} />
-          </div>
-
-          <div className={row}>
-            <Field label="Tank size (L)">
-              <input className={input} type="number" min={0} value={tankSizeL} onChange={(e) => setTankSizeL(Number(e.target.value))} />
-            </Field>
-            <Field label="Monthly consumption (L)">
-              <input className={input} type="number" min={0} value={monthlyConsumptionL} onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))} />
-            </Field>
-            <Field label="Market price (GBP/L)">
-              <input className={input} type="number" min={0} step="0.01" value={marketPrice} onChange={(e) => setMarketPrice(Number(e.target.value))} />
-            </Field>
-            <Field label="FuelFlow cheaper by (GBP/L)">
-              <input className={input} type="number" min={0} step="0.01" value={cheaperBy} onChange={(e) => setCheaperBy(Number(e.target.value))} />
-            </Field>
-          </div>
-
-          <div className="mt-6 flex justify-end gap-3">
-            <button className={`${button} ${buttonGhost}`} onClick={() => setShowCalc(false)}>
-              Close
-            </button>
-            <button
-              className={`${button} ${buttonPrimary}`}
-              onClick={() => {
-                setShowCalc(false);
-                setWizardOption(calcOption);
-                setShowWizard(true);
-              }}
-            >
-              Continue to Contract
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {/* Contract Wizard modal */}
+      {/* Contract Wizard modal (compact, focused) */}
       {showWizard && (
         <Modal
           onClose={() => {
@@ -724,61 +715,61 @@ export default function OrderPage() {
           <Wizard>
             {/* Contact */}
             <Wizard.Step title="Contact">
-              <div className={row}>
+              <div className={uiRow}>
                 <Field label="Full name">
-                  <input className={input} value={fullName} onChange={(e) => setFullName(e.target.value)} />
+                  <input className={uiInput} value={fullName} onChange={(e) => setFullName(e.target.value)} />
                 </Field>
                 <Field label="Phone">
-                  <input className={input} value={phone} onChange={(e) => setPhone(e.target.value)} />
+                  <input className={uiInput} value={phone} onChange={(e) => setPhone(e.target.value)} />
                 </Field>
                 <Field label="Email (receipt)">
-                  <input className={input} value={email} onChange={(e) => setEmail(e.target.value)} />
+                  <input className={uiInput} value={email} onChange={(e) => setEmail(e.target.value)} />
                 </Field>
               </div>
             </Wizard.Step>
 
             {/* Business */}
             <Wizard.Step title="Business">
-              <div className={row}>
+              <div className={uiRow}>
                 <Field label="Company name">
-                  <input className={input} value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
+                  <input className={uiInput} value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
                 </Field>
                 <Field label="Company number">
-                  <input className={input} value={companyNumber} onChange={(e) => setCompanyNumber(e.target.value)} />
+                  <input className={uiInput} value={companyNumber} onChange={(e) => setCompanyNumber(e.target.value)} />
                 </Field>
                 <Field label="VAT number">
-                  <input className={input} value={vatNumber} onChange={(e) => setVatNumber(e.target.value)} />
+                  <input className={uiInput} value={vatNumber} onChange={(e) => setVatNumber(e.target.value)} />
                 </Field>
               </div>
             </Wizard.Step>
 
             {/* Site & Tank */}
             <Wizard.Step title="Site & Tank">
-              <div className={row}>
+              <div className={uiRow}>
                 <Field label="Site address line 1">
-                  <input className={input} value={siteAddress1} onChange={(e) => setSiteAddress1(e.target.value)} />
+                  <input className={uiInput} value={siteAddress1} onChange={(e) => setSiteAddress1(e.target.value)} />
                 </Field>
                 <Field label="Site address line 2">
-                  <input className={input} value={siteAddress2} onChange={(e) => setSiteAddress2(e.target.value)} />
+                  <input className={uiInput} value={siteAddress2} onChange={(e) => setSiteAddress2(e.target.value)} />
                 </Field>
                 <Field label="Site city">
-                  <input className={input} value={siteCity} onChange={(e) => setSiteCity(e.target.value)} />
+                  <input className={uiInput} value={siteCity} onChange={(e) => setSiteCity(e.target.value)} />
                 </Field>
                 <Field label="Site postcode">
-                  <input className={input} value={sitePostcode} onChange={(e) => setSitePostcode(e.target.value)} />
+                  <input className={uiInput} value={sitePostcode} onChange={(e) => setSitePostcode(e.target.value)} />
                 </Field>
 
                 <Field label="Tank size (L)">
-                  <input className={input} type="number" min={0} value={tankSizeL} onChange={(e) => setTankSizeL(Number(e.target.value))} />
+                  <input className={uiInput} type="number" min={0} value={tankSizeL} onChange={(e) => setTankSizeL(Number(e.target.value))} />
                 </Field>
                 <Field label="Monthly consumption (L)">
-                  <input className={input} type="number" min={0} value={monthlyConsumptionL} onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))} />
+                  <input className={uiInput} type="number" min={0} value={monthlyConsumptionL} onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))} />
                 </Field>
                 <Field label="Market price (GBP/L)">
-                  <input className={input} type="number" min={0} step="0.01" value={marketPrice} onChange={(e) => setMarketPrice(Number(e.target.value))} />
+                  <input className={uiInput} type="number" min={0} step="0.01" value={marketPrice} onChange={(e) => setMarketPrice(Number(e.target.value))} />
                 </Field>
                 <Field label="FuelFlow cheaper by (GBP/L)">
-                  <input className={input} type="number" min={0} step="0.01" value={cheaperBy} onChange={(e) => setCheaperBy(Number(e.target.value))} />
+                  <input className={uiInput} type="number" min={0} step="0.01" value={cheaperBy} onChange={(e) => setCheaperBy(Number(e.target.value))} />
                 </Field>
               </div>
             </Wizard.Step>
@@ -792,24 +783,24 @@ export default function OrderPage() {
               </div>
 
               <div className="mt-4">
-                <label className={label}>Type your full legal name as signature</label>
+                <label className={uiLabel}>Type your full legal name as signature</label>
                 <input
-                  className={input}
+                  className={uiInput}
                   placeholder="Jane Smith"
                   value={signatureName}
                   onChange={(e) => setSignatureName(e.target.value)}
                 />
               </div>
 
-              <div className="mt-6 flex justify-between gap-3">
+              <div className="mt-6 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                 <div className="text-white/60 text-sm">
                   By signing you agree to the Terms and the figures above are estimates.
                 </div>
                 <div className="flex gap-3">
-                  <button className={`${button} ${buttonGhost}`} disabled={savingContract} onClick={() => setShowWizard(false)}>
+                  <button className={cx(uiBtn, uiBtnGhost)} disabled={savingContract} onClick={() => setShowWizard(false)}>
                     Cancel
                   </button>
-                  <button className={`${button} ${buttonPrimary}`} disabled={savingContract} onClick={() => signAndSaveContract(wizardOption)}>
+                  <button className={cx(uiBtn, uiBtnPrimary)} disabled={savingContract} onClick={() => signAndSaveContract(wizardOption)}>
                     {savingContract ? "Saving…" : "Sign & Save"}
                   </button>
                 </div>
@@ -818,10 +809,6 @@ export default function OrderPage() {
           </Wizard>
         </Modal>
       )}
-
-      <footer className="mt-12 text-center text-white/40 text-xs">
-        © {new Date().getFullYear()} FuelFlow. All rights reserved.
-      </footer>
     </main>
   );
 }
@@ -852,7 +839,7 @@ function Metric({ title, value }: { title: string; value: string }) {
 function Field({ label: l, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className={label}>{l}</label>
+      <label className={uiLabel}>{l}</label>
       {children}
     </div>
   );
@@ -933,11 +920,11 @@ const Wizard: WizardComponent = ({ children }) => {
       <div className="rounded-xl border border-white/10 bg-white/4 p-4">{steps[idx]}</div>
 
       <div className="mt-3 flex justify-between">
-        <button className={`${button} ${buttonGhost}`} onClick={() => setIdx(Math.max(0, idx - 1))} disabled={idx === 0} type="button">
+        <button className={cx(uiBtn, uiBtnGhost)} onClick={() => setIdx(Math.max(0, idx - 1))} disabled={idx === 0} type="button">
           Back
         </button>
         <button
-          className={`${button} ${buttonPrimary}`}
+          className={cx(uiBtn, uiBtnPrimary)}
           onClick={() => setIdx(Math.min(steps.length - 1, idx + 1))}
           disabled={idx === steps.length - 1}
           type="button"
@@ -951,4 +938,3 @@ const Wizard: WizardComponent = ({ children }) => {
 Wizard.Step = function Step({ children }: WizardStepProps) {
   return <>{children}</>;
 };
-
