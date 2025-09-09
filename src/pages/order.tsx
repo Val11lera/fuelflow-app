@@ -262,6 +262,16 @@ export default function OrderPage() {
     window.location.href = ret;
   }
 
+  /* ---------- NEW: open wizard via ?wizard=rent|buy ---------- */
+  useEffect(() => {
+    const w = qp.get("wizard");
+    if (w === "rent" || w === "buy") {
+      setWizardOption(w as TankOption);
+      setShowWizard(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qp]);
+
   /* ---------- load contracts & compute state ---------- */
   async function refreshContracts() {
     if (!email) return;
@@ -885,6 +895,9 @@ type WizardComponent = React.FC<WizardProps> & {
   Step: React.FC<WizardStepProps>;
 };
 
+const buttonPrimary = "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
+const buttonGhost = "bg-white/10 hover:bg-white/15 text-white border border-white/10";
+
 const Wizard: WizardComponent = ({ children }) => {
   const steps = React.Children.toArray(children) as React.ReactElement<WizardStepProps>[];
   const [idx, setIdx] = useState(0);
@@ -910,11 +923,11 @@ const Wizard: WizardComponent = ({ children }) => {
       <div className="rounded-xl border border-white/10 bg-white/4 p-4">{steps[idx]}</div>
 
       <div className="mt-3 flex justify-between">
-        <button className={`${button} ${buttonGhost}`} onClick={() => setIdx(Math.max(0, idx - 1))} disabled={idx === 0} type="button">
+        <button className={`rounded-2xl px-4 py-2 font-semibold ${buttonGhost}`} onClick={() => setIdx(Math.max(0, idx - 1))} disabled={idx === 0} type="button">
           Back
         </button>
         <button
-          className={`${button} ${buttonPrimary}`}
+          className={`rounded-2xl px-4 py-2 font-semibold ${buttonPrimary}`}
           onClick={() => setIdx(Math.min(steps.length - 1, idx + 1))}
           disabled={idx === steps.length - 1}
           type="button"
