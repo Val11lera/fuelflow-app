@@ -69,13 +69,13 @@ export default function ContractViewer() {
   }, [id]);
 
   return (
-    <main className="min-h-screen bg-[#0a0f1c] text-white">
+    <main className="min-h-screen bg-[#0b1220] text-white">
       <div className="mx-auto max-w-6xl px-4 py-4">
         <div className="flex items-center gap-3 mb-4">
           <img src="/logo-email.png" alt="FuelFlow" className="h-7" />
           <div className="text-xl font-semibold">Contract</div>
           <div className="ml-auto">
-            <Link href="/documents/" className="text-white/70 hover:text-white">
+            <Link href="/documents" className="text-white/70 hover:text-white">
               Back to documents
             </Link>
           </div>
@@ -89,19 +89,14 @@ export default function ContractViewer() {
           </div>
         ) : (
           <>
-            <div className="rounded-xl bg-white/5 p-4 ring-1 ring-white/10 mb-3 text-sm text-white/70">
+            <div className="rounded-xl bg-white/5 p-4 border border-white/10 mb-3 text-sm text-white/70">
               ID: <span className="text-white">{contract?.id}</span> · Type:{" "}
-              <b>{contract?.tank_option}</b> · Status:{" "}
-              <b>{contract?.status}</b>
+              <b>{contract?.tank_option}</b> · Status: <b>{contract?.status}</b>
             </div>
 
             {signedUrl ? (
-              <div className="rounded-xl overflow-hidden ring-1 ring-white/10 bg-black/40">
-                <iframe
-                  src={signedUrl}
-                  className="w-full h-[80vh]"
-                  title="Contract PDF"
-                />
+              <div className="rounded-xl overflow-hidden border border-white/10 bg-black/40">
+                <iframe src={signedUrl} className="w-full h-[80vh]" title="Contract PDF" />
               </div>
             ) : (
               <div className="rounded-xl bg-white/5 p-4">No PDF available.</div>
@@ -113,7 +108,7 @@ export default function ContractViewer() {
                   href={signedUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex rounded-xl bg-yellow-400 text-[#0a0f1c] px-4 py-2 font-semibold"
+                  className="inline-flex rounded-lg bg-yellow-500 text-[#041F3E] px-4 py-2 font-semibold"
                 >
                   Download PDF
                 </a>
