@@ -376,10 +376,11 @@ async function loadLatestPrices() {
   const canOrder = pricesAreToday && petrolPrice != null && dieselPrice != null;
 
   const documentsSummary = [
-    termsAcceptedAt ? "Terms accepted" : "Terms pending",
-    labelFromStatus(buyContract?.status, "Buy"),
-    labelFromStatus(rentContract?.status, "Rent"),
-  ].join(" · ");
+  termsAcceptedAt ? "Terms accepted" : "Terms pending",
+  labelFromStatus(buyContract?.status, "Buy"),
+  labelFromStatus(rentContract?.status, "Rent"),
+].join(" · ");
+
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
