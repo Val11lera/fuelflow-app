@@ -49,13 +49,6 @@ type PaymentRow = {
   status: string;
 };
 
-type TermsRow = {
-  id: string;
-  email: string;
-  accepted_at: string;
-  version: string;
-};
-
 type ContractRow = {
   id: string;
   tank_option: TankOption;
@@ -83,26 +76,16 @@ function isToday(d: string | Date | null | undefined) {
   );
 }
 
-function shortDate(d?: string | null) {
-  if (!d) return "—";
-  try {
-    return new Date(d).toLocaleDateString();
-  } catch {
-    return "—";
-  }
-}
-
 function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
 
-// Map statuses to labels exactly like documents.tsx semantics
+// Exact label semantics to match documents.tsx
 function labelFromStatus(status?: ContractStatus | null, kind: "Buy" | "Rent") {
   if (!status) return `${kind} not signed`;
   if (status === "approved") return `${kind} active`;
   if (status === "signed") return `${kind} awaiting approval`;
   if (status === "cancelled") return `${kind} cancelled`;
-  // draft or anything unexpected
   return `${kind} not signed`;
 }
 
@@ -133,11 +116,11 @@ export default function ClientDashboard() {
 
   // usage UI
   const currentYear = new Date().getFullYear();
-  const currentMonthIdx = new Date().getMonth(); // 0..11
+  const currentMonthIdx = new Date().getMonth();
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
-  // ----------------- Auto logout on inactivity -----------------
+  // Auto logout on inactivity
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const reset = () => {
@@ -170,7 +153,7 @@ export default function ClientDashboard() {
     };
   }, []);
 
-  // ----------------- Data loading -----------------
+  // Data loading
   useEffect(() => {
     (async () => {
       try {
@@ -186,16 +169,23 @@ export default function ClientDashboard() {
         const emailLower = (auth.user.email || "").toLowerCase();
         setUserEmail(emailLower);
 
-        // PRICES — robust loader with multiple fallbacks
+        // Prices
         await loadLatestPrices();
 
-        // TERMS — latest acceptance for this version
-        await loadTerms(emailLower);
+        // Terms (for summary)
+        const { data: ta } = await supabase
+          .from("terms_acceptances")
+          .select("accepted_at")
+          .eq("email", emailLower)
+          .eq("version", TERMS_VERSION)
+          .order("accepted_at", { ascending: false })
+          .limit(1);
+        setTermsAcceptedAt(ta?.[0]?.accepted_at ?? null);
 
-        // CONTRACTS — latest per option (mirror documents.tsx)
+        // Contracts — mirror documents.tsx (latest by created_at regardless of status)
         await loadContracts(emailLower);
 
-        // ORDERS
+        // Orders
         const { data: rawOrders, error: ordErr } = await supabase
           .from("orders")
           .select(
@@ -252,18 +242,6 @@ export default function ClientDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function loadTerms(emailLower: string) {
-    const { data } = await supabase
-      .from("terms_acceptances")
-      .select("id,email,accepted_at,version")
-      .eq("email", emailLower)
-      .eq("version", TERMS_VERSION)
-      .order("accepted_at", { ascending: false })
-      .limit(1);
-    setTermsAcceptedAt(data?.[0]?.accepted_at ?? null);
-  }
-
-  // >>> UPDATED: mirror documents.tsx — pick latest by created_at for each option
   async function loadContracts(emailLower: string) {
     const { data } = await supabase
       .from("contracts")
@@ -281,78 +259,48 @@ export default function ClientDashboard() {
     setRentContract(latestRent);
   }
 
-  // Robust latest-price loader
+  // Prices loader w/ fallbacks
   async function loadLatestPrices() {
     setPetrolPrice(null);
     setDieselPrice(null);
     setPriceDate(null);
 
-    // Try 1: latest_prices
-    try {
-      const { data } = await supabase
-        .from("latest_prices")
-        .select("fuel,total_price,price_date");
-      if (data && data.length) {
-        applyPriceRows(data as any[]);
-        return;
-      }
-    } catch {}
+    const apply = (rows: { fuel: string; total_price: number; price_date?: string | null }[]) => {
+      let latest: string | null = null;
+      rows.forEach((r) => {
+        const f = String(r.fuel).toLowerCase();
+        if (f === "petrol") setPetrolPrice(Number(r.total_price));
+        if (f === "diesel") setDieselPrice(Number(r.total_price));
+        if (r.price_date) {
+          if (!latest || new Date(r.price_date) > new Date(latest)) latest = r.price_date;
+        }
+      });
+      if (latest) setPriceDate(latest);
+    };
 
-    // Try 2: latest_fuel_prices_view
-    try {
-      const { data } = await supabase
-        .from("latest_fuel_prices_view")
-        .select("fuel,total_price,price_date");
-      if (data && data.length) {
-        applyPriceRows(data as any[]);
-        return;
-      }
-    } catch {}
+    const tryTable = async (table: string) => {
+      try {
+        const { data } = await supabase.from(table).select("fuel,total_price,price_date");
+        if (data && data.length) {
+          apply(data as any[]);
+          return true;
+        }
+      } catch {}
+      return false;
+    };
 
-    // Try 3: latest_prices_view
-    try {
-      const { data } = await supabase
-        .from("latest_prices_view")
-        .select("fuel,total_price,price_date");
-      if (data && data.length) {
-        applyPriceRows(data as any[]);
-        return;
-      }
-    } catch {}
+    if (await tryTable("latest_prices")) return;
+    if (await tryTable("latest_fuel_prices_view")) return;
+    if (await tryTable("latest_prices_view")) return;
 
-    // Try 4: daily_prices fallback
     try {
       const { data } = await supabase
         .from("daily_prices")
         .select("fuel,total_price,price_date")
         .order("price_date", { ascending: false })
         .limit(200);
-
-      if (data && data.length) {
-        const seen = new Map<string, any>();
-        for (const r of data) {
-          const key = String(r.fuel).toLowerCase();
-          if (!seen.has(key)) seen.set(key, r);
-        }
-        applyPriceRows(Array.from(seen.values()));
-        return;
-      }
+      if (data && data.length) apply(data as any[]);
     } catch {}
-  }
-
-  function applyPriceRows(
-    rows: { fuel: string; total_price: number; price_date?: string | null }[]
-  ) {
-    let latest: string | null = null;
-    rows.forEach((r) => {
-      const f = String(r.fuel).toLowerCase();
-      if (f === "petrol") setPetrolPrice(Number(r.total_price));
-      if (f === "diesel") setDieselPrice(Number(r.total_price));
-      if (r.price_date) {
-        if (!latest || new Date(r.price_date) > new Date(latest)) latest = r.price_date;
-      }
-    });
-    if (latest) setPriceDate(latest);
   }
 
   function refresh() {
@@ -367,7 +315,7 @@ export default function ClientDashboard() {
     }
   }
 
-  // ---------- Usage & Spend (by month, year) ----------
+  // Usage & Spend (by month, year)
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
 
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
@@ -390,7 +338,6 @@ export default function ClientDashboard() {
 
   const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
   const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
-
   const rowsToShow = showAllMonths
     ? usageByMonth
     : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
@@ -401,7 +348,6 @@ export default function ClientDashboard() {
 
   const canOrder = pricesAreToday && petrolPrice != null && dieselPrice != null;
 
-  // >>> UPDATED: build summary with same semantics as documents page
   const documentsSummary = [
     termsAcceptedAt ? "Terms accepted" : "Terms pending",
     labelFromStatus(buyContract?.status, "Buy"),
@@ -442,25 +388,13 @@ export default function ClientDashboard() {
             >
               Order Fuel
             </a>
-
-            {/* Documents */}
-            <a
-              href="/documents"
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-            >
+            <a href="/documents" className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
               Documents
             </a>
-
-            <button
-              onClick={refresh}
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-            >
+            <button onClick={refresh} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
               Refresh
             </button>
-            <button
-              onClick={logout}
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-            >
+            <button onClick={logout} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
               Log out
             </button>
           </div>
@@ -502,7 +436,6 @@ export default function ClientDashboard() {
             </div>
           </Card>
 
-          {/* Documents summary (aligned with documents page logic) */}
           <div className="bg-gray-800 rounded-xl p-4 md:p-5">
             <p className="text-gray-400 mb-1">Documents</p>
             <div className="text-sm text-white/80">{documentsSummary}</div>
