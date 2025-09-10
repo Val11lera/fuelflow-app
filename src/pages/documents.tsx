@@ -206,7 +206,7 @@ export default function DocumentsPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-[#0b1220] text-white">
+   <header className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 mb-4">
       {/* Header */}
       <header className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
         <div className="flex items-center gap-3">
@@ -231,7 +231,7 @@ export default function DocumentsPage() {
       </header>
 
       {/* Subhead checklist (scrollable on mobile) */}
-      <div className="mx-auto max-w-6xl px-4 mt-3 sm:mt-0">
+     <div className="mx-auto max-w-6xl px-4 mt-5 sm:mt-0">
         <div className="mb-4 flex items-center gap-2 overflow-x-auto pb-1">
           {checklist.map((c) => (
             <span
