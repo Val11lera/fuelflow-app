@@ -69,7 +69,7 @@ function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
 
-// NEW: dd/mm/yy formatter (e.g., 10/10/25)
+// dd/mm/yy, e.g. 10/10/25
 function ddmmyy(dateIso?: string | null) {
   if (!dateIso) return "—";
   const d = new Date(dateIso);
@@ -117,7 +117,7 @@ export default function ClientDashboard() {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
       if (!auth?.user) {
-        window.location.href = "/login";
+        window.location.href = "https://fuelflow.co.uk";
         return;
       }
       setUserEmail((auth.user.email || "").toLowerCase());
@@ -133,7 +133,7 @@ export default function ClientDashboard() {
         try {
           await supabase.auth.signOut();
         } finally {
-          window.location.href = "/login";
+          window.location.href = "https://fuelflow.co.uk";
         }
       }, INACTIVITY_MS);
     };
@@ -311,7 +311,7 @@ export default function ClientDashboard() {
     try {
       await supabase.auth.signOut();
     } finally {
-      window.location.href = "/login";
+      window.location.href = "https://fuelflow.co.uk";
     }
   }
 
@@ -348,9 +348,12 @@ export default function ClientDashboard() {
   if (!hasRefreshed) {
     return (
       <div className="min-h-screen bg-[#0b1220] text-white">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center">
-          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-          <div className="ml-auto">
+        {/* Top bar with linked logo + Logout (mobile & desktop) */}
+        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center gap-3">
+          <a href="https://fuelflow.co.uk" aria-label="FuelFlow website">
+            <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+          </a>
+          <div className="ml-auto flex gap-2">
             <button
               onClick={logout}
               className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
@@ -360,6 +363,7 @@ export default function ClientDashboard() {
           </div>
         </div>
 
+        {/* Centered refresh card */}
         <div className="max-w-6xl mx-auto px-4">
           <div className="min-h-[60vh] grid place-items-center">
             <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/[0.03] p-6 text-center">
@@ -410,12 +414,23 @@ export default function ClientDashboard() {
       <div className="max-w-6xl mx-auto px-4 py-4 space-y-4">
         {/* Header */}
         <div className="flex items-center gap-3">
-          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+          <a href="https://fuelflow.co.uk" aria-label="FuelFlow website">
+            <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+          </a>
           <div className="text-sm text-white/70">
             Welcome back, <span className="font-medium">{userEmail}</span>
           </div>
 
-        <div className="ml-auto hidden md:flex gap-2">
+          {/* Mobile logout (visible on small screens) */}
+          <button
+            onClick={logout}
+            className="ml-auto rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15 md:hidden"
+          >
+            Log out
+          </button>
+
+          {/* Desktop actions */}
+          <div className="ml-auto hidden md:flex gap-2">
             <a
               href="/order"
               aria-disabled={!canOrder}
@@ -429,7 +444,7 @@ export default function ClientDashboard() {
             <a href="/documents" className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
               Documents
             </a>
-            <button onClick={refresh} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
+            <button onClick={loadAll} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
               Refresh
             </button>
             <button onClick={logout} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
@@ -445,7 +460,7 @@ export default function ClientDashboard() {
               {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            <div className="mt-1 text-xs text-white/60">Refreshed: {refreshedShort}</div>
+            <div className="mt-1 text-xs text-white/60">Refreshed: {ddmmyy(lastRefreshAt)}</div>
           </Card>
 
           <Card title="Diesel">
@@ -453,9 +468,10 @@ export default function ClientDashboard() {
               {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            <div className="mt-1 text-xs text-white/60">Refreshed: {refreshedShort}</div>
+            <div className="mt-1 text-xs text-white/60">Refreshed: {ddmmyy(lastRefreshAt)}</div>
           </Card>
 
+          {/* No status text here — just the button */}
           <div className="bg-gray-800 rounded-xl p-4 md:p-5">
             <p className="text-gray-400 mb-1">Documents</p>
             <a
@@ -514,7 +530,7 @@ export default function ClientDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
+                {(showAllMonths ? usageByMonth : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx)).map((r) => (
                   <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
                     <td className="py-2 pr-4">
                       {r.monthLabel} {String(selectedYear).slice(2)}
@@ -556,7 +572,7 @@ export default function ClientDashboard() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl md:text-2xl font-semibold">Recent Orders</h2>
             <button
-              onClick={refresh}
+              onClick={loadAll}
               className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
               disabled={loading}
             >
@@ -621,3 +637,4 @@ function Card(props: { title: string; children: React.ReactNode }) {
     </div>
   );
 }
+
