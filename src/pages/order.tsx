@@ -311,7 +311,7 @@ export default function OrderPage() {
   /* ---------- render ---------- */
 
   return (
-    <main className="relative min-h-screen bg-[#061B34] text-white pb-24 md:pb-12">
+    <main className="relative min-h-[100svh] md:min-h-screen bg-[#061B34] text-white pb-24 md:pb-12 pt-[env(safe-area-inset-top)]">
       {/* Layered premium background */}
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute inset-0 bg-gradient-to-b from-[#0b2344] via-[#061B34] to-[#041F3E]" />
@@ -547,7 +547,7 @@ export default function OrderPage() {
       </div>
 
       {/* Sticky summary bar (mobile only) */}
-      <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-white/10 bg-[#0b1f3a]/95 backdrop-blur md:hidden">
+      <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-white/10 bg-[#0b1f3a]/95 backdrop-blur md:hidden pb-[env(safe-area-inset-bottom)]">
         <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
           <div className="flex-1">
             <div className="text-xs text-white/60">Estimated total</div>
@@ -603,4 +603,3 @@ function TruckIcon({ className }: { className?: string }) {
     </svg>
   );
 }
-
