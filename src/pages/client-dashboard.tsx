@@ -540,7 +540,7 @@ export default function ClientDashboard() {
                       <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
                         <div
                           className="h-1.5 rounded bg-white/40"
-                          style={{ width: `${(r.spend / Math.max(1, ...usageByMonth.map(x => x.spend))) * 100)%` }}
+                          style={{ width: `${(r.spend / Math.max(1, ...usageByMonth.map(x => x.spend))) * 100}%` }}
                         />
                       </div>
                     </td>
