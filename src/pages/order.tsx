@@ -34,17 +34,15 @@ const supabase =
     : (null as any);
 
 /* =========================
-   UI tokens
+   UI tokens (aligned to dashboard)
    ========================= */
 
-const card =
-  "rounded-2xl border border-white/10 bg-white/5 backdrop-blur px-5 py-4 shadow transition";
+const card = "rounded-xl bg-gray-800 p-5 md:p-6";
 const button =
-  "rounded-xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
+  "rounded-lg px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
 const buttonPrimary =
   "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
-const buttonGhost =
-  "border border-white/15 bg-white/5 hover:bg-white/10 text-white";
+const buttonGhost = "bg-white/10 hover:bg-white/15 text-white";
 const input =
   "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30";
 const label = "block text-sm font-medium text-white/80 mb-1";
@@ -311,31 +309,19 @@ export default function OrderPage() {
   /* ---------- render ---------- */
 
   return (
-    <main className="relative min-h-[100svh] md:min-h-screen bg-[#061B34] text-white pb-24 md:pb-12 pt-[env(safe-area-inset-top)]">
-      {/* Layered premium background */}
-      <div className="pointer-events-none absolute inset-0">
-        <div className="absolute inset-0 bg-gradient-to-b from-[#0b2344] via-[#061B34] to-[#041F3E]" />
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.08),transparent_55%)]" />
-        <div className="absolute -top-24 -right-24 w-[520px] h-[520px] rounded-full blur-3xl opacity-20 bg-yellow-500/20" />
-      </div>
-
-      {/* Header */}
-      <div className="relative mx-auto w-full max-w-6xl px-4 pt-6 md:pt-10">
-        <div className="mb-6 flex items-center gap-3">
+    <main className="min-h-[100svh] md:min-h-screen bg-[#0b1220] text-white">
+      <div className="max-w-6xl mx-auto px-4 pt-4 pb-24 md:pb-12 space-y-6">
+        {/* Header (align with dashboard) */}
+        <div className="flex items-center gap-3">
           <img
             src="/logo-email.png"
             alt="FuelFlow"
-            width={116}
-            height={28}
-            className="opacity-90 hidden sm:block"
+            className="h-7 w-auto"
           />
-          <div className="text-2xl md:text-3xl font-bold">Place an Order</div>
+          <div className="text-xl md:text-2xl font-bold">Place an Order</div>
 
           <div className="ml-auto flex gap-2">
-            <Link
-              href="/client-dashboard"
-              className={`${button} ${buttonGhost}`}
-            >
+            <Link href="/client-dashboard" className={`${button} ${buttonGhost}`}>
               Back to Dashboard
             </Link>
             <Link href="/documents" className={`${button} ${buttonGhost}`}>
@@ -345,12 +331,12 @@ export default function OrderPage() {
         </div>
 
         {/* Price tiles + timestamp */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
+        <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Tile title="Petrol (95)" value={petrolPrice != null ? GBP(petrolPrice) : "—"} suffix="/ litre" />
           <Tile title="Diesel" value={dieselPrice != null ? GBP(dieselPrice) : "—"} suffix="/ litre" />
           <Tile title="Estimated Total" value={GBP(estTotal)} />
-        </div>
-        <div className="mb-6 text-xs text-white/70">
+        </section>
+        <div className="text-xs text-white/70">
           {loadingPrices
             ? "Loading prices…"
             : pricesUpdatedAt
@@ -360,15 +346,12 @@ export default function OrderPage() {
 
         {/* Requirements hint */}
         {!requirementsMet && (
-          <div className="mb-6 rounded-2xl border border-yellow-400/40 bg-yellow-500/10 p-4 text-sm text-yellow-200">
+          <div className="rounded-xl border border-yellow-400/30 bg-yellow-500/10 p-4 text-sm text-yellow-200">
             <div className="font-semibold mb-1">Complete your documents to order</div>
             <div>
               You must accept the Terms and have either a <b>Buy</b> contract signed or a{" "}
               <b>Rent</b> contract approved. Open{" "}
-              <Link
-                href="/documents"
-                className="underline decoration-yellow-400 underline-offset-2"
-              >
+              <Link href="/documents" className="underline decoration-yellow-400 underline-offset-2">
                 Documents
               </Link>{" "}
               to complete this.
@@ -376,11 +359,10 @@ export default function OrderPage() {
           </div>
         )}
 
-        {/* Main content: Form left, Summary right (stack on mobile) */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start relative">
+        {/* Main content */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
           {/* Form */}
-          <section className={`lg:col-span-2 ${card} px-5 md:px-6 py-6 ring-1 ring-white/5`}>
-            {/* Order details */}
+          <section className={`lg:col-span-2 ${card}`}>
             <h2 className="mb-3 text-lg font-semibold">Order details</h2>
             <div className={row}>
               <div>
@@ -493,12 +475,10 @@ export default function OrderPage() {
                 />
               </div>
             </div>
-
-            {/* (Removed the form-area Pay with Stripe button as requested) */}
           </section>
 
-          {/* Summary (with the only desktop Pay button) */}
-          <aside className={`${card} p-5 ring-1 ring-white/5`}>
+          {/* Summary */}
+          <aside className={`${card}`}>
             <h3 className="text-lg font-semibold mb-3">Summary</h3>
 
             <div className="space-y-2 text-sm">
@@ -547,7 +527,7 @@ export default function OrderPage() {
       </div>
 
       {/* Sticky summary bar (mobile only) */}
-      <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-white/10 bg-[#0b1f3a]/95 backdrop-blur md:hidden pb-[env(safe-area-inset-bottom)]">
+      <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-white/10 bg-[#0b1220]/95 backdrop-blur md:hidden">
         <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
           <div className="flex-1">
             <div className="text-xs text-white/60">Estimated total</div>
@@ -563,7 +543,7 @@ export default function OrderPage() {
         </div>
       </div>
 
-      <footer className="mt-12 text-center text-white/40 text-xs relative">
+      <footer className="mt-12 text-center text-white/50 text-xs">
         © {new Date().getFullYear()} FuelFlow. All rights reserved.
       </footer>
     </main>
@@ -584,7 +564,7 @@ function Tile({
   suffix?: string;
 }) {
   return (
-    <div className="rounded-2xl bg-white/5 border border-white/10 p-4 ring-1 ring-white/5">
+    <div className="rounded-xl bg-gray-800 p-4">
       <div className="text-white/70 text-sm">{title}</div>
       <div className="mt-1 text-2xl font-semibold">
         {value} {suffix && <span className="text-white/50 text-base">{suffix}</span>}
