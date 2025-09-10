@@ -219,7 +219,7 @@ export default function DocumentsPage() {
   return (
     <div className="min-h-screen bg-[#0b1220] text-white pt-[env(safe-area-inset-top)]">
       {/* Header */}
-      <header className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 mb-4">
+      <header className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 mb-6">
         <div className="flex items-center gap-3">
           <a href="/client-dashboard" className="rounded-lg bg-white/10 p-2 hover:bg-white/15 md:hidden" aria-label="Back">
             <BackIcon className="h-5 w-5" />
