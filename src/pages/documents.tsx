@@ -206,7 +206,27 @@ export default function DocumentsPage() {
   ];
 
   return (
-   <header className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 mb-4">
+  <header className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 mb-4">
+  <div className="flex items-center gap-3">
+    <a href="/client-dashboard" className="rounded-lg bg-white/10 p-2 hover:bg-white/15 md:hidden" aria-label="Back">
+      <BackIcon className="h-5 w-5" />
+    </a>
+    <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto hidden md:block" />
+    <h1 className="text-xl font-bold sm:text-2xl">Documents</h1>
+  </div>
+
+  <div className="flex items-center gap-2">
+    <button
+      className="rounded-full border border-white/15 bg-white/[0.06] px-3 py-1.5 text-xs font-medium hover:bg-white/[0.1]"
+      onClick={() => setShowGuide(true)}
+    >
+      Status guide
+    </button>
+    <a href="/client-dashboard" className="hidden rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15 md:inline-block">
+      Back to Dashboard
+    </a>
+  </div>
+</header>
       {/* Header */}
       <header className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
         <div className="flex items-center gap-3">
