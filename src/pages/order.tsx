@@ -310,26 +310,57 @@ export default function OrderPage() {
 
   return (
     <main className="min-h-[100svh] md:min-h-screen bg-[#0b1220] text-white">
-      <div className="max-w-6xl mx-auto px-4 pt-4 pb-24 md:pb-12 space-y-6">
-        {/* Header (align with dashboard) */}
-        <div className="flex items-center gap-3">
-          <img
-            src="/logo-email.png"
-            alt="FuelFlow"
-            className="h-7 w-auto"
-          />
-          <div className="text-xl md:text-2xl font-bold">Place an Order</div>
+      {/* Sticky, polished toolbar */}
+      <div className="sticky top-0 z-40 bg-[#0b1220]/80 backdrop-blur border-b border-white/10">
+        <div className="max-w-6xl mx-auto px-4">
+          <div className="flex h-14 items-center gap-3">
+            {/* Left: logo */}
+            <Link href="/client-dashboard" className="shrink-0 inline-flex items-center gap-2">
+              <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+              <span className="sr-only">Back to dashboard</span>
+            </Link>
 
-          <div className="ml-auto flex gap-2">
-            <Link href="/client-dashboard" className={`${button} ${buttonGhost}`}>
-              Back to Dashboard
-            </Link>
-            <Link href="/documents" className={`${button} ${buttonGhost}`}>
-              Documents
-            </Link>
+            {/* Center: Title (hidden on md+, shown below instead) */}
+            <div className="flex-1 text-center md:hidden">
+              <div className="text-base font-semibold">Place an Order</div>
+            </div>
+
+            {/* Right: Actions */}
+            <div className="ml-auto flex items-center gap-2">
+              {/* Mobile: compact icon buttons */}
+              <Link
+                href="/client-dashboard"
+                title="Back to Dashboard"
+                className="md:hidden grid place-items-center h-9 w-9 rounded-lg bg-white/10 hover:bg-white/15"
+              >
+                <DashboardIcon className="h-5 w-5" />
+              </Link>
+              <Link
+                href="/documents"
+                title="Documents"
+                className="md:hidden grid place-items-center h-9 w-9 rounded-lg bg-white/10 hover:bg-white/15"
+              >
+                <DocumentIcon className="h-5 w-5" />
+              </Link>
+
+              {/* Desktop: full text buttons */}
+              <Link href="/documents" className={`hidden md:inline-flex ${button} ${buttonGhost}`}>
+                Documents
+              </Link>
+              <Link href="/client-dashboard" className={`hidden md:inline-flex ${button} ${buttonGhost}`}>
+                Back to Dashboard
+              </Link>
+            </div>
           </div>
         </div>
 
+        {/* Title row on desktop */}
+        <div className="hidden md:block max-w-6xl mx-auto px-4 pb-3">
+          <h1 className="text-2xl font-bold">Place an Order</h1>
+        </div>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-4 pt-4 pb-24 md:pb-12 space-y-6">
         {/* Price tiles + timestamp */}
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Tile title="Petrol (95)" value={petrolPrice != null ? GBP(petrolPrice) : "—"} suffix="/ litre" />
@@ -533,7 +564,7 @@ export default function OrderPage() {
             <div className="text-xs text-white/60">Estimated total</div>
             <div className="text-lg font-semibold">{GBP(estTotal)}</div>
           </div>
-          <button
+        <button
             className={`${button} ${buttonPrimary}`}
             disabled={payDisabled || startingCheckout}
             onClick={startCheckout}
@@ -583,3 +614,21 @@ function TruckIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/* Simple inline icons so we don’t pull extra deps */
+function DashboardIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M3 13h8V3H3zM13 21h8v-8h-8zM13 3h8v6h-8zM3 21h8v-6H3z" />
+    </svg>
+  );
+}
+function DocumentIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+    </svg>
+  );
+}
+
