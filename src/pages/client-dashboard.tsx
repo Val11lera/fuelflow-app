@@ -15,7 +15,7 @@ type TankOption = "buy" | "rent";
 
 const TERMS_VERSION = "v1.1";
 const INACTIVITY_MS =
-  Number(process.env.NEXT_PUBLIC_IDLE_LOGOUT_MS ?? "") || 10 * 60 * 1000; // 10 minutes
+  Number(process.env.NEXT_PUBLIC_IDLE_LOGOUT_MS ?? "") || 10 * 60 * 1000; // 10 minutes default
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -69,14 +69,14 @@ function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
 
-// dd/mm/yy, e.g. 10/10/25
-function ddmmyy(dateIso?: string | null) {
-  if (!dateIso) return "—";
-  const d = new Date(dateIso);
-  if (Number.isNaN(d.getTime())) return "—";
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const yy = String(d.getFullYear()).slice(-2);
+// dd/mm/yy
+function formatShortDMY(d?: string | Date | null) {
+  if (!d) return "—";
+  const dt = typeof d === "string" ? new Date(d) : d;
+  if (Number.isNaN(dt.getTime())) return "—";
+  const dd = String(dt.getDate()).padStart(2, "0");
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const yy = String(dt.getFullYear()).slice(-2);
   return `${dd}/${mm}/${yy}`;
 }
 
@@ -87,37 +87,37 @@ function ddmmyy(dateIso?: string | null) {
 export default function ClientDashboard() {
   const [userEmail, setUserEmail] = useState<string>("");
 
-  // gating: UI hidden until first refresh completes (auto-triggered)
+  // "Gate" – until refreshed, show minimal screen with a big button
   const [hasRefreshed, setHasRefreshed] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [lastRefreshAt, setLastRefreshAt] = useState<string | null>(null);
 
   // prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
+  const [priceDate, setPriceDate] = useState<string | null>(null); // last price timestamp we detected
 
   // orders
   const [orders, setOrders] = useState<
     (OrderRow & { amountGBP: number; paymentStatus?: string })[]
   >([]);
+  const [error, setError] = useState<string | null>(null);
 
-  // (we load contracts but don’t display status on dashboard)
+  // (We still fetch contracts to keep future conditions available, but do not show status)
   const [buyContract, setBuyContract] = useState<ContractRow | null>(null);
   const [rentContract, setRentContract] = useState<ContractRow | null>(null);
 
   // usage UI
   const currentYear = new Date().getFullYear();
-  const currentMonthIdx = new Date().getMonth();
+  const currentMonthIdx = new Date().getMonth(); // 0..11
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
-  // ----------------- Auth on mount -----------------
+  // ----------------- Auth check (no data load here) -----------------
   useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
       if (!auth?.user) {
-        window.location.href = "https://fuelflow.co.uk";
+        window.location.href = "/login";
         return;
       }
       setUserEmail((auth.user.email || "").toLowerCase());
@@ -133,55 +133,65 @@ export default function ClientDashboard() {
         try {
           await supabase.auth.signOut();
         } finally {
-          window.location.href = "https://fuelflow.co.uk";
+          window.location.href = "https://fuelflow.co.uk"; // go to main site on logout
         }
       }, INACTIVITY_MS);
     };
 
-    const events: (keyof WindowEventMap)[] = ["mousemove","mousedown","keydown","scroll","touchstart"];
+    const events: (keyof WindowEventMap)[] = [
+      "mousemove",
+      "mousedown",
+      "keydown",
+      "scroll",
+      "touchstart",
+    ];
     events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
-    const onVis = () => reset();
-    document.addEventListener("visibilitychange", onVis, { passive: true });
+    const onVisibility = () => reset();
+    document.addEventListener("visibilitychange", onVisibility, { passive: true });
 
     reset();
     return () => {
       if (idleTimer.current) clearTimeout(idleTimer.current);
       events.forEach((e) => window.removeEventListener(e, reset));
-      document.removeEventListener("visibilitychange", onVis);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 
-  // ----------------- Loaders -----------------
-  const firstLoadTriggered = useRef(false);
-
-  useEffect(() => {
-    // Automatically “press” Refresh as soon as we know the user
-    if (userEmail && !firstLoadTriggered.current) {
-      firstLoadTriggered.current = true;
-      loadAll();
-    }
-  }, [userEmail]);
-
+  // ----------------- Refresh (loads all gated data) -----------------
   async function loadAll() {
     try {
       setLoading(true);
       setError(null);
-      await Promise.all([loadLatestPrices(), loadContracts(), loadOrders()]);
+
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth?.user) {
+        window.location.href = "/login";
+        return;
+      }
+      const emailLower = (auth.user.email || "").toLowerCase();
+      setUserEmail(emailLower);
+
+      await Promise.all([
+        loadLatestPrices(),
+        loadContracts(emailLower),
+        loadOrders(emailLower),
+      ]);
+
       setHasRefreshed(true);
-      setLastRefreshAt(new Date().toISOString()); // used for "Refreshed: dd/mm/yy"
     } catch (e: any) {
-      setError(e?.message || "Failed to load dashboard.");
+      setError(e?.message || "Failed to refresh dashboard.");
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadContracts() {
-    if (!userEmail) return;
+  async function loadContracts(emailLower: string) {
     const { data } = await supabase
       .from("contracts")
-      .select("id,tank_option,status,signed_at,approved_at,created_at,email")
-      .eq("email", userEmail)
+      .select(
+        "id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path"
+      )
+      .eq("email", emailLower)
       .order("created_at", { ascending: false });
 
     const rows = (data || []) as ContractRow[];
@@ -189,9 +199,61 @@ export default function ClientDashboard() {
     setRentContract(rows.find((r) => r.tank_option === "rent") ?? null);
   }
 
+  async function loadOrders(emailLower: string) {
+    const { data: rawOrders, error: ordErr } = await supabase
+      .from("orders")
+      .select(
+        "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status"
+      )
+      .eq("user_email", emailLower)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (ordErr) throw ordErr;
+
+    const ordersArr = (rawOrders || []) as OrderRow[];
+    const ids = ordersArr.map((o) => o.id).filter(Boolean);
+
+    let payMap = new Map<string, PaymentRow>();
+    if (ids.length) {
+      const { data: pays } = await supabase
+        .from("payments")
+        .select("order_id, amount, currency, status")
+        .in("order_id", ids);
+      (pays || []).forEach((p: any) => {
+        if (p.order_id) payMap.set(p.order_id, p);
+      });
+    }
+
+    const withTotals = ordersArr.map((o) => {
+      const fromOrders = o.total_pence ?? null;
+      const fromPayments = payMap.get(o.id || "")?.amount ?? null;
+
+      let totalPence: number | null =
+        fromOrders ?? (fromPayments as number | null) ?? null;
+
+      if (totalPence == null) {
+        if (o.unit_price_pence != null && o.litres != null) {
+          totalPence = Math.round(o.unit_price_pence * o.litres);
+        }
+      }
+
+      const amountGBP = totalPence != null ? totalPence / 100 : 0;
+      return {
+        ...o,
+        amountGBP,
+        paymentStatus: payMap.get(o.id || "")?.status,
+      };
+    });
+
+    setOrders(withTotals);
+  }
+
+  // Robust latest-price loader with normalisation (handles GBP or pence)
   async function loadLatestPrices() {
     setPetrolPrice(null);
     setDieselPrice(null);
+    setPriceDate(null);
 
     type Row = {
       fuel?: string;
@@ -199,15 +261,20 @@ export default function ClientDashboard() {
       price?: number;
       latest_price?: number;
       unit_price?: number;
+      price_date?: string | null;
+      updated_at?: string | null;
+      created_at?: string | null;
     };
 
     const toGbp = (raw: number | undefined | null) => {
       if (!Number.isFinite(raw as number)) return null;
       const n = Number(raw);
-      return n > 10 ? n / 100 : n; // handle pence or GBP
+      const v = n > 10 ? n / 100 : n; // if stored in pence, convert
+      return Math.round(v * 1000) / 1000;
     };
 
     const apply = (rows: Row[]) => {
+      let latest: string | null = null;
       rows.forEach((r) => {
         const f = String(r.fuel || "").toLowerCase();
         const v =
@@ -216,9 +283,14 @@ export default function ClientDashboard() {
           toGbp(r.latest_price) ??
           toGbp(r.unit_price);
         if (v == null) return;
-        if (f === "petrol") setPetrolPrice(Math.round(v * 1000) / 1000);
-        if (f === "diesel") setDieselPrice(Math.round(v * 1000) / 1000);
+
+        const ts = r.price_date ?? r.updated_at ?? r.created_at ?? null;
+        if (ts && (!latest || new Date(ts) > new Date(latest))) latest = ts;
+
+        if (f === "petrol") setPetrolPrice(v);
+        if (f === "diesel") setDieselPrice(v);
       });
+      if (latest) setPriceDate(latest);
     };
 
     const tryTable = async (table: string) => {
@@ -254,55 +326,7 @@ export default function ClientDashboard() {
     } catch {}
   }
 
-  async function loadOrders() {
-    if (!userEmail) return;
-
-    const { data: rawOrders, error: ordErr } = await supabase
-      .from("orders")
-      .select("id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status")
-      .eq("user_email", userEmail)
-      .order("created_at", { ascending: false })
-      .limit(50);
-
-    if (ordErr) throw ordErr;
-
-    const ordersArr = (rawOrders || []) as OrderRow[];
-    const ids = ordersArr.map((o) => o.id).filter(Boolean);
-
-    let payMap = new Map<string, PaymentRow>();
-    if (ids.length) {
-      const { data: pays } = await supabase
-        .from("payments")
-        .select("order_id, amount, currency, status")
-        .in("order_id", ids);
-      (pays || []).forEach((p: any) => {
-        if (p.order_id) payMap.set(p.order_id, p);
-      });
-    }
-
-    const withTotals = ordersArr.map((o) => {
-      const fromOrders = o.total_pence ?? null;
-      const fromPayments = payMap.get(o.id || "")?.amount ?? null;
-
-      let totalPence: number | null =
-        fromOrders ?? (fromPayments as number | null) ?? null;
-
-      if (totalPence == null && o.unit_price_pence != null && o.litres != null) {
-        totalPence = Math.round(o.unit_price_pence * o.litres);
-      }
-
-      const amountGBP = totalPence != null ? totalPence / 100 : 0;
-      return {
-        ...o,
-        amountGBP,
-        paymentStatus: payMap.get(o.id || "")?.status,
-      };
-    });
-
-    setOrders(withTotals);
-  }
-
-  // ---------- Actions ----------
+  // ---------- simple UI helpers ----------
   function refresh() {
     loadAll();
   }
@@ -311,17 +335,20 @@ export default function ClientDashboard() {
     try {
       await supabase.auth.signOut();
     } finally {
-      window.location.href = "https://fuelflow.co.uk";
+      window.location.href = "https://fuelflow.co.uk"; // go to main site after logout
     }
   }
 
   // ---------- Usage & Spend (by month, year) ----------
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sept","Oct","Nov","Dec"];
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
 
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
   const usageByMonth: MonthAgg[] = useMemo(() => {
     const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({
-      monthIdx: i, monthLabel: months[i], litres: 0, spend: 0,
+      monthIdx: i,
+      monthLabel: months[i],
+      litres: 0,
+      spend: 0,
     }));
     orders.forEach((o) => {
       const d = new Date(o.created_at);
@@ -335,132 +362,150 @@ export default function ClientDashboard() {
 
   const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
   const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
-  const rowsToShow = showAllMonths ? usageByMonth : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
+
+  const rowsToShow = showAllMonths
+    ? usageByMonth
+    : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
 
   /* =========================
      Render
      ========================= */
 
+  // For Order CTA we simply require that dashboard is refreshed and prices are present
   const canOrder = hasRefreshed && petrolPrice != null && dieselPrice != null;
-  const refreshedShort = ddmmyy(lastRefreshAt); // <-- used in price cards
 
-  // --- BEFORE REFRESH COMPLETES: centered card ---
+  // ----------------- Pre-refresh screen -----------------
   if (!hasRefreshed) {
     return (
       <div className="min-h-screen bg-[#0b1220] text-white">
-        {/* Top bar with linked logo + Logout (mobile & desktop) */}
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center gap-3">
-          <a href="https://fuelflow.co.uk" aria-label="FuelFlow website">
-            <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-          </a>
-          <div className="ml-auto flex gap-2">
-            <button
-              onClick={logout}
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-            >
-              Log out
-            </button>
-          </div>
-        </div>
+        {/* Header */}
+        <div className="max-w-6xl mx-auto px-4 py-4">
+          <div className="flex items-center gap-3">
+            <a href="https://fuelflow.co.uk" aria-label="FuelFlow website" className="shrink-0">
+              <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+            </a>
 
-        {/* Centered refresh card */}
-        <div className="max-w-6xl mx-auto px-4">
-          <div className="min-h-[60vh] grid place-items-center">
-            <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/[0.03] p-6 text-center">
-              <h1 className="text-2xl font-semibold">Dashboard refreshing…</h1>
-              <p className="mt-2 text-white/70">
-                Loading today’s prices and your latest activity.
-              </p>
+            <div className="hidden md:block text-sm text-white/70">
+              Preparing your dashboard…
+            </div>
+
+            <div className="ml-auto flex items-center gap-2">
               <button
                 onClick={refresh}
                 disabled={loading}
-                className={cx(
-                  "mt-5 w-full rounded-xl px-4 py-3 text-base font-semibold",
-                  "bg-white/10",
-                  loading ? "opacity-60 cursor-not-allowed" : "hover:bg-white/15"
-                )}
+                className="h-9 inline-flex items-center rounded-lg bg-white/10 px-3 text-sm hover:bg-white/15 disabled:opacity-60"
               >
-                {loading ? "Refreshing…" : "Refresh now"}
+                {loading ? "Refreshing…" : "Refresh"}
               </button>
-              {error && (
-                <div className="mt-3 rounded-lg border border-rose-400/40 bg-rose-500/10 p-2 text-sm text-rose-200">
-                  {error}
-                </div>
-              )}
+
+              <button
+                onClick={logout}
+                className="h-9 inline-flex items-center rounded-lg bg-yellow-500 px-3 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
+              >
+                Log out
+              </button>
             </div>
+          </div>
+        </div>
+
+        {/* Centered gate */}
+        <div className="max-w-6xl mx-auto px-4">
+          <div className="mt-16 rounded-2xl border border-white/10 bg-white/[0.03] p-8 text-center">
+            <h1 className="text-2xl md:text-3xl font-bold">Welcome back</h1>
+            <p className="mt-2 text-white/70">
+              Tap <strong>Refresh</strong> to load today’s prices and your recent orders.
+            </p>
+
+            <button
+              onClick={refresh}
+              disabled={loading}
+              className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-yellow-500 px-6 text-base font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
+            >
+              {loading ? "Refreshing…" : "Refresh"}
+            </button>
+
+            {error && (
+              <div className="mt-4 rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">
+                {error}
+              </div>
+            )}
           </div>
         </div>
       </div>
     );
   }
 
-  // --- AFTER REFRESH: full dashboard ---
+  // ----------------- Main dashboard -----------------
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
-      {/* Sticky mobile Order CTA */}
+      {/* Sticky mobile CTA */}
       <div className="md:hidden fixed bottom-4 inset-x-4 z-40">
         <a
           href="/order"
           aria-disabled={!canOrder}
           className={cx(
-            "block text-center rounded-xl py-3 font-semibold shadow-lg bg-yellow-500 text-[#041F3E] hover:bg-yellow-400",
-            !canOrder && "opacity-50 cursor-not-allowed pointer-events-none"
+            "block text-center rounded-xl py-3 font-semibold shadow-lg",
+            canOrder ? "bg-yellow-500 text-[#041F3E]" : "bg-white/10 text-white/60 cursor-not-allowed"
           )}
         >
           Order Fuel
         </a>
       </div>
 
-      <div className="max-w-6xl mx-auto px-4 py-4 space-y-4">
+      <div className="max-w-6xl mx-auto px-4 py-4 space-y-6">
         {/* Header */}
         <div className="flex items-center gap-3">
-          <a href="https://fuelflow.co.uk" aria-label="FuelFlow website">
+          <a href="https://fuelflow.co.uk" aria-label="FuelFlow website" className="shrink-0">
             <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
           </a>
-          <div className="text-sm text-white/70">
+
+          <div className="hidden sm:block text-sm text-white/70">
             Welcome back, <span className="font-medium">{userEmail}</span>
           </div>
 
-          {/* Mobile logout (visible on small screens) */}
-          <button
-            onClick={logout}
-            className="ml-auto rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15 md:hidden"
-          >
-            Log out
-          </button>
+          {/* Actions: Logout is always visible; others show on md+ */}
+          <div className="ml-auto flex items-center gap-2">
+            <div className="hidden md:flex items-center gap-2">
+              <a
+                href="/order"
+                aria-disabled={!canOrder}
+                className={cx(
+                  "h-9 inline-flex items-center rounded-lg px-3 text-sm font-semibold bg-yellow-500 text-[#041F3E] hover:bg-yellow-400",
+                  !canOrder && "opacity-50 cursor-not-allowed pointer-events-none"
+                )}
+              >
+                Order Fuel
+              </a>
+              <a
+                href="/documents"
+                className="h-9 inline-flex items-center rounded-lg bg-white/10 px-3 text-sm hover:bg-white/15"
+              >
+                Documents
+              </a>
+              <button
+                onClick={loadAll}
+                className="h-9 inline-flex items-center rounded-lg bg-white/10 px-3 text-sm hover:bg-white/15"
+              >
+                Refresh
+              </button>
+            </div>
 
-          {/* Desktop actions */}
-          <div className="ml-auto hidden md:flex gap-2">
-            <a
-              href="/order"
-              aria-disabled={!canOrder}
-              className={cx(
-                "rounded-lg px-3 py-2 text-sm font-semibold bg-yellow-500 text-[#041F3E] hover:bg-yellow-400",
-                !canOrder && "opacity-50 cursor-not-allowed pointer-events-none"
-              )}
+            <button
+              onClick={logout}
+              className="h-9 inline-flex items-center rounded-lg bg-yellow-500 px-3 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
             >
-              Order Fuel
-            </a>
-            <a href="/documents" className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
-              Documents
-            </a>
-            <button onClick={loadAll} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
-              Refresh
-            </button>
-            <button onClick={logout} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
               Log out
             </button>
           </div>
         </div>
 
-        {/* Top cards */}
+        {/* Top cards: Prices + Simple Documents button (no status) */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card title="Petrol (95)">
             <div className="text-3xl font-bold">
               {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            <div className="mt-1 text-xs text-white/60">Refreshed: {ddmmyy(lastRefreshAt)}</div>
           </Card>
 
           <Card title="Diesel">
@@ -468,20 +513,23 @@ export default function ClientDashboard() {
               {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            <div className="mt-1 text-xs text-white/60">Refreshed: {ddmmyy(lastRefreshAt)}</div>
           </Card>
 
-          {/* No status text here — just the button */}
           <div className="bg-gray-800 rounded-xl p-4 md:p-5">
             <p className="text-gray-400 mb-1">Documents</p>
             <a
               href="/documents"
-              className="mt-1 inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
+              className="inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
             >
               Open documents
             </a>
           </div>
         </section>
+
+        {/* Refreshed date under the cards */}
+        <div className="text-xs text-white/60">
+          Refreshed: {formatShortDMY(priceDate)}
+        </div>
 
         {/* Usage & Spend */}
         <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
@@ -530,7 +578,7 @@ export default function ClientDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {(showAllMonths ? usageByMonth : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx)).map((r) => (
+                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
                   <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
                     <td className="py-2 pr-4">
                       {r.monthLabel} {String(selectedYear).slice(2)}
@@ -573,14 +621,13 @@ export default function ClientDashboard() {
             <h2 className="text-xl md:text-2xl font-semibold">Recent Orders</h2>
             <button
               onClick={loadAll}
-              className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
-              disabled={loading}
+              className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
             >
-              {loading ? "Refreshing…" : "Refresh"}
+              Refresh
             </button>
           </div>
 
-          {loading && orders.length === 0 ? (
+          {loading ? (
             <div className="text-gray-300">Loading…</div>
           ) : orders.length === 0 ? (
             <div className="text-gray-400">No orders yet.</div>
@@ -599,15 +646,21 @@ export default function ClientDashboard() {
                 <tbody>
                   {orders.map((o) => (
                     <tr key={o.id} className="border-b border-gray-800">
-                      <td className="py-2 pr-4">{new Date(o.created_at).toLocaleString()}</td>
-                      <td className="py-2 pr-4 capitalize">{(o.fuel as string) || "—"}</td>
+                      <td className="py-2 pr-4">
+                        {new Date(o.created_at).toLocaleString()}
+                      </td>
+                      <td className="py-2 pr-4 capitalize">
+                        {(o.fuel as string) || "—"}
+                      </td>
                       <td className="py-2 pr-4">{o.litres ?? "—"}</td>
                       <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
                       <td className="py-2 pr-4">
                         <span
                           className={cx(
                             "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                            (o.status || "").toLowerCase() === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
+                            (o.status || "").toLowerCase() === "paid"
+                              ? "bg-green-600/70"
+                              : "bg-gray-600/70"
                           )}
                         >
                           {(o.status || o.paymentStatus || "pending").toLowerCase()}
@@ -620,6 +673,11 @@ export default function ClientDashboard() {
             </div>
           )}
         </section>
+
+        {/* bottom refresh date */}
+        <div className="text-center text-xs text-white/50">
+          Refreshed: {formatShortDMY(priceDate)}
+        </div>
       </div>
     </div>
   );
