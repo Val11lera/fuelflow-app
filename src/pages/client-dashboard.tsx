@@ -1,4 +1,5 @@
 // src/pages/client-dashboard.tsx
+// src/pages/client-dashboard.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -79,18 +80,6 @@ function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
 
-// Make dashboard labels match Documents page semantics exactly
-function labelFromStatus(
-  status: ContractStatus | null | undefined,
-  kind: "Buy" | "Rent"
-): string {
-  if (!status) return `${kind} not signed`;
-  if (status === "approved") return `${kind} active`;
-  if (status === "signed") return `${kind} awaiting approval`;
-  if (status === "cancelled") return `${kind} cancelled`;
-  return `${kind} not signed`;
-}
-
 /* =========================
    Page
    ========================= */
@@ -111,7 +100,7 @@ export default function ClientDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // documents state
+  // documents state (still loaded, but no status text shown in UI)
   const [termsAcceptedAt, setTermsAcceptedAt] = useState<string | null>(null);
   const [buyContract, setBuyContract] = useState<ContractRow | null>(null);
   const [rentContract, setRentContract] = useState<ContractRow | null>(null);
@@ -184,7 +173,7 @@ export default function ClientDashboard() {
           .limit(1);
         setTermsAcceptedAt(ta?.[0]?.accepted_at ?? null);
 
-        // CONTRACTS — pick latest per tank_option (matches Documents page)
+        // CONTRACTS — pick latest per tank_option
         await loadContracts(emailLower);
 
         // ORDERS
@@ -217,7 +206,7 @@ export default function ClientDashboard() {
           const fromOrders = o.total_pence ?? null;
           const fromPayments = payMap.get(o.id || "")?.amount ?? null;
 
-          let totalPence: number | null =
+        let totalPence: number | null =
             fromOrders ?? (fromPayments as number | null) ?? null;
 
           if (totalPence == null) {
@@ -337,7 +326,6 @@ export default function ClientDashboard() {
 
   // ---------- simple UI helpers ----------
   function refresh() {
-    // <-- You accidentally removed this; header still uses it
     window.location.reload();
   }
 
@@ -383,11 +371,8 @@ export default function ClientDashboard() {
 
   const canOrder = pricesAreToday && petrolPrice != null && dieselPrice != null;
 
-  const documentsSummary = [
-    termsAcceptedAt ? "Terms accepted" : "Terms pending",
-    labelFromStatus(buyContract?.status, "Buy"),
-    labelFromStatus(rentContract?.status, "Rent"),
-  ].join(" · ");
+  // footer day label
+  const todayLabel = new Intl.DateTimeFormat("en-GB", { weekday: "long" }).format(new Date());
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
@@ -435,21 +420,7 @@ export default function ClientDashboard() {
           </div>
         </div>
 
-        {/* Prices out-of-date banner */}
-        {(!pricesAreToday || petrolPrice == null || dieselPrice == null) && (
-          <div className="rounded-xl border border-red-400/40 bg-red-500/10 p-4 text-sm text-red-200">
-            <div className="font-semibold mb-1">Prices are out of date</div>
-            <div>
-              Today’s prices haven’t been loaded yet. Click{" "}
-              <button className="underline decoration-yellow-400 underline-offset-2" onClick={refresh}>
-                Refresh
-              </button>{" "}
-              to update. Ordering is disabled until today’s prices are available.
-            </div>
-          </div>
-        )}
-
-        {/* Top cards: Prices + Documents summary */}
+        {/* Top cards: Prices + Documents (button only) */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card title="Petrol (95)">
             <div className="text-3xl font-bold">
@@ -472,11 +443,10 @@ export default function ClientDashboard() {
           </Card>
 
           <div className="bg-gray-800 rounded-xl p-4 md:p-5">
-            <p className="text-gray-400 mb-1">Documents</p>
-            <div className="text-sm text-white/80">{documentsSummary}</div>
+            <p className="text-gray-400 mb-2">Documents</p>
             <a
               href="/documents"
-              className="mt-3 inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
+              className="inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
             >
               Open documents
             </a>
@@ -625,6 +595,11 @@ export default function ClientDashboard() {
             </div>
           )}
         </section>
+
+        {/* Footer — show the day */}
+        <footer className="text-center text-xs text-white/60 py-4">
+          Today: {todayLabel}
+        </footer>
       </div>
     </div>
   );
