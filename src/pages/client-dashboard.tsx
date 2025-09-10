@@ -69,6 +69,17 @@ function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
 
+// NEW: dd/mm/yy formatter (e.g., 10/10/25)
+function ddmmyy(dateIso?: string | null) {
+  if (!dateIso) return "—";
+  const d = new Date(dateIso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${dd}/${mm}/${yy}`;
+}
+
 /* =========================
    Page
    ========================= */
@@ -76,15 +87,11 @@ function cx(...classes: (string | false | null | undefined)[]) {
 export default function ClientDashboard() {
   const [userEmail, setUserEmail] = useState<string>("");
 
-  // gating: UI hidden until first refresh completes (we auto-trigger it)
+  // gating: UI hidden until first refresh completes (auto-triggered)
   const [hasRefreshed, setHasRefreshed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastRefreshAt, setLastRefreshAt] = useState<string | null>(null);
-  const refreshedWeekday =
-    lastRefreshAt
-      ? new Date(lastRefreshAt).toLocaleDateString(undefined, { weekday: "long" })
-      : "—";
 
   // prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
@@ -161,7 +168,7 @@ export default function ClientDashboard() {
       setError(null);
       await Promise.all([loadLatestPrices(), loadContracts(), loadOrders()]);
       setHasRefreshed(true);
-      setLastRefreshAt(new Date().toISOString());
+      setLastRefreshAt(new Date().toISOString()); // used for "Refreshed: dd/mm/yy"
     } catch (e: any) {
       setError(e?.message || "Failed to load dashboard.");
     } finally {
@@ -335,12 +342,12 @@ export default function ClientDashboard() {
      ========================= */
 
   const canOrder = hasRefreshed && petrolPrice != null && dieselPrice != null;
+  const refreshedShort = ddmmyy(lastRefreshAt); // <-- used in price cards
 
-  // --- BEFORE REFRESH COMPLETES: show centered “Refreshing…” card ---
+  // --- BEFORE REFRESH COMPLETES: centered card ---
   if (!hasRefreshed) {
     return (
       <div className="min-h-screen bg-[#0b1220] text-white">
-        {/* simple header with logout only */}
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center">
           <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
           <div className="ml-auto">
@@ -353,7 +360,6 @@ export default function ClientDashboard() {
           </div>
         </div>
 
-        {/* Centered loading card */}
         <div className="max-w-6xl mx-auto px-4">
           <div className="min-h-[60vh] grid place-items-center">
             <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/[0.03] p-6 text-center">
@@ -409,7 +415,7 @@ export default function ClientDashboard() {
             Welcome back, <span className="font-medium">{userEmail}</span>
           </div>
 
-          <div className="ml-auto hidden md:flex gap-2">
+        <div className="ml-auto hidden md:flex gap-2">
             <a
               href="/order"
               aria-disabled={!canOrder}
@@ -439,7 +445,7 @@ export default function ClientDashboard() {
               {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            <div className="mt-1 text-xs text-white/60">Refreshed: {refreshedWeekday}</div>
+            <div className="mt-1 text-xs text-white/60">Refreshed: {refreshedShort}</div>
           </Card>
 
           <Card title="Diesel">
@@ -447,7 +453,7 @@ export default function ClientDashboard() {
               {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            <div className="mt-1 text-xs text-white/60">Refreshed: {refreshedWeekday}</div>
+            <div className="mt-1 text-xs text-white/60">Refreshed: {refreshedShort}</div>
           </Card>
 
           <div className="bg-gray-800 rounded-xl p-4 md:p-5">
