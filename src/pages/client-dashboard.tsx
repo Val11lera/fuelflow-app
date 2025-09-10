@@ -10,10 +10,7 @@ import { createClient } from "@supabase/supabase-js";
    ========================= */
 
 type Fuel = "petrol" | "diesel";
-type ContractStatus = "draft" | "signed" | "approved" | "cancelled";
-type TankOption = "buy" | "rent";
 
-const TERMS_VERSION = "v1.1";
 const INACTIVITY_MS =
   Number(process.env.NEXT_PUBLIC_IDLE_LOGOUT_MS ?? "") || 10 * 60 * 1000; // 10 minutes default
 
@@ -49,18 +46,6 @@ type PaymentRow = {
   status: string;
 };
 
-type ContractRow = {
-  id: string;
-  tank_option: TankOption;
-  status: ContractStatus;
-  signed_at: string | null;
-  approved_at: string | null;
-  created_at: string;
-  email: string | null;
-  pdf_url?: string | null;
-  pdf_storage_path?: string | null;
-};
-
 /* =========================
    Helpers
    ========================= */
@@ -70,13 +55,13 @@ function cx(...classes: (string | false | null | undefined)[]) {
 }
 
 // dd/mm/yy
-function formatShortDMY(d?: string | Date | null) {
-  if (!d) return "—";
-  const dt = typeof d === "string" ? new Date(d) : d;
-  if (Number.isNaN(dt.getTime())) return "—";
-  const dd = String(dt.getDate()).padStart(2, "0");
-  const mm = String(dt.getMonth() + 1).padStart(2, "0");
-  const yy = String(dt.getFullYear()).slice(-2);
+function formatShortDMY(value?: string | Date | null) {
+  if (!value) return "—";
+  const d = typeof value === "string" ? new Date(value) : value;
+  if (isNaN(d.getTime())) return "—";
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = String(d.getFullYear()).slice(-2);
   return `${dd}/${mm}/${yy}`;
 }
 
@@ -87,14 +72,14 @@ function formatShortDMY(d?: string | Date | null) {
 export default function ClientDashboard() {
   const [userEmail, setUserEmail] = useState<string>("");
 
-  // "Gate" – until refreshed, show minimal screen with a big button
+  // screen / loading
   const [hasRefreshed, setHasRefreshed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [refreshedAt, setRefreshedAt] = useState<Date | null>(null);
 
   // prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
-  const [priceDate, setPriceDate] = useState<string | null>(null); // last price timestamp we detected
 
   // orders
   const [orders, setOrders] = useState<
@@ -102,17 +87,13 @@ export default function ClientDashboard() {
   >([]);
   const [error, setError] = useState<string | null>(null);
 
-  // (We still fetch contracts to keep future conditions available, but do not show status)
-  const [buyContract, setBuyContract] = useState<ContractRow | null>(null);
-  const [rentContract, setRentContract] = useState<ContractRow | null>(null);
-
   // usage UI
   const currentYear = new Date().getFullYear();
-  const currentMonthIdx = new Date().getMonth(); // 0..11
+  const currentMonthIdx = new Date().getMonth();
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
-  // ----------------- Auth check (no data load here) -----------------
+  // ----------------- Auth + automatic refresh on mount -----------------
   useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
@@ -121,7 +102,10 @@ export default function ClientDashboard() {
         return;
       }
       setUserEmail((auth.user.email || "").toLowerCase());
+      // AUTO REFRESH right away
+      await loadAll();
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ----------------- Auto logout on inactivity -----------------
@@ -157,7 +141,7 @@ export default function ClientDashboard() {
     };
   }, []);
 
-  // ----------------- Refresh (loads all gated data) -----------------
+  // ----------------- Refresh (loads all dashboard data) -----------------
   async function loadAll() {
     try {
       setLoading(true);
@@ -171,32 +155,15 @@ export default function ClientDashboard() {
       const emailLower = (auth.user.email || "").toLowerCase();
       setUserEmail(emailLower);
 
-      await Promise.all([
-        loadLatestPrices(),
-        loadContracts(emailLower),
-        loadOrders(emailLower),
-      ]);
+      await Promise.all([loadLatestPrices(), loadOrders(emailLower)]);
 
       setHasRefreshed(true);
+      setRefreshedAt(new Date());
     } catch (e: any) {
       setError(e?.message || "Failed to refresh dashboard.");
     } finally {
       setLoading(false);
     }
-  }
-
-  async function loadContracts(emailLower: string) {
-    const { data } = await supabase
-      .from("contracts")
-      .select(
-        "id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path"
-      )
-      .eq("email", emailLower)
-      .order("created_at", { ascending: false });
-
-    const rows = (data || []) as ContractRow[];
-    setBuyContract(rows.find((r) => r.tank_option === "buy") ?? null);
-    setRentContract(rows.find((r) => r.tank_option === "rent") ?? null);
   }
 
   async function loadOrders(emailLower: string) {
@@ -253,7 +220,6 @@ export default function ClientDashboard() {
   async function loadLatestPrices() {
     setPetrolPrice(null);
     setDieselPrice(null);
-    setPriceDate(null);
 
     type Row = {
       fuel?: string;
@@ -274,7 +240,6 @@ export default function ClientDashboard() {
     };
 
     const apply = (rows: Row[]) => {
-      let latest: string | null = null;
       rows.forEach((r) => {
         const f = String(r.fuel || "").toLowerCase();
         const v =
@@ -283,14 +248,9 @@ export default function ClientDashboard() {
           toGbp(r.latest_price) ??
           toGbp(r.unit_price);
         if (v == null) return;
-
-        const ts = r.price_date ?? r.updated_at ?? r.created_at ?? null;
-        if (ts && (!latest || new Date(ts) > new Date(latest))) latest = ts;
-
         if (f === "petrol") setPetrolPrice(v);
         if (f === "diesel") setDieselPrice(v);
       });
-      if (latest) setPriceDate(latest);
     };
 
     const tryTable = async (table: string) => {
@@ -371,33 +331,20 @@ export default function ClientDashboard() {
      Render
      ========================= */
 
-  // For Order CTA we simply require that dashboard is refreshed and prices are present
-  const canOrder = hasRefreshed && petrolPrice != null && dieselPrice != null;
+  // Make Order CTA available only when data is present
+  const canOrder = petrolPrice != null && dieselPrice != null;
 
-  // ----------------- Pre-refresh screen -----------------
-  if (!hasRefreshed) {
+  // ----------------- Loading overlay on the first automatic refresh -----------------
+  if (!hasRefreshed || loading) {
     return (
       <div className="min-h-screen bg-[#0b1220] text-white">
-        {/* Header */}
         <div className="max-w-6xl mx-auto px-4 py-4">
           <div className="flex items-center gap-3">
             <a href="https://fuelflow.co.uk" aria-label="FuelFlow website" className="shrink-0">
               <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
             </a>
-
-            <div className="hidden md:block text-sm text-white/70">
-              Preparing your dashboard…
-            </div>
-
+            <div className="hidden md:block text-sm text-white/70">Refreshing…</div>
             <div className="ml-auto flex items-center gap-2">
-              <button
-                onClick={refresh}
-                disabled={loading}
-                className="h-9 inline-flex items-center rounded-lg bg-white/10 px-3 text-sm hover:bg-white/15 disabled:opacity-60"
-              >
-                {loading ? "Refreshing…" : "Refresh"}
-              </button>
-
               <button
                 onClick={logout}
                 className="h-9 inline-flex items-center rounded-lg bg-yellow-500 px-3 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
@@ -408,22 +355,16 @@ export default function ClientDashboard() {
           </div>
         </div>
 
-        {/* Centered gate */}
         <div className="max-w-6xl mx-auto px-4">
           <div className="mt-16 rounded-2xl border border-white/10 bg-white/[0.03] p-8 text-center">
-            <h1 className="text-2xl md:text-3xl font-bold">Welcome back</h1>
-            <p className="mt-2 text-white/70">
-              Tap <strong>Refresh</strong> to load today’s prices and your recent orders.
-            </p>
-
+            <h1 className="text-2xl md:text-3xl font-bold">Loading dashboard</h1>
+            <p className="mt-2 text-white/70">Pulling latest prices and your recent orders…</p>
             <button
               onClick={refresh}
-              disabled={loading}
-              className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-yellow-500 px-6 text-base font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
+              className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-white/10 px-6 text-base font-semibold hover:bg-white/15"
             >
-              {loading ? "Refreshing…" : "Refresh"}
+              Refresh now
             </button>
-
             {error && (
               <div className="mt-4 rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">
                 {error}
@@ -463,7 +404,6 @@ export default function ClientDashboard() {
             Welcome back, <span className="font-medium">{userEmail}</span>
           </div>
 
-          {/* Actions: Logout is always visible; others show on md+ */}
           <div className="ml-auto flex items-center gap-2">
             <div className="hidden md:flex items-center gap-2">
               <a
@@ -499,7 +439,7 @@ export default function ClientDashboard() {
           </div>
         </div>
 
-        {/* Top cards: Prices + Simple Documents button (no status) */}
+        {/* Top cards: Prices + simple Documents button */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card title="Petrol (95)">
             <div className="text-3xl font-bold">
@@ -508,6 +448,8 @@ export default function ClientDashboard() {
             </div>
           </Card>
 
+        </section>
+        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card title="Diesel">
             <div className="text-3xl font-bold">
               {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
@@ -516,7 +458,7 @@ export default function ClientDashboard() {
           </Card>
 
           <div className="bg-gray-800 rounded-xl p-4 md:p-5">
-            <p className="text-gray-400 mb-1">Documents</p>
+            <p className="text-gray-400 mb-2">Documents</p>
             <a
               href="/documents"
               className="inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
@@ -528,7 +470,7 @@ export default function ClientDashboard() {
 
         {/* Refreshed date under the cards */}
         <div className="text-xs text-white/60">
-          Refreshed: {formatShortDMY(priceDate)}
+          Refreshed: {formatShortDMY(refreshedAt)}
         </div>
 
         {/* Usage & Spend */}
@@ -578,17 +520,17 @@ export default function ClientDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
+                {(showAllMonths ? usageByMonth : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx)).map((r) => (
                   <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
                     <td className="py-2 pr-4">
-                      {r.monthLabel} {String(selectedYear).slice(2)}
+                      {["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sept","Oct","Nov","Dec"][r.monthIdx]} {String(selectedYear).slice(2)}
                     </td>
                     <td className="py-2 pr-4 align-middle">
                       {Math.round(r.litres).toLocaleString()}
                       <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
                         <div
                           className="h-1.5 rounded bg-yellow-500/80"
-                          style={{ width: `${(r.litres / maxL) * 100}%` }}
+                          style={{ width: `${(r.litres / Math.max(1, ...usageByMonth.map(x => x.litres))) * 100}%` }}
                         />
                       </div>
                     </td>
@@ -597,7 +539,7 @@ export default function ClientDashboard() {
                       <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
                         <div
                           className="h-1.5 rounded bg-white/40"
-                          style={{ width: `${(r.spend / maxS) * 100}%` }}
+                          style={{ width: `${(r.spend / Math.max(1, ...usageByMonth.map(x => x.spend))) * 100}%` }}
                         />
                       </div>
                     </td>
@@ -676,7 +618,7 @@ export default function ClientDashboard() {
 
         {/* bottom refresh date */}
         <div className="text-center text-xs text-white/50">
-          Refreshed: {formatShortDMY(priceDate)}
+          Refreshed: {formatShortDMY(refreshedAt)}
         </div>
       </div>
     </div>
@@ -695,4 +637,5 @@ function Card(props: { title: string; children: React.ReactNode }) {
     </div>
   );
 }
+
 
