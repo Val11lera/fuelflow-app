@@ -56,8 +56,7 @@ type ContractRow = {
   signed_pdf_path?: string | null;
   approved_pdf_path?: string | null;
 
-  /* NEW: link to terms acceptance */
-  terms_acceptance_id?: string | null;
+  terms_acceptance_id?: string | null; // link to terms
 };
 
 type PriceRow = { fuel: string; total_price: number; price_date?: string | null };
@@ -81,16 +80,15 @@ export default function DocumentsPage() {
   const [showBuy, setShowBuy] = useState(false);
   const [showRent, setShowRent] = useState(false);
 
-  // status guide
+  // status guide as OVERLAY (bottom sheet)
   const [showGuide, setShowGuide] = useState(false);
 
-  // NEW: capture the acceptance ID from the URL (?ta=uuid)
+  // capture TA id from query
   const [taFromQuery, setTaFromQuery] = useState<string | null>(null);
 
   // ---------- load ----------
   useEffect(() => {
     (async () => {
-      // auth
       const { data: auth } = await supabase.auth.getUser();
       if (!auth?.user) {
         window.location.href = "/login";
@@ -99,12 +97,10 @@ export default function DocumentsPage() {
       const emailLower = (auth.user.email || "").toLowerCase();
       setUserEmail(emailLower);
 
-      // read ?ta
       const p = new URLSearchParams(window.location.search);
       const ta = p.get("ta");
       setTaFromQuery(ta || null);
 
-      // terms
       const { data: t } = await supabase
         .from("terms_acceptances")
         .select("id")
@@ -113,10 +109,7 @@ export default function DocumentsPage() {
         .limit(1);
       setTermsAccepted(!!t?.length);
 
-      // contracts
       await reloadContracts(emailLower);
-
-      // prices for calculator defaults
       await loadLatestPrices();
     })();
   }, []);
@@ -181,39 +174,88 @@ export default function DocumentsPage() {
     termsAccepted &&
     ((buyLatest && buyLatest.status === "approved") || (rentLatest && rentLatest.status === "approved"));
 
+  // Mobile sticky CTA logic
+  const mobileCta = useMemo(() => {
+    if (docsComplete) {
+      return { label: "Order Fuel", href: "/order", onClick: undefined as any };
+    }
+    if (!termsAccepted) {
+      return {
+        label: "Accept Terms",
+        href: `/terms?return=/documents&email=${encodeURIComponent(userEmail)}`,
+        onClick: undefined as any,
+      };
+    }
+    if (!buyLatest?.id && !rentLatest?.id) {
+      return { label: "Start Buy Contract", href: undefined, onClick: () => setShowBuy(true) };
+    }
+    if ((buyLatest?.status as any) !== "approved" && (rentLatest?.status as any) !== "approved") {
+      return { label: "Complete Contract", href: undefined, onClick: () => (rentLatest ? setShowRent(true) : setShowBuy(true)) };
+    }
+    return null;
+  }, [docsComplete, termsAccepted, userEmail, buyLatest, rentLatest]);
+
+  // Small checklist for quick read
+  const checklist: { label: string; ok: boolean }[] = [
+    { label: "Terms", ok: termsAccepted },
+    { label: "Buy Active", ok: buyLatest?.status === "approved" },
+    { label: "Rent Active", ok: rentLatest?.status === "approved" },
+  ];
+
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
-      <header className="max-w-6xl mx-auto flex items-center justify-between px-4 py-4">
+      {/* Header */}
+      <header className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
         <div className="flex items-center gap-3">
-          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-          <h1 className="text-2xl font-bold">Documents</h1>
+          <a href="/client-dashboard" className="rounded-lg bg-white/10 p-2 hover:bg-white/15 md:hidden" aria-label="Back">
+            <BackIcon className="h-5 w-5" />
+          </a>
+          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto hidden md:block" />
+          <h1 className="text-xl font-bold sm:text-2xl">Documents</h1>
         </div>
 
         <div className="flex items-center gap-2">
           <button
             className="rounded-full border border-white/15 bg-white/[0.06] px-3 py-1.5 text-xs font-medium hover:bg-white/[0.1]"
-            onClick={() => setShowGuide((v) => !v)}
-            aria-expanded={showGuide}
+            onClick={() => setShowGuide(true)}
           >
-            {showGuide ? "Hide status guide" : "Show status guide"}
+            Status guide
           </button>
-          <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
+          <a href="/client-dashboard" className="hidden rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15 md:inline-block">
             Back to Dashboard
           </a>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 pb-12 space-y-6">
+      {/* Subhead checklist (scrollable on mobile) */}
+      <div className="mx-auto max-w-6xl px-4">
+        <div className="mb-4 flex items-center gap-2 overflow-x-auto pb-1">
+          {checklist.map((c) => (
+            <span
+              key={c.label}
+              className={cx(
+                "inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium ring-1",
+                c.ok
+                  ? "bg-emerald-500/10 text-emerald-200 ring-emerald-400/30"
+                  : "bg-white/5 text-white/70 ring-white/15"
+              )}
+            >
+              {c.ok ? <CheckIcon className="h-4 w-4" /> : <DotIcon className="h-4 w-4" />}
+              {c.label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Main */}
+      <main className="mx-auto max-w-6xl px-4 pb-24 sm:pb-12 space-y-6">
         <p className="text-white/70">
           Ordering unlocks when <strong>Terms</strong> are accepted and either a <strong>Buy</strong> contract is
           signed (auto-active) or a <strong>Rent</strong> contract is approved.
         </p>
 
-        {/* Collapsible Status Guide */}
-        <CollapsibleGuide open={showGuide} onClose={() => setShowGuide(false)} />
-
         {/* Tiles */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           <Tile
             title="Terms & Conditions"
             statusBadge={<StatusBadge status={termsAccepted ? "approved" : undefined} onClick={() => setShowGuide(true)} />}
@@ -252,6 +294,30 @@ export default function DocumentsPage() {
         )}
       </main>
 
+      {/* Sticky mobile CTA */}
+      {mobileCta && (
+        <div className="fixed bottom-4 left-4 right-4 z-40 md:hidden">
+          {mobileCta.href ? (
+            <a
+              href={mobileCta.href}
+              className="block rounded-xl bg-yellow-500 py-3 text-center font-semibold text-[#041F3E] shadow-lg"
+            >
+              {mobileCta.label}
+            </a>
+          ) : (
+            <button
+              onClick={mobileCta.onClick}
+              className="block w-full rounded-xl bg-yellow-500 py-3 text-center font-semibold text-[#041F3E] shadow-lg"
+            >
+              {mobileCta.label}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Status Guide Bottom Sheet (overlay) */}
+      <StatusGuideSheet open={showGuide} onClose={() => setShowGuide(false)} />
+
       {/* BUY modal */}
       {showBuy && (
         <ContractModal
@@ -259,9 +325,7 @@ export default function DocumentsPage() {
           option="buy"
           userEmail={userEmail}
           taId={taFromQuery}
-          defaults={{
-            fuelflow_price_gbp_l: petrolPrice ?? dieselPrice ?? undefined,
-          }}
+          defaults={{ fuelflow_price_gbp_l: petrolPrice ?? dieselPrice ?? undefined }}
           existing={buyLatest || undefined}
           onClose={() => setShowBuy(false)}
           afterSave={async () => {
@@ -278,9 +342,7 @@ export default function DocumentsPage() {
           option="rent"
           userEmail={userEmail}
           taId={taFromQuery}
-          defaults={{
-            fuelflow_price_gbp_l: dieselPrice ?? petrolPrice ?? undefined,
-          }}
+          defaults={{ fuelflow_price_gbp_l: dieselPrice ?? petrolPrice ?? undefined }}
           existing={rentLatest || undefined}
           onClose={() => setShowRent(false)}
           afterSave={async () => {
@@ -333,18 +395,40 @@ function StatusBadge({
   );
 }
 
-function CollapsibleGuide({ open, onClose }: { open: boolean; onClose: () => void }) {
+/* ------------------------ Bottom Sheet: Status Guide ------------------------ */
+
+function StatusGuideSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   return (
     <div
       className={cx(
-        "rounded-2xl border border-white/10 bg-white/[0.03] transition-all duration-300",
-        open ? "max-h-[800px] opacity-100" : "max-h-0 opacity-0",
-        "overflow-hidden"
+        "fixed inset-0 z-50 transition",
+        open ? "pointer-events-auto" : "pointer-events-none"
       )}
       aria-hidden={!open}
+      role="dialog"
+      aria-modal="true"
     >
-      <div className="p-4 md:p-5">
-        <div className="mb-3 flex items-center justify-between">
+      {/* Backdrop */}
+      <div
+        className={cx(
+          "absolute inset-0 bg-black/60 transition-opacity",
+          open ? "opacity-100" : "opacity-0"
+        )}
+        onClick={onClose}
+      />
+      {/* Sheet */}
+      <div
+        className={cx(
+          "absolute inset-x-0 bottom-0 mx-auto max-w-2xl",
+          "rounded-t-2xl border border-white/10 bg-[#0f172a] shadow-2xl",
+          "transition-transform duration-300",
+          open ? "translate-y-0" : "translate-y-full"
+        )}
+      >
+        <div className="flex items-center justify-between px-4 pt-3">
+          <div className="mx-auto h-1.5 w-12 rounded-full bg-white/20" aria-hidden />
+        </div>
+        <div className="flex items-center justify-between px-4 pb-2">
           <div className="text-sm font-semibold text-white/80">Status guide</div>
           <button
             className="rounded-full border border-white/15 bg-white/[0.06] px-3 py-1 text-xs hover:bg-white/[0.1]"
@@ -354,11 +438,13 @@ function CollapsibleGuide({ open, onClose }: { open: boolean; onClose: () => voi
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <GuideCard title="Active" description="Your contract is approved and ready to use. You can place orders immediately." tone="emerald" Icon={CheckIcon} />
-          <GuideCard title="Awaiting approval" description="You’ve signed the contract. Our team must perform a quick compliance check before it goes live." tone="amber" Icon={HourglassIcon} />
-          <GuideCard title="Cancelled" description="This contract is no longer active. Start a new one to continue." tone="rose" Icon={XCircleIcon} />
-          <GuideCard title="Not signed" description="No contract on file. Start and sign to proceed." tone="slate" Icon={MinusIcon} />
+        <div className="max-h-[80vh] overflow-y-auto p-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <GuideCard title="Active" description="Your contract is approved and ready to use. You can place orders immediately." tone="emerald" Icon={CheckIcon} />
+            <GuideCard title="Awaiting approval" description="You’ve signed the contract. Our team must perform a quick compliance check before it goes live." tone="amber" Icon={HourglassIcon} />
+            <GuideCard title="Cancelled" description="This contract is no longer active. Start a new one to continue." tone="rose" Icon={XCircleIcon} />
+            <GuideCard title="Not signed" description="No contract on file. Start and sign to proceed." tone="slate" Icon={MinusIcon} />
+          </div>
         </div>
       </div>
     </div>
@@ -384,43 +470,22 @@ function GuideCard({
   }[tone];
 
   return (
-    <div className={cx("rounded-xl border border-white/10 p-4", "bg-gradient-to-r", map.bg, map.text, "ring-1", map.ring)}>
+    <div
+      className={cx(
+        "rounded-xl border border-white/10 p-4",
+        "bg-gradient-to-r",
+        map.bg,
+        map.text,
+        "ring-1",
+        map.ring
+      )}
+    >
       <div className="mb-1 inline-flex items-center gap-2 text-sm font-semibold">
         <Icon className="h-4 w-4" />
         {title}
       </div>
       <div className="text-sm text-white/85">{description}</div>
     </div>
-  );
-}
-
-function CheckIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-function HourglassIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M6 3h12M6 21h12M8 7a4 4 0 0 0 8 0M16 17a4 4 0 0 0-8 0" strokeLinecap="round" />
-    </svg>
-  );
-}
-function XCircleIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M15 9l-6 6M9 9l6 6" strokeLinecap="round" />
-    </svg>
-  );
-}
-function MinusIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M5 12h14" strokeLinecap="round" />
-    </svg>
   );
 }
 
@@ -458,7 +523,10 @@ function Tile(props: {
               {props.primary.label}
             </a>
           ) : (
-            <button className="rounded-lg bg-yellow-500 px-3 py-2 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400" onClick={props.primary.onClick}>
+            <button
+              className="rounded-lg bg-yellow-500 px-3 py-2 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
+              onClick={props.primary.onClick}
+            >
               {props.primary.label}
             </button>
           ))}
@@ -546,7 +614,6 @@ function ContractModal({
     return Math.round((capex / monthlySaving) * 10) / 10;
   }, [capex, monthlySaving]);
 
-  // helper: latest acceptance id if taId isn't present
   async function getLatestAcceptanceId(): Promise<string | null> {
     const { data, error } = await supabase
       .from("terms_acceptances")
@@ -572,7 +639,6 @@ function ContractModal({
 
       const now = new Date().toISOString();
 
-      // pick acceptance id: prefer query one, else latest for this email+version
       const terms_acceptance_id = taId || (await getLatestAcceptanceId());
       if (!terms_acceptance_id) {
         throw new Error("Please accept the latest Terms before signing the contract.");
@@ -618,7 +684,6 @@ function ContractModal({
 
         signature_name: signature,
 
-        // NEW: the actual link!
         terms_acceptance_id,
       } as any;
 
@@ -647,7 +712,7 @@ function ContractModal({
         </div>
 
         {/* Scrollable body */}
-        <div className="max-h-[75vh] overflow-y-auto p-4 space-y-5">
+        <div className="max-h-[80vh] overflow-y-auto p-4 space-y-5">
           {/* Company */}
           <Section title="Company details">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -793,6 +858,54 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+/* ------------------------------ Icons ------------------------------ */
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function HourglassIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M6 3h12M6 21h12M8 7a4 4 0 0 0 8 0M16 17a4 4 0 0 0-8 0" strokeLinecap="round" />
+    </svg>
+  );
+}
+function XCircleIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M15 9l-6 6M9 9l6 6" strokeLinecap="round" />
+    </svg>
+  );
+}
+function MinusIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M5 12h14" strokeLinecap="round" />
+    </svg>
+  );
+}
+function DotIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 8 8" className={className} fill="currentColor" aria-hidden>
+      <circle cx="4" cy="4" r="4" />
+    </svg>
+  );
+}
+function BackIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/* ------------------------------ utils ------------------------------ */
 
 function toNum(v: string): number | undefined {
   if (v === "" || v == null) return undefined;
