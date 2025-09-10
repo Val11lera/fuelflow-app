@@ -52,6 +52,9 @@ type ContractRow = {
   capex_gbp?: number | null;
 
   signature_name?: string | null;
+
+  signed_pdf_path?: string | null;
+  approved_pdf_path?: string | null;
 };
 
 type PriceRow = { fuel: string; total_price: number; price_date?: string | null };
@@ -114,15 +117,9 @@ export default function DocumentsPage() {
 
     const rows = (data || []) as ContractRow[];
 
-    const latestBuy =
-      rows.find((r) => r.tank_option === "buy" && (r.status === "approved" || r.status === "signed")) ??
-      rows.find((r) => r.tank_option === "buy") ??
-      null;
-
-    const latestRent =
-      rows.find((r) => r.tank_option === "rent" && (r.status === "approved" || r.status === "signed")) ??
-      rows.find((r) => r.tank_option === "rent") ??
-      null;
+    // Take the newest row for each option (whatever its status is)
+    const latestBuy = rows.find((r) => r.tank_option === "buy") ?? null;
+    const latestRent = rows.find((r) => r.tank_option === "rent") ?? null;
 
     setBuyLatest(latestBuy);
     setRentLatest(latestRent);
@@ -170,7 +167,9 @@ export default function DocumentsPage() {
     }
   }
 
-  const docsComplete = termsAccepted && (buyLatest?.status === "approved" || rentLatest?.status === "approved");
+  const docsComplete =
+    termsAccepted &&
+    ((buyLatest && buyLatest.status === "approved") || (rentLatest && rentLatest.status === "approved"));
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
@@ -204,32 +203,31 @@ export default function DocumentsPage() {
 
           <Tile
             title="Buy Contract"
-            statusPill={
-              buyLatest?.status === "approved"
-                ? ["ok", "Active"]
-                : buyLatest?.status
-                ? ["pending", "Signed"]
-                : ["muted", "Not signed"]
-            }
-            body="For purchase agreements: a signed contract is enough to order."
-            secondary={{ label: "ROI / Calculator", onClick: () => alert("Calculator opens in the wizard below.") }}
-            primary={{ label: "Update / Resign", onClick: () => setShowBuy(true) }}
+            statusPill={statusToPill(buyLatest?.status)}
+            body="For purchase agreements: a signed contract becomes Active immediately."
+            secondary={{ label: "ROI / Calculator", onClick: () => setShowBuy(true) }}
+            primary={{ label: buyLatest ? "Update / Resign" : "Start", onClick: () => setShowBuy(true) }}
           />
 
-          <Tile
-            title="Rent Contract"
-            statusPill={
-              rentLatest?.status === "approved"
-                ? ["ok", "Active"]
-                : rentLatest?.status
-                ? ["warn", "Awaiting approval"]
-                : ["muted", "Not signed"]
-            }
-            body="Rental agreements require admin approval after signing."
-            secondary={{ label: "ROI / Calculator", onClick: () => setShowRent(true) }}
-            primary={{ label: "Update / Resign", onClick: () => setShowRent(true) }}
-          />
+            <Tile
+              title="Rent Contract"
+              statusPill={statusToPill(rentLatest?.status)}
+              body="Rental agreements require admin approval after signing."
+              secondary={{ label: "ROI / Calculator", onClick: () => setShowRent(true) }}
+              primary={{ label: rentLatest ? "Update / Resign" : "Start", onClick: () => setShowRent(true) }}
+            />
         </section>
+
+        {/* Status legend */}
+        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-white/85">
+          <div className="font-semibold mb-1">What do the statuses mean?</div>
+          <ul className="list-disc pl-5 space-y-1 text-white/80">
+            <li><span className="text-emerald-300 font-medium">Active</span> — contract is approved and you can order.</li>
+            <li><span className="text-yellow-300 font-medium">Awaiting approval</span> — you’ve signed; our team must approve (Rent only).</li>
+            <li><span className="text-red-300 font-medium">Cancelled</span> — this contract has been cancelled; start a new one to continue.</li>
+            <li><span className="text-white/60 font-medium">Not signed</span> — no contract on file yet.</li>
+          </ul>
+        </div>
 
         {docsComplete && (
           <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-emerald-200">
@@ -250,10 +248,6 @@ export default function DocumentsPage() {
           userEmail={userEmail}
           defaults={{
             fuelflow_price_gbp_l: petrolPrice ?? dieselPrice ?? undefined,
-            market_price_gbp_l: undefined,
-            tank_size_l: undefined,
-            monthly_consumption_l: undefined,
-            capex_gbp: undefined,
           }}
           existing={buyLatest || undefined}
           onClose={() => setShowBuy(false)}
@@ -286,6 +280,14 @@ export default function DocumentsPage() {
 }
 
 /* --------------------------------- UI bits --------------------------------- */
+
+function statusToPill(status?: ContractStatus): ["ok" | "warn" | "pending" | "missing" | "muted", string] {
+  if (!status) return ["muted", "Not signed"];
+  if (status === "approved") return ["ok", "Active"];
+  if (status === "signed") return ["warn", "Awaiting approval"];
+  if (status === "cancelled") return ["missing", "Cancelled"];
+  return ["pending", status]; // draft or any other
+}
 
 function Tile(props: {
   title: string;
@@ -458,12 +460,21 @@ function ContractModal({
 
       const now = new Date().toISOString();
 
+      // IMPORTANT: customer_name is NOT NULL in your table
+      const derivedCustomerName =
+        (company_name || "").trim() ||
+        (contact_name || "").trim() ||
+        (signature || "").trim();
+
       const payload: Partial<ContractRow> = {
         email: userEmail,
         tank_option: option,
         status: option === "buy" ? "approved" : "signed", // BUY becomes active immediately
         signed_at: now,
         approved_at: option === "buy" ? now : null,
+
+        // satisfies NOT NULL constraint
+        customer_name: derivedCustomerName,
 
         company_name,
         company_number,
