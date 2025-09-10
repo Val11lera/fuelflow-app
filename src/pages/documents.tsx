@@ -77,6 +77,7 @@ export default function DocumentsPage() {
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
   // modals
+  the
   const [showBuy, setShowBuy] = useState(false);
   const [showRent, setShowRent] = useState(false);
 
@@ -227,7 +228,7 @@ export default function DocumentsPage() {
         </div>
       </header>
 
-      {/* Subhead checklist */}
+      {/* Subhead checklist (scrollable on mobile) */}
       <div className="mx-auto max-w-6xl px-4">
         <div className="mb-4 flex items-center gap-2 overflow-x-auto pb-1">
           {checklist.map((c) => (
