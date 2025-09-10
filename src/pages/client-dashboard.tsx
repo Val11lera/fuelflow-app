@@ -80,7 +80,7 @@ function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
 
-// Map statuses to labels exactly like documents.tsx semantics
+// Make dashboard labels match Documents page semantics exactly
 function labelFromStatus(
   status: ContractStatus | null | undefined,
   kind: "Buy" | "Rent"
@@ -91,7 +91,6 @@ function labelFromStatus(
   if (status === "cancelled") return `${kind} cancelled`;
   return `${kind} not signed`;
 }
-
 
 /* =========================
    Page
@@ -124,7 +123,7 @@ export default function ClientDashboard() {
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
-  // Auto logout on inactivity
+  // ----------------- Auto logout on inactivity -----------------
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const reset = () => {
@@ -157,7 +156,7 @@ export default function ClientDashboard() {
     };
   }, []);
 
-  // Data loading
+  // ----------------- Data loading -----------------
   useEffect(() => {
     (async () => {
       try {
@@ -173,10 +172,10 @@ export default function ClientDashboard() {
         const emailLower = (auth.user.email || "").toLowerCase();
         setUserEmail(emailLower);
 
-        // Prices
+        // PRICES
         await loadLatestPrices();
 
-        // Terms (for summary)
+        // TERMS — latest acceptance for this version
         const { data: ta } = await supabase
           .from("terms_acceptances")
           .select("accepted_at")
@@ -186,10 +185,10 @@ export default function ClientDashboard() {
           .limit(1);
         setTermsAcceptedAt(ta?.[0]?.accepted_at ?? null);
 
-        // Contracts — mirror documents.tsx (latest by created_at regardless of status)
+        // CONTRACTS — pick latest per tank_option (matches Documents page)
         await loadContracts(emailLower);
 
-        // Orders
+        // ORDERS
         const { data: rawOrders, error: ordErr } = await supabase
           .from("orders")
           .select(
@@ -246,103 +245,112 @@ export default function ClientDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-async function loadContracts(emailLower: string) {
-  const { data } = await supabase
-    .from("contracts")
-    .select(
-      "id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path"
-    )
-    .eq("email", emailLower)
-    .order("created_at", { ascending: false });
+  async function loadContracts(emailLower: string) {
+    const { data } = await supabase
+      .from("contracts")
+      .select(
+        "id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path"
+      )
+      .eq("email", emailLower)
+      .order("created_at", { ascending: false });
 
-  const rows = (data || []) as ContractRow[];
-  setBuyContract(rows.find((r) => r.tank_option === "buy") ?? null);
-  setRentContract(rows.find((r) => r.tank_option === "rent") ?? null);
-}
+    const rows = (data || []) as ContractRow[];
+    setBuyContract(rows.find((r) => r.tank_option === "buy") ?? null);
+    setRentContract(rows.find((r) => r.tank_option === "rent") ?? null);
+  }
 
+  // Robust latest-price loader with normalisation (handles GBP or pence)
+  async function loadLatestPrices() {
+    setPetrolPrice(null);
+    setDieselPrice(null);
+    setPriceDate(null);
 
-  // Normalises price columns (handles GBP or pence) and picks latest timestamp
-async function loadLatestPrices() {
-  setPetrolPrice(null);
-  setDieselPrice(null);
-  setPriceDate(null);
+    type Row = {
+      fuel?: string;
+      total_price?: number;
+      price?: number;
+      latest_price?: number;
+      unit_price?: number;
+      price_date?: string | null;
+      updated_at?: string | null;
+      created_at?: string | null;
+    };
 
-  type Row = {
-    fuel?: string;
-    total_price?: number;
-    price?: number;
-    latest_price?: number;
-    unit_price?: number;
-    price_date?: string | null;
-    updated_at?: string | null;
-    created_at?: string | null;
-  };
+    const toGbp = (raw: number | undefined | null) => {
+      if (!Number.isFinite(raw as number)) return null;
+      const n = Number(raw);
+      const v = n > 10 ? n / 100 : n; // if stored in pence, convert
+      return Math.round(v * 1000) / 1000;
+    };
 
-  // Convert to GBP/L. If it looks like pence (>10), divide by 100.
-  const toGbp = (raw: number | undefined | null) => {
-    if (!Number.isFinite(raw as number)) return null;
-    const n = Number(raw);
-    const v = n > 10 ? n / 100 : n; // tweak threshold if your GBP/L can be > £10
-    return Math.round(v * 1000) / 1000; // 3dp
-  };
+    const apply = (rows: Row[]) => {
+      let latest: string | null = null;
+      rows.forEach((r) => {
+        const f = String(r.fuel || "").toLowerCase();
+        const v =
+          toGbp(r.total_price) ??
+          toGbp(r.price) ??
+          toGbp(r.latest_price) ??
+          toGbp(r.unit_price);
+        if (v == null) return;
 
-  const apply = (rows: Row[]) => {
-    let latest: string | null = null;
-    rows.forEach((r) => {
-      const f = String(r.fuel || "").toLowerCase();
-      const v =
-        toGbp(r.total_price) ??
-        toGbp(r.price) ??
-        toGbp(r.latest_price) ??
-        toGbp(r.unit_price);
-      if (v == null) return;
+        const ts = r.price_date ?? r.updated_at ?? r.created_at ?? null;
+        if (ts && (!latest || new Date(ts) > new Date(latest))) latest = ts;
 
-      const ts = r.price_date ?? r.updated_at ?? r.created_at ?? null;
-      if (ts && (!latest || new Date(ts) > new Date(latest))) latest = ts;
+        if (f === "petrol") setPetrolPrice(v);
+        if (f === "diesel") setDieselPrice(v);
+      });
+      if (latest) setPriceDate(latest);
+    };
 
-      if (f === "petrol") setPetrolPrice(v);
-      if (f === "diesel") setDieselPrice(v);
-    });
-    if (latest) setPriceDate(latest);
-  };
+    const tryTable = async (table: string) => {
+      try {
+        const { data } = await supabase.from(table).select("*").limit(10);
+        if (data && data.length) {
+          apply(data as Row[]);
+          return true;
+        }
+      } catch {}
+      return false;
+    };
 
-  const tryTable = async (table: string) => {
+    if (await tryTable("latest_prices")) return;
+    if (await tryTable("latest_fuel_prices_view")) return;
+    if (await tryTable("latest_prices_view")) return;
+
     try {
-      const { data } = await supabase.from(table).select("*").limit(10);
+      const { data } = await supabase
+        .from("daily_prices")
+        .select("*")
+        .order("price_date", { ascending: false })
+        .limit(200);
+
       if (data && data.length) {
-        apply(data as Row[]);
-        return true;
+        const seen = new Map<string, Row>();
+        for (const r of data as Row[]) {
+          const key = String(r.fuel || "").toLowerCase();
+          if (!seen.has(key)) seen.set(key, r);
+        }
+        apply(Array.from(seen.values()));
       }
     } catch {}
-    return false;
-  };
+  }
 
-  // Prefer purpose-built “latest” sources first
-  if (await tryTable("latest_prices")) return;
-  if (await tryTable("latest_fuel_prices_view")) return;
-  if (await tryTable("latest_prices_view")) return;
+  // ---------- simple UI helpers ----------
+  function refresh() {
+    // <-- You accidentally removed this; header still uses it
+    window.location.reload();
+  }
 
-  // Fallback: daily_prices -> take most recent row per fuel
-  try {
-    const { data } = await supabase
-      .from("daily_prices")
-      .select("*")
-      .order("price_date", { ascending: false })
-      .limit(200);
-
-    if (data && data.length) {
-      const seen = new Map<string, Row>();
-      for (const r of data as Row[]) {
-        const key = String(r.fuel || "").toLowerCase();
-        if (!seen.has(key)) seen.set(key, r);
-      }
-      apply(Array.from(seen.values()));
+  async function logout() {
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      window.location.href = "/login";
     }
-  } catch {}
-}
+  }
 
-
-  // Usage & Spend (by month, year)
+  // ---------- Usage & Spend (by month, year) ----------
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
 
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
@@ -365,6 +373,7 @@ async function loadLatestPrices() {
 
   const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
   const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
+
   const rowsToShow = showAllMonths
     ? usageByMonth
     : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
@@ -376,11 +385,10 @@ async function loadLatestPrices() {
   const canOrder = pricesAreToday && petrolPrice != null && dieselPrice != null;
 
   const documentsSummary = [
-  termsAcceptedAt ? "Terms accepted" : "Terms pending",
-  labelFromStatus(buyContract?.status, "Buy"),
-  labelFromStatus(rentContract?.status, "Rent"),
-].join(" · ");
-
+    termsAcceptedAt ? "Terms accepted" : "Terms pending",
+    labelFromStatus(buyContract?.status, "Buy"),
+    labelFromStatus(rentContract?.status, "Rent"),
+  ].join(" · ");
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
