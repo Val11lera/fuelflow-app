@@ -406,7 +406,7 @@ function GuideCard({
   title: string;
   description: string;
   tone: "emerald" | "amber" | "rose" | "slate";
-  Icon: (props: { className?: string }) => JSX.Element;
+  Icon: React.ComponentType<{ className?: string }>;
 }) {
   const map = {
     emerald: { ring: "ring-emerald-400/30", text: "text-emerald-200", bg: "from-emerald-600/20 to-emerald-400/10" },
