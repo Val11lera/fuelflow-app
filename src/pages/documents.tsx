@@ -4,401 +4,594 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { supabaseBrowser, publicFileUrl, PDF_BUCKET } from "@/lib/supabaseClient";
+import { createClient } from "@supabase/supabase-js";
 
 /* =========================
-   Types
+   Setup / types
    ========================= */
+
 type TankOption = "buy" | "rent";
-type Status = "draft" | "signed" | "approved" | "cancelled";
+type ContractStatus = "draft" | "signed" | "approved" | "cancelled";
+
+const TERMS_VERSION = "v1.1";
 
 type ContractRow = {
   id: string;
-  email: string | null;
   tank_option: TankOption;
-  status: Status;
-  customer_name?: string | null;
-  created_at?: string | null;
-  approved_at?: string | null;
-  signed_at?: string | null;
-  signed_pdf_path?: string | null;
-  approved_pdf_path?: string | null;
+  status: ContractStatus;
+  signed_at: string | null;
+  approved_at: string | null;
+  created_at: string;
+  email: string | null;
 };
 
-const TERMS_VERSION = "v1.1";
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
+);
 
 /* =========================
    UI tokens
    ========================= */
-const uiPage = "min-h-screen bg-[#061B34] text-white";
-const uiWrap = "mx-auto w-full max-w-6xl px-4 py-8";
-const uiCard = "rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-5 shadow";
-const uiBadge = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold";
-const uiBtn =
-  "inline-flex items-center justify-center rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
-const uiBtnPrimary = "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
-const uiBtnGhost = "bg-white/10 hover:bg-white/15 text-white border border-white/10";
-const uiBtnSoft = "bg-white/8 border border-white/10 text-white hover:bg-white/12";
-const uiHeading = "text-3xl font-bold";
-const uiRow = "grid grid-cols-1 md:grid-cols-3 gap-5";
-const uiPill = (tone: "ok" | "warn" | "info") =>
-  `${uiBadge} ${tone === "ok" ? "bg-green-500/20 text-green-200" : tone === "warn" ? "bg-amber-500/20 text-amber-200" : "bg-white/15 text-white/80"}`;
+
+const card =
+  "rounded-2xl border border-white/10 bg-white/5 backdrop-blur px-5 py-4 shadow transition";
+const button =
+  "rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
+const buttonPrimary = "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
+const buttonGhost = "bg-white/10 hover:bg-white/15 text-white border border-white/10";
+const input =
+  "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30";
+const label = "block text-sm font-medium text-white/80 mb-1";
+const row = "grid grid-cols-1 md:grid-cols-2 gap-4";
+
+/* =========================
+   Helpers
+   ========================= */
+
+function GBP(n: number) {
+  if (!Number.isFinite(n)) return "—";
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
+function shortDate(d?: string | null) {
+  if (!d) return "—";
+  try {
+    return new Date(d).toLocaleDateString();
+  } catch {
+    return "—";
+  }
+}
 
 /* =========================
    Page
    ========================= */
+
 export default function DocumentsPage() {
-  const supabase = supabaseBrowser;
-  const [email, setEmail] = useState("");
-  const [termsAccepted, setTermsAccepted] = useState<boolean | null>(null);
+  // auth email
+  const [userEmail, setUserEmail] = useState<string>("");
+
+  // terms
   const [termsAcceptedAt, setTermsAcceptedAt] = useState<string | null>(null);
+  const termsOk = !!termsAcceptedAt;
 
-  const [contracts, setContracts] = useState<ContractRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  // contracts
+  const [buyContract, setBuyContract] = useState<ContractRow | null>(null);
+  const [rentContract, setRentContract] = useState<ContractRow | null>(null);
 
-  // Wizard
+  // ROI / wizard
+  const [showCalc, setShowCalc] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
   const [wizardOption, setWizardOption] = useState<TankOption>("buy");
-  const [saving, setSaving] = useState(false);
+  const [savingContract, setSavingContract] = useState(false);
 
-  // Wizard fields (kept minimal—you can add all previous fields here)
+  // calculator fields
+  const [tankSizeL, setTankSizeL] = useState<number>(5000);
+  const [monthlyConsumptionL, setMonthlyConsumptionL] = useState<number>(10000);
+  const [marketPrice, setMarketPrice] = useState<number>(1.35);
+  const [cheaperBy, setCheaperBy] = useState<number>(0.09);
+
+  // signature + minimal contact
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
-  const [companyName, setCompanyName] = useState("");
   const [signatureName, setSignatureName] = useState("");
+  // business / site (optional)
+  const [companyName, setCompanyName] = useState("");
+  const [companyNumber, setCompanyNumber] = useState("");
+  const [vatNumber, setVatNumber] = useState("");
+  const [siteAddress1, setSiteAddress1] = useState("");
+  const [siteAddress2, setSiteAddress2] = useState("");
+  const [siteCity, setSiteCity] = useState("");
+  const [sitePostcode, setSitePostcode] = useState("");
 
-  // Prefill auth email
+  // computed
+  const fuelflowPrice = useMemo(
+    () => Math.max(0, (marketPrice || 0) - (cheaperBy || 0)),
+    [marketPrice, cheaperBy]
+  );
+  const estMonthlySavings = useMemo(
+    () => Math.max(0, (monthlyConsumptionL || 0) * (cheaperBy || 0)),
+    [monthlyConsumptionL, cheaperBy]
+  );
+  const capexRequired = useMemo(
+    () => (wizardOption === "buy" ? 12000 : 0),
+    [wizardOption]
+  );
+
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.auth.getUser();
-      const em = (data?.user?.email || "").toLowerCase();
-      if (em) setEmail(em);
-    })();
-  }, [supabase]);
-
-  // Load Terms + Contracts
-  useEffect(() => {
-    if (!email) return;
-    setLoading(true);
-    (async () => {
-      try {
-        // TERMS
-        const { data: t } = await supabase
-          .from("terms_acceptances")
-          .select("accepted_at")
-          .eq("version", TERMS_VERSION)
-          .eq("email", email)
-          .order("accepted_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (t?.accepted_at) {
-          setTermsAccepted(true);
-          setTermsAcceptedAt(t.accepted_at);
-        } else {
-          setTermsAccepted(false);
-          setTermsAcceptedAt(null);
-        }
-
-        // CONTRACTS
-        const { data: rows, error } = await supabase
-          .from("contracts")
-          .select(
-            "id,email,tank_option,status,customer_name,created_at,approved_at,signed_at,signed_pdf_path,approved_pdf_path"
-          )
-          .eq("email", email)
-          .order("created_at", { ascending: false });
-
-        if (error) throw error;
-        setContracts((rows ?? []) as ContractRow[]);
-      } catch (e: any) {
-        alert(`Failed to load contracts:\n${e?.message || e}`);
-      } finally {
-        setLoading(false);
+      const { data: auth } = await supabase.auth.getUser();
+      const emailLower = (auth?.user?.email || "").toLowerCase();
+      if (!emailLower) {
+        window.location.href = "/login";
+        return;
       }
+      setUserEmail(emailLower);
+      await refreshTerms(emailLower);
+      await refreshContracts(emailLower);
     })();
-  }, [email, supabase]);
+  }, []);
 
-  const buy = useMemo(
-    () => contracts.find((c) => c.tank_option === "buy"),
-    [contracts]
-  );
-  const rent = useMemo(
-    () => contracts.find((c) => c.tank_option === "rent"),
-    [contracts]
-  );
-
-  const isBuyActive = buy && (buy.status === "signed" || buy.status === "approved");
-  const isRentActive = rent && rent.status === "approved";
-
-  const canContinue = Boolean(termsAccepted && (isBuyActive || isRentActive));
-
-  function pdfUrl(c?: ContractRow | null) {
-    if (!c) return null;
-    // prefer approved PDF for RENT; otherwise signed
-    const path = c.approved_pdf_path || c.signed_pdf_path;
-    return publicFileUrl(path);
+  async function refreshTerms(emailLower: string) {
+    const { data } = await supabase
+      .from("terms_acceptances")
+      .select("accepted_at")
+      .eq("email", emailLower)
+      .eq("version", TERMS_VERSION)
+      .order("accepted_at", { ascending: false })
+      .limit(1);
+    setTermsAcceptedAt(data?.[0]?.accepted_at ?? null);
   }
 
-  async function openTerms() {
-    // Your existing terms page; preserve the return to documents
-    const ret = `/terms?return=/documents${email ? `&email=${encodeURIComponent(email)}` : ""}`;
+  async function refreshContracts(emailLower: string) {
+    const { data } = await supabase
+      .from("contracts")
+      .select("id,tank_option,status,signed_at,approved_at,created_at,email")
+      .eq("email", emailLower)
+      .order("created_at", { ascending: false });
+
+    const rows = (data || []) as ContractRow[];
+    const latestBuy =
+      rows.find((r) => r.tank_option === "buy" && (r.status === "approved" || r.status === "signed")) ??
+      rows.find((r) => r.tank_option === "buy") ??
+      null;
+
+    const latestRent =
+      rows.find((r) => r.tank_option === "rent" && (r.status === "approved" || r.status === "signed")) ??
+      rows.find((r) => r.tank_option === "rent") ??
+      null;
+
+    setBuyContract(latestBuy);
+    setRentContract(latestRent);
+  }
+
+  function openTerms() {
+    const ret = `/terms?return=/documents`;
     window.location.href = ret;
   }
 
-  async function saveContract(option: TankOption) {
+  async function signAndSaveContract(option: TankOption) {
     if (!fullName.trim()) {
-      alert("Please enter your full name.");
+      alert("Please enter your full name before signing.");
       return;
     }
     if (!signatureName.trim()) {
-      alert("Please type your full legal name as signature.");
+      alert("Type your full legal name as signature.");
       return;
     }
+    setSavingContract(true);
     try {
-      setSaving(true);
-      const { error } = await supabase.from("contracts").insert({
+      // minimal, schema-safe payload
+      const payload: Record<string, any> = {
         tank_option: option,
-        contract_type: option,
-        email,
         customer_name: fullName,
-        extra: { phone, companyName },
+        email: userEmail,
+        address_line1: siteAddress1 || null,
+        address_line2: siteAddress2 || null,
+        city: siteCity || null,
+        postcode: sitePostcode || null,
+        tank_size_l: tankSizeL || null,
+        monthly_consumption_l: monthlyConsumptionL || null,
+        market_price_gbp_l: marketPrice || null,
+        fuelflow_price_gbp_l: fuelflowPrice || null,
+        est_monthly_savings_gbp: estMonthlySavings || null,
         terms_version: TERMS_VERSION,
         signature_name: signatureName,
-        status: "signed",
         signed_at: new Date().toISOString(),
-      } as any);
-      if (error) {
-        if (/duplicate|unique/i.test(error.message)) {
-          alert("You already have an active contract of this type.");
-        } else {
-          throw error;
-        }
-      }
+        status: "signed",
+      };
+
+      const { error } = await supabase.from("contracts").insert(payload);
+      if (error) throw error;
+
+      await refreshContracts(userEmail);
       setShowWizard(false);
-      // refresh
-      const { data: rows } = await supabase
-        .from("contracts")
-        .select(
-          "id,email,tank_option,status,customer_name,created_at,approved_at,signed_at,signed_pdf_path,approved_pdf_path"
-        )
-        .eq("email", email)
-        .order("created_at", { ascending: false });
-      setContracts((rows ?? []) as ContractRow[]);
-      alert(option === "buy" ? "Purchase contract signed." : "Rental contract signed. Waiting approval.");
+      alert(
+        option === "rent"
+          ? "Rental contract signed. An admin will approve it shortly."
+          : "Purchase contract signed. You're good to order."
+      );
     } catch (e: any) {
       alert(e?.message || "Failed to save contract.");
     } finally {
-      setSaving(false);
+      setSavingContract(false);
     }
   }
 
+  const buyStatus = !buyContract
+    ? "Not signed"
+    : buyContract.status === "approved"
+    ? "Active"
+    : "Signed";
+
+  const rentStatus = !rentContract
+    ? "Not signed"
+    : rentContract.status === "approved"
+    ? "Active"
+    : "Signed (awaiting approval)";
+
   return (
-    <main className={uiPage}>
-      <div className={uiWrap}>
+    <main className="min-h-screen bg-[#061B34] text-white pb-24">
+      <div className="mx-auto w-full max-w-5xl px-4 pt-8">
         {/* Header */}
-        <div className="mb-6 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <img src="/logo-email.png" alt="FuelFlow" width={116} height={28} className="opacity-90" />
-            <h1 className={uiHeading}>Documents</h1>
-          </div>
-          <Link className={`${uiBtn} ${uiBtnSoft}`} href="/client-dashboard">
-            ← Back to dashboard
-          </Link>
-        </div>
-
-        {/* Cards */}
-        <section className={`${uiCard} p-6`}>
-          <div className={uiRow}>
-            {/* Terms */}
-            <Card
-              title="Terms & Conditions"
-              statusBadge={
-                termsAccepted ? <Badge tone="ok">Accepted</Badge> : <Badge tone="warn">Missing</Badge>
-              }
-              subtitle={termsAccepted ? `Accepted · ${new Date(termsAcceptedAt || "").toLocaleDateString()}` : "You must accept before ordering"}
-              action={
-                <button className={`${uiBtn} ${uiBtnGhost}`} onClick={openTerms}>View</button>
-              }
-            />
-
-            {/* Buy */}
-            <Card
-              title="Buy contract"
-              statusBadge={
-                isBuyActive ? <Badge tone="ok">Active</Badge> : <Badge tone="warn">Not signed</Badge>
-              }
-              subtitle={isBuyActive ? "Active — order anytime" : "Sign once — then order anytime"}
-              action={
-                isBuyActive ? (
-                  <div className="flex items-center gap-3">
-                    <span className={`${uiBtn} bg-white/10 border border-white/10 text-white cursor-default`}>Active</span>
-                    <DownloadButton url={pdfUrl(buy)} />
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-3">
-                    <button
-                      className={`${uiBtn} ${uiBtnGhost}`}
-                      onClick={() => { setWizardOption("buy"); setShowWizard(true); }}
-                    >
-                      Start
-                    </button>
-                    <DownloadButton url={null} />
-                  </div>
-                )
-              }
-            />
-
-            {/* Rent */}
-            <Card
-              title="Rent contract"
-              statusBadge={
-                isRentActive ? <Badge tone="ok">Active</Badge> : <Badge tone="warn">Not signed</Badge>
-              }
-              subtitle={isRentActive ? "Active — order anytime" : "Needs admin approval after signing"}
-              action={
-                isRentActive ? (
-                  <div className="flex items-center gap-3">
-                    <span className={`${uiBtn} bg-white/10 border border-white/10 text-white cursor-default`}>Active</span>
-                    <DownloadButton url={pdfUrl(rent)} />
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-3">
-                    <button
-                      className={`${uiBtn} ${uiBtnGhost}`}
-                      onClick={() => { setWizardOption("rent"); setShowWizard(true); }}
-                    >
-                      Start
-                    </button>
-                    <DownloadButton url={null} />
-                  </div>
-                )
-              }
-            />
-          </div>
-
-          {/* Continue */}
-          <div className="mt-8 flex items-center justify-center">
-            <Link
-              href="/order"
-              className={`${uiBtn} ${uiBtnPrimary} text-base px-6 py-3`}
-              aria-disabled={!canContinue}
-              onClick={(e) => { if (!canContinue) { e.preventDefault(); } }}
-            >
-              Continue to Order
+        <div className="mb-6 flex items-center gap-3">
+          <img src="/logo-email.png" alt="FuelFlow" width={116} height={28} className="opacity-90" />
+          <h1 className="ml-2 text-2xl md:text-3xl font-bold">Documents</h1>
+          <div className="ml-auto">
+            <Link href="/client-dashboard" className="text-white/70 hover:text-white">
+              Back to Dashboard
             </Link>
           </div>
+        </div>
 
-          {!canContinue && (
-            <p className="mt-3 text-center text-white/70">
-              Accept Terms and have an active contract to continue.
-            </p>
-          )}
-        </section>
-      </div>
-
-      {/* Wizard Modal */}
-      {showWizard && (
-        <Modal
-          title={`Start ${wizardOption === "buy" ? "Purchase" : "Rental"} Contract`}
-          onClose={() => !saving && setShowWizard(false)}
-        >
-          <div className="space-y-4">
-            <Field label="Full name">
-              <input className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2"
-                     value={fullName} onChange={(e) => setFullName(e.target.value)} />
-            </Field>
-            <Field label="Phone">
-              <input className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2"
-                     value={phone} onChange={(e) => setPhone(e.target.value)} />
-            </Field>
-            <Field label="Company (optional)">
-              <input className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2"
-                     value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
-            </Field>
-
-            <div className="rounded-xl border border-white/10 bg-gradient-to-r from-yellow-500/10 to-red-500/10 p-3 text-center">
-              <span className="font-semibold text-yellow-300 tracking-wide">
-                ESTIMATE ONLY — prices fluctuate daily based on market conditions
+        {/* Requirements overview */}
+        <section className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          <div className={card}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Terms &amp; Conditions</h3>
+              <span
+                className={`inline-flex items-center text-xs font-medium px-2 py-1 rounded-full ${
+                  termsOk ? "bg-green-500/20 text-green-300" : "bg-red-500/20 text-red-300"
+                }`}
+              >
+                {termsOk ? "accepted" : "missing"}
               </span>
             </div>
+            <p className="mt-2 text-white/70 text-sm">
+              You must accept the latest Terms before ordering.
+            </p>
+            <div className="mt-3 flex items-center gap-2">
+              <button className={`${button} ${buttonGhost}`} onClick={openTerms}>
+                {termsOk ? "View Terms" : "Read & accept"}
+              </button>
+              {termsAcceptedAt && (
+                <span className="text-xs text-white/60">Accepted: {shortDate(termsAcceptedAt)}</span>
+              )}
+            </div>
+          </div>
 
-            <Field label="Type your full legal name as signature">
-              <input className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2"
-                     placeholder="Jane Smith"
-                     value={signatureName}
-                     onChange={(e) => setSignatureName(e.target.value)} />
-            </Field>
-
-            <div className="flex justify-end gap-3 pt-2">
-              <button className={`${uiBtn} ${uiBtnGhost}`} disabled={saving} onClick={() => setShowWizard(false)}>Cancel</button>
-              <button className={`${uiBtn} ${uiBtnPrimary}`} disabled={saving} onClick={() => saveContract(wizardOption)}>
-                {saving ? "Saving…" : "Sign & Save"}
+          <div className={card}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Buy Contract</h3>
+              <span
+                className={`inline-flex items-center text-xs font-medium px-2 py-1 rounded-full ${
+                  buyStatus.startsWith("Active")
+                    ? "bg-green-500/20 text-green-300"
+                    : buyStatus.startsWith("Signed")
+                    ? "bg-yellow-500/20 text-yellow-300"
+                    : "bg-white/10 text-white/80"
+                }`}
+              >
+                {buyStatus}
+              </span>
+            </div>
+            <p className="mt-2 text-white/70 text-sm">
+              For purchase agreements: a signed contract is enough to order.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                className={`${button} ${buttonGhost}`}
+                onClick={() => {
+                  setWizardOption("buy");
+                  setShowCalc(true);
+                }}
+              >
+                ROI / Calculator
+              </button>
+              <button
+                className={`${button} ${buttonPrimary}`}
+                onClick={() => {
+                  setWizardOption("buy");
+                  setShowWizard(true);
+                }}
+              >
+                {buyContract ? "Update / Resign" : "Start Buy Contract"}
               </button>
             </div>
+          </div>
+
+          <div className={card}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Rent Contract</h3>
+              <span
+                className={`inline-flex items-center text-xs font-medium px-2 py-1 rounded-full ${
+                  rentStatus.startsWith("Active")
+                    ? "bg-green-500/20 text-green-300"
+                    : rentStatus.startsWith("Signed")
+                    ? "bg-yellow-500/20 text-yellow-300"
+                    : "bg-white/10 text-white/80"
+                }`}
+              >
+                {rentStatus}
+              </span>
+            </div>
+            <p className="mt-2 text-white/70 text-sm">
+              Rental agreements require **admin approval** after signing.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                className={`${button} ${buttonGhost}`}
+                onClick={() => {
+                  setWizardOption("rent");
+                  setShowCalc(true);
+                }}
+              >
+                ROI / Calculator
+              </button>
+              <button
+                className={`${button} ${buttonPrimary}`}
+                onClick={() => {
+                  setWizardOption("rent");
+                  setShowWizard(true);
+                }}
+              >
+                {rentContract ? "Update / Resign" : "Start Rent Contract"}
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {/* Info */}
+        <div className="text-sm text-white/60 mb-8">
+          <b>Ordering unlocks</b> when Terms are accepted and either a <b>Buy</b> contract is
+          signed or a <b>Rent</b> contract is approved.
+        </div>
+      </div>
+
+      {/* ROI modal */}
+      {showCalc && (
+        <Modal onClose={() => setShowCalc(false)} title="Savings Calculator">
+          <EstimateBanner />
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 my-4">
+            <Metric title="FuelFlow price" value={`${GBP(fuelflowPrice)} / L`} />
+            <Metric title="Est. monthly savings" value={GBP(estMonthlySavings)} />
+            <Metric
+              title="Capex required"
+              value={wizardOption === "rent" ? "£0 (rental)" : GBP(capexRequired)}
+            />
+          </div>
+          <div className={row}>
+            <Field label="Tank size (L)">
+              <input
+                className={input}
+                type="number"
+                min={0}
+                value={tankSizeL}
+                onChange={(e) => setTankSizeL(Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Monthly consumption (L)">
+              <input
+                className={input}
+                type="number"
+                min={0}
+                value={monthlyConsumptionL}
+                onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Market price (GBP/L)">
+              <input
+                className={input}
+                type="number"
+                min={0}
+                step="0.01"
+                value={marketPrice}
+                onChange={(e) => setMarketPrice(Number(e.target.value))}
+              />
+            </Field>
+            <Field label="FuelFlow cheaper by (GBP/L)">
+              <input
+                className={input}
+                type="number"
+                min={0}
+                step="0.01"
+                value={cheaperBy}
+                onChange={(e) => setCheaperBy(Number(e.target.value))}
+              />
+            </Field>
+          </div>
+          <div className="mt-6 flex justify-end gap-3">
+            <button className={`${button} ${buttonGhost}`} onClick={() => setShowCalc(false)}>
+              Close
+            </button>
+            <button
+              className={`${button} ${buttonPrimary}`}
+              onClick={() => {
+                setShowCalc(false);
+                setShowWizard(true);
+              }}
+            >
+              Continue to Contract
+            </button>
           </div>
         </Modal>
       )}
 
-      {/* Footer */}
-      <Footer />
+      {/* Wizard modal */}
+      {showWizard && (
+        <Modal
+          onClose={() => {
+            if (!savingContract) setShowWizard(false);
+          }}
+          title={`Start ${wizardOption === "buy" ? "Purchase" : "Rental"} Contract`}
+        >
+          <EstimateBanner />
+          <Wizard>
+            <Wizard.Step title="Contact">
+              <div className={row}>
+                <Field label="Full name">
+                  <input className={input} value={fullName} onChange={(e) => setFullName(e.target.value)} />
+                </Field>
+                <Field label="Phone">
+                  <input className={input} value={phone} onChange={(e) => setPhone(e.target.value)} />
+                </Field>
+                <Field label="Email (from login)" >
+                  <input className={input} value={userEmail} readOnly />
+                </Field>
+              </div>
+            </Wizard.Step>
+
+            <Wizard.Step title="Business">
+              <div className={row}>
+                <Field label="Company name">
+                  <input className={input} value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
+                </Field>
+                <Field label="Company number">
+                  <input className={input} value={companyNumber} onChange={(e) => setCompanyNumber(e.target.value)} />
+                </Field>
+                <Field label="VAT number">
+                  <input className={input} value={vatNumber} onChange={(e) => setVatNumber(e.target.value)} />
+                </Field>
+              </div>
+            </Wizard.Step>
+
+            <Wizard.Step title="Site & Tank">
+              <div className={row}>
+                <Field label="Site address line 1">
+                  <input className={input} value={siteAddress1} onChange={(e) => setSiteAddress1(e.target.value)} />
+                </Field>
+                <Field label="Site address line 2">
+                  <input className={input} value={siteAddress2} onChange={(e) => setSiteAddress2(e.target.value)} />
+                </Field>
+                <Field label="Site city">
+                  <input className={input} value={siteCity} onChange={(e) => setSiteCity(e.target.value)} />
+                </Field>
+                <Field label="Site postcode">
+                  <input className={input} value={sitePostcode} onChange={(e) => setSitePostcode(e.target.value)} />
+                </Field>
+                <Field label="Tank size (L)">
+                  <input
+                    className={input}
+                    type="number"
+                    min={0}
+                    value={tankSizeL}
+                    onChange={(e) => setTankSizeL(Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Monthly consumption (L)">
+                  <input
+                    className={input}
+                    type="number"
+                    min={0}
+                    value={monthlyConsumptionL}
+                    onChange={(e) => setMonthlyConsumptionL(Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Market price (GBP/L)">
+                  <input
+                    className={input}
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={marketPrice}
+                    onChange={(e) => setMarketPrice(Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="FuelFlow cheaper by (GBP/L)">
+                  <input
+                    className={input}
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={cheaperBy}
+                    onChange={(e) => setCheaperBy(Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+            </Wizard.Step>
+
+            <Wizard.Step title="Signature">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <Metric title="FuelFlow price" value={`${GBP(fuelflowPrice)} / L`} />
+                <Metric title="Est. monthly savings" value={GBP(estMonthlySavings)} />
+                <Metric
+                  title="Capex required"
+                  value={wizardOption === "rent" ? "£0 (rental)" : GBP(capexRequired)}
+                />
+              </div>
+              <div className="mt-4">
+                <label className={label}>Type your full legal name as signature</label>
+                <input
+                  className={input}
+                  placeholder="Jane Smith"
+                  value={signatureName}
+                  onChange={(e) => setSignatureName(e.target.value)}
+                />
+              </div>
+              <div className="mt-6 flex justify-end gap-3">
+                <button className={`${button} ${buttonGhost}`} disabled={savingContract} onClick={() => setShowWizard(false)}>
+                  Cancel
+                </button>
+                <button
+                  className={`${button} ${buttonPrimary}`}
+                  disabled={savingContract}
+                  onClick={() => signAndSaveContract(wizardOption)}
+                >
+                  {savingContract ? "Saving…" : "Sign & Save"}
+                </button>
+              </div>
+            </Wizard.Step>
+          </Wizard>
+        </Modal>
+      )}
     </main>
   );
 }
 
 /* =========================
-   Small components
+   Reusable small components
    ========================= */
 
-function Card({
-  title,
-  statusBadge,
-  subtitle,
-  action,
-}: {
-  title: string;
-  statusBadge?: React.ReactNode;
-  subtitle?: string;
-  action?: React.ReactNode;
-}) {
+function Field({ label: l, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/3 p-5">
-      <div className="flex items-center justify-between">
-        <div className="text-lg font-semibold flex items-center gap-3">
-          {title}
-          {statusBadge}
-        </div>
-      </div>
-      {subtitle && <div className="text-white/70 text-sm mt-1">{subtitle}</div>}
-      <div className="mt-4">{action}</div>
+    <div>
+      <label className={label}>{l}</label>
+      {children}
     </div>
   );
 }
 
-function Badge({ children, tone }: { children: React.ReactNode; tone: "ok" | "warn" | "info" }) {
-  return <span className={uiPill(tone)}>{children}</span>;
-}
-
-function DownloadButton({ url }: { url: string | null }) {
-  const enabled = Boolean(url);
+function Metric({ title, value }: { title: string; value: string }) {
   return (
-    <a
-      className={`${uiBtn} ${enabled ? uiBtnSoft : "bg-white/5 text-white/50 border border-white/10 cursor-not-allowed"}`}
-      href={enabled ? url! : undefined}
-      target={enabled ? "_blank" : undefined}
-      rel="noreferrer"
-      onClick={(e) => { if (!enabled) e.preventDefault(); }}
-    >
-      Download signed PDF
-    </a>
+    <div className="rounded-xl border border-white/10 bg-[#0E2E57] p-4">
+      <div className="text-white/70 text-sm">{title}</div>
+      <div className="mt-1 text-xl font-semibold">{value}</div>
+    </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function EstimateBanner() {
   return (
-    <div>
-      <div className="text-sm text-white/80 mb-1">{label}</div>
-      {children}
+    <div className="relative overflow-hidden mb-3 rounded-xl border border-white/10 bg-gradient-to-r from-yellow-500/10 via-orange-500/10 to-red-500/10 p-3 text-center">
+      <span className="font-semibold text-yellow-300 tracking-wide">
+        ESTIMATE ONLY — prices fluctuate daily based on market conditions
+      </span>
+      <div className="pointer-events-none absolute inset-0 opacity-10 [background-image:repeating-linear-gradient(45deg,transparent,transparent_8px,rgba(255,255,255,.4)_8px,rgba(255,255,255,.4)_10px)]" />
     </div>
   );
 }
@@ -428,18 +621,44 @@ function Modal({
   );
 }
 
-function Footer() {
-  return (
-    <footer className="mt-10 border-t border-white/10">
-      <div className="mx-auto max-w-6xl px-4 py-6 text-sm text-white/70 flex items-center justify-between">
-        <div className="flex items-center gap-6">
-          <Link href="/terms" className="hover:text-white">Terms & Conditions</Link>
-          <Link href="/privacy" className="hover:text-white">Privacy policy</Link>
-          <Link href="/cookies" className="hover:text-white">Cookie policy</Link>
-          <Link href="/cookies/manage" className="hover:text-white">Manage cookies</Link>
-        </div>
-        <div>© {new Date().getFullYear()} FuelFlow</div>
-      </div>
-    </footer>
-  );
+interface WizardStepProps { title?: string; children: React.ReactNode; }
+interface WizardProps {
+  children: React.ReactElement<WizardStepProps> | React.ReactElement<WizardStepProps>[];
 }
+type WizardComponent = React.FC<WizardProps> & { Step: React.FC<WizardStepProps>; };
+
+const Wizard: WizardComponent = ({ children }) => {
+  const steps = React.Children.toArray(children) as React.ReactElement<WizardStepProps>[];
+  const [idx, setIdx] = useState(0);
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        {steps.map((el, i) => (
+          <div
+            key={i}
+            className={`px-3 py-1 rounded-lg text-sm border ${
+              i === idx ? "bg-white/15 border-white/20" : "bg-white/8 border-white/12"
+            }`}
+          >
+            {el.props.title ?? `Step ${i + 1}`}
+          </div>
+        ))}
+      </div>
+      <div className="rounded-xl border border-white/10 bg-white/4 p-4">{steps[idx]}</div>
+      <div className="mt-3 flex justify-between">
+        <button className={`${button} ${buttonGhost}`} onClick={() => setIdx(Math.max(0, idx - 1))} disabled={idx === 0}>
+          Back
+        </button>
+        <button
+          className={`${button} ${buttonPrimary}`}
+          onClick={() => setIdx(Math.min(steps.length - 1, idx + 1))}
+          disabled={idx === steps.length - 1}
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+};
+Wizard.Step = function Step({ children }: WizardStepProps) { return <>{children}</>; };
+
