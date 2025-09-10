@@ -69,11 +69,18 @@ export default function TermsPage() {
         throw new Error(txt || `Failed (${res.status})`);
       }
 
+      const json = (await res.json()) as { id?: string };
+      const ta = json?.id;
+
       setSubmitted(true);
       setCaptchaToken("");
 
-      // auto-return with flags so /order can unlock the checkbox & restore email
-      const ret = `${returnTo}?accepted=1${email ? `&email=${encodeURIComponent(email)}` : ""}`;
+      // Include the acceptance id so the next page can link the contract to this UUID
+      const ret =
+        `${returnTo}?accepted=1` +
+        (email ? `&email=${encodeURIComponent(email)}` : "") +
+        (ta ? `&ta=${encodeURIComponent(ta)}` : "");
+
       setTimeout(() => {
         window.location.href = ret;
       }, 900);
@@ -83,6 +90,7 @@ export default function TermsPage() {
       setSubmitting(false);
     }
   }
+
 
   return (
     <div className="min-h-screen text-white relative overflow-x-hidden">
