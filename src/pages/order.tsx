@@ -41,7 +41,8 @@ const card =
   "rounded-2xl border border-white/10 bg-white/5 backdrop-blur px-5 py-4 shadow transition";
 const button =
   "rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
-const buttonPrimary = "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
+const buttonPrimary =
+  "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
 const input =
   "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30";
 const label = "block text-sm font-medium text-white/80 mb-1";
@@ -62,8 +63,17 @@ function GBP(n: number) {
 }
 
 function toDateMaybe(r: any): Date | null {
-  const k = r?.updated_at ?? r?.price_date ?? r?.created_at ?? r?.ts ?? r?.at ?? null;
+  const k =
+    r?.updated_at ?? r?.price_date ?? r?.created_at ?? r?.ts ?? r?.at ?? null;
   return k ? new Date(k) : null;
+}
+
+function ymd(d: Date) {
+  // returns YYYY-MM-DD in local time
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 /* =========================
@@ -92,12 +102,22 @@ export default function OrderPage() {
   const [postcode, setPostcode] = useState("");
   const [city, setCity] = useState("");
 
+  // validation state
+  const [dateError, setDateError] = useState<string | null>(null);
+
   // requirements
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [buyContract, setBuyContract] = useState<ContractRow | null>(null);
   const [rentContract, setRentContract] = useState<ContractRow | null>(null);
 
   const [startingCheckout, setStartingCheckout] = useState(false);
+
+  // Earliest date = today + 14 days
+  const minDeliveryDateStr = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 14);
+    return ymd(d);
+  }, []);
 
   /* ---------- load auth + requirements ---------- */
   useEffect(() => {
@@ -129,11 +149,15 @@ export default function OrderPage() {
 
       const rows = (c || []) as ContractRow[];
       setBuyContract(
-        rows.find((r) => r.tank_option === "buy" && (r.status === "approved" || r.status === "signed")) ??
-          null
+        rows.find(
+          (r) =>
+            r.tank_option === "buy" &&
+            (r.status === "approved" || r.status === "signed")
+        ) ?? null
       );
       setRentContract(
-        rows.find((r) => r.tank_option === "rent" && r.status === "approved") ?? null
+        rows.find((r) => r.tank_option === "rent" && r.status === "approved") ??
+          null
       ); // for ordering, Rent must be approved
     })();
   }, [receiptEmail]);
@@ -175,8 +199,12 @@ export default function OrderPage() {
         if (rows?.length) {
           let updated: Date | null = null;
           rows.forEach((r) => {
-            const f = (r.fuel ?? r.product ?? "").toString().toLowerCase();
-            const price = Number(r.total_price ?? r.price ?? r.latest_price ?? r.unit_price);
+            const f = (r.fuel ?? r.product ?? "")
+              .toString()
+              .toLowerCase();
+            const price = Number(
+              r.total_price ?? r.price ?? r.latest_price ?? r.unit_price
+            );
             const ts = toDateMaybe(r);
             if (ts && (!updated || ts > updated)) updated = ts;
             if (f === "petrol") setPetrolPrice(Number.isFinite(price) ? price : null);
@@ -193,7 +221,10 @@ export default function OrderPage() {
   /* ---------- derived ---------- */
 
   const unitPrice = fuel === "diesel" ? dieselPrice ?? 0 : petrolPrice ?? 0;
-  const estTotal = useMemo(() => (Number.isFinite(litres) ? litres * unitPrice : 0), [litres, unitPrice]);
+  const estTotal = useMemo(
+    () => (Number.isFinite(litres) ? litres * unitPrice : 0),
+    [litres, unitPrice]
+  );
 
   // gating:
   // - Terms must be accepted
@@ -202,8 +233,28 @@ export default function OrderPage() {
   const hasRentApproved = !!rentContract; // rent: only approved counted above
   const requirementsMet = termsAccepted && (hasBuy || hasRentApproved);
 
+  // date validation
+  useEffect(() => {
+    if (!deliveryDate) {
+      setDateError(null);
+      return;
+    }
+    const chosen = new Date(deliveryDate);
+    const min = new Date(minDeliveryDateStr);
+    if (isNaN(chosen.getTime())) {
+      setDateError("Please choose a valid date.");
+    } else if (chosen < min) {
+      setDateError(
+        `Earliest delivery is ${new Date(minDeliveryDateStr).toLocaleDateString()} (two weeks from today).`
+      );
+    } else {
+      setDateError(null);
+    }
+  }, [deliveryDate, minDeliveryDateStr]);
+
   const payDisabled =
     !requirementsMet ||
+    !!dateError ||
     !fullName ||
     !address1 ||
     !postcode ||
@@ -217,6 +268,16 @@ export default function OrderPage() {
   async function startCheckout() {
     try {
       setStartingCheckout(true);
+
+      // final guard on date rule
+      const min = new Date(minDeliveryDateStr);
+      const chosen = new Date(deliveryDate);
+      if (!deliveryDate || isNaN(chosen.getTime()) || chosen < min) {
+        throw new Error(
+          `Earliest delivery is ${min.toLocaleDateString()}. Please pick a date two weeks from today or later.`
+        );
+      }
+
       const res = await fetch("/api/stripe/checkout/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -249,12 +310,18 @@ export default function OrderPage() {
   /* ---------- render ---------- */
 
   return (
-    <main className="min-h-screen bg-[#061B34] text-white pb-20">
-      <div className="mx-auto w-full max-w-6xl px-4 pt-10">
-        {/* Header */}
+    <main className="min-h-screen bg-[#061B34] text-white pb-24 md:pb-12">
+      {/* Header */}
+      <div className="mx-auto w-full max-w-6xl px-4 pt-6 md:pt-10">
         <div className="mb-6 flex items-center gap-3">
-          <img src="/logo-email.png" alt="FuelFlow" width={116} height={28} className="opacity-90" />
-          <div className="ml-2 text-2xl md:text-3xl font-bold">Place an Order</div>
+          <img
+            src="/logo-email.png"
+            alt="FuelFlow"
+            width={116}
+            height={28}
+            className="opacity-90 hidden sm:block"
+          />
+          <div className="text-2xl md:text-3xl font-bold">Place an Order</div>
           <div className="ml-auto flex gap-3">
             <Link href="/client-dashboard" className="text-white/70 hover:text-white">
               Back to Dashboard
@@ -265,14 +332,18 @@ export default function OrderPage() {
           </div>
         </div>
 
-        {/* Prices */}
+        {/* Price tiles + timestamp */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
           <Tile title="Petrol (95)" value={petrolPrice != null ? GBP(petrolPrice) : "—"} suffix="/ litre" />
           <Tile title="Diesel" value={dieselPrice != null ? GBP(dieselPrice) : "—"} suffix="/ litre" />
           <Tile title="Estimated Total" value={GBP(estTotal)} />
         </div>
         <div className="mb-6 text-xs text-white/60">
-          {loadingPrices ? "Loading prices…" : pricesUpdatedAt ? `Last update: ${pricesUpdatedAt.toLocaleString()}` : "Prices timestamp unavailable."}
+          {loadingPrices
+            ? "Loading prices…"
+            : pricesUpdatedAt
+            ? `Last update: ${pricesUpdatedAt.toLocaleString()}`
+            : "Prices timestamp unavailable."}
         </div>
 
         {/* Requirements hint */}
@@ -280,9 +351,12 @@ export default function OrderPage() {
           <div className="mb-6 rounded-xl border border-yellow-400/40 bg-yellow-500/10 p-4 text-sm text-yellow-200">
             <div className="font-semibold mb-1">Complete your documents to order</div>
             <div>
-              You must accept the Terms and have either a <b>Buy</b> contract signed or a <b>Rent</b>{" "}
-              contract approved. Open{" "}
-              <Link href="/documents" className="underline decoration-yellow-400 underline-offset-2">
+              You must accept the Terms and have either a <b>Buy</b> contract signed or a{" "}
+              <b>Rent</b> contract approved. Open{" "}
+              <Link
+                href="/documents"
+                className="underline decoration-yellow-400 underline-offset-2"
+              >
                 Documents
               </Link>{" "}
               to complete this.
@@ -290,75 +364,124 @@ export default function OrderPage() {
           </div>
         )}
 
-        {/* Order form */}
-        <section className={`${card} px-5 md:px-6 py-6`}>
-          <div className={row}>
-            <div>
-              <label className={label}>Fuel</label>
-              <select className={input} value={fuel} onChange={(e) => setFuel(e.target.value as Fuel)}>
-                <option value="diesel">Diesel</option>
-                <option value="petrol">Petrol</option>
-              </select>
+        {/* Main content: Form left, Summary right (stack on mobile) */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+          {/* Form */}
+          <section className={`lg:col-span-2 ${card} px-5 md:px-6 py-6`}>
+            {/* Order details */}
+            <h2 className="mb-3 text-lg font-semibold">Order details</h2>
+            <div className={row}>
+              <div>
+                <label className={label}>Fuel</label>
+                <select
+                  className={input}
+                  value={fuel}
+                  onChange={(e) => setFuel(e.target.value as Fuel)}
+                >
+                  <option value="diesel">Diesel</option>
+                  <option value="petrol">Petrol</option>
+                </select>
+              </div>
+
+              <div>
+                <label className={label}>Litres</label>
+                <input
+                  className={input}
+                  type="number"
+                  min={1}
+                  value={litres}
+                  onChange={(e) => setLitres(Number(e.target.value))}
+                />
+              </div>
+
+              <div>
+                <label className={label}>
+                  Delivery date{" "}
+                  <span className="text-white/50">(earliest {new Date(minDeliveryDateStr).toLocaleDateString()})</span>
+                </label>
+                <input
+                  className={input}
+                  type="date"
+                  value={deliveryDate}
+                  min={minDeliveryDateStr}
+                  onChange={(e) => setDeliveryDate(e.target.value)}
+                />
+                {dateError && (
+                  <div className="mt-1 text-xs text-rose-300">{dateError}</div>
+                )}
+              </div>
+
+              <div>
+                <label className={label}>Your email (receipt)</label>
+                <input
+                  className={input}
+                  type="email"
+                  placeholder="name@company.com"
+                  value={receiptEmail}
+                  onChange={(e) => setReceiptEmail(e.target.value)}
+                />
+              </div>
             </div>
 
-            <div>
-              <label className={label}>Litres</label>
-              <input
-                className={input}
-                type="number"
-                min={1}
-                value={litres}
-                onChange={(e) => setLitres(Number(e.target.value))}
-              />
+            {/* Delivery address */}
+            <h2 className="mt-6 mb-2 text-lg font-semibold flex items-center gap-2">
+              <TruckIcon className="h-5 w-5 text-white/70" />
+              Delivery address
+            </h2>
+            <p className="mb-3 text-xs text-white/70">
+              <strong>This is the address where the fuel will be delivered.</strong> Please ensure
+              access is safe and clearly signposted on the day.
+            </p>
+
+            <div className={row}>
+              <div className="md:col-span-2">
+                <label className={label}>Full name / Site contact</label>
+                <input
+                  className={input}
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className={label}>Address line 1</label>
+                <input
+                  className={input}
+                  value={address1}
+                  onChange={(e) => setAddress1(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className={label}>Address line 2 (optional)</label>
+                <input
+                  className={input}
+                  value={address2}
+                  onChange={(e) => setAddress2(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className={label}>Postcode</label>
+                <input
+                  className={input}
+                  value={postcode}
+                  onChange={(e) => setPostcode(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className={label}>City / Town</label>
+                <input
+                  className={input}
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                />
+              </div>
             </div>
 
-            <div>
-              <label className={label}>Delivery date</label>
-              <input
-                className={input}
-                type="date"
-                value={deliveryDate}
-                onChange={(e) => setDeliveryDate(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className={label}>Your email (receipt)</label>
-              <input
-                className={input}
-                type="email"
-                placeholder="name@company.com"
-                value={receiptEmail}
-                onChange={(e) => setReceiptEmail(e.target.value)}
-              />
-            </div>
-
-            <div className="md:col-span-2">
-              <label className={label}>Full name</label>
-              <input className={input} value={fullName} onChange={(e) => setFullName(e.target.value)} />
-            </div>
-
-            <div>
-              <label className={label}>Address line 1</label>
-              <input className={input} value={address1} onChange={(e) => setAddress1(e.target.value)} />
-            </div>
-
-            <div>
-              <label className={label}>Address line 2</label>
-              <input className={input} value={address2} onChange={(e) => setAddress2(e.target.value)} />
-            </div>
-
-            <div>
-              <label className={label}>Postcode</label>
-              <input className={input} value={postcode} onChange={(e) => setPostcode(e.target.value)} />
-            </div>
-
-            <div>
-              <label className={label}>City</label>
-              <input className={input} value={city} onChange={(e) => setCity(e.target.value)} />
-            </div>
-
-            <div className="md:col-span-2 mt-3">
+            {/* Action */}
+            <div className="mt-6">
               <button
                 className={`${button} ${buttonPrimary} w-full md:w-auto`}
                 disabled={payDisabled || startingCheckout}
@@ -368,8 +491,63 @@ export default function OrderPage() {
                 {startingCheckout ? "Starting checkout…" : "Pay with Stripe"}
               </button>
             </div>
+          </section>
+
+          {/* Summary */}
+          <aside className={`${card} p-5`}>
+            <h3 className="text-lg font-semibold mb-3">Summary</h3>
+
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-white/70">Fuel</span>
+                <span className="font-medium capitalize">{fuel}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-white/70">Litres</span>
+                <span className="font-medium">{Number(litres || 0).toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-white/70">Unit price</span>
+                <span className="font-medium">{GBP(unitPrice)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-white/70">Delivery date</span>
+                <span className="font-medium">
+                  {deliveryDate ? new Date(deliveryDate).toLocaleDateString() : "—"}
+                </span>
+              </div>
+            </div>
+
+            <hr className="my-4 border-white/10" />
+
+            <div className="flex justify-between text-base">
+              <span className="text-white/80">Estimated total</span>
+              <span className="font-semibold">{GBP(estTotal)}</span>
+            </div>
+
+            <p className="mt-4 text-xs text-white/60">
+              Final amount may vary if delivery conditions require adjustments (e.g., timed slots,
+              restricted access or waiting time). You’ll receive a receipt by email.
+            </p>
+          </aside>
+        </div>
+      </div>
+
+      {/* Sticky summary bar (mobile only) */}
+      <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-white/10 bg-[#0b1f3a]/95 backdrop-blur md:hidden">
+        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
+          <div className="flex-1">
+            <div className="text-xs text-white/60">Estimated total</div>
+            <div className="text-lg font-semibold">{GBP(estTotal)}</div>
           </div>
-        </section>
+          <button
+            className={`${button} ${buttonPrimary}`}
+            disabled={payDisabled || startingCheckout}
+            onClick={startCheckout}
+          >
+            {startingCheckout ? "Processing…" : "Pay"}
+          </button>
+        </div>
       </div>
 
       <footer className="mt-12 text-center text-white/40 text-xs">
@@ -383,7 +561,15 @@ export default function OrderPage() {
    Small UI helpers
    ========================= */
 
-function Tile({ title, value, suffix }: { title: string; value: string; suffix?: string }) {
+function Tile({
+  title,
+  value,
+  suffix,
+}: {
+  title: string;
+  value: string;
+  suffix?: string;
+}) {
   return (
     <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
       <div className="text-white/70 text-sm">{title}</div>
@@ -391,6 +577,17 @@ function Tile({ title, value, suffix }: { title: string; value: string; suffix?:
         {value} {suffix && <span className="text-white/50 text-base">{suffix}</span>}
       </div>
     </div>
+  );
+}
+
+function TruckIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M3 7h11v8H3z" />
+      <path d="M14 10h4l3 3v2h-7z" />
+      <circle cx="7.5" cy="17.5" r="1.5" />
+      <circle cx="17.5" cy="17.5" r="1.5" />
+    </svg>
   );
 }
 
