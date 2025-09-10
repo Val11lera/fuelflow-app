@@ -243,7 +243,7 @@ export default function DocumentsPage() {
 
       {/* Subhead checklist (extra top margin on mobile so chips aren't clipped) */}
      <div className="mx-auto max-w-6xl px-4 mt-6 md:mt-3">
-       <div className="mb-4 pt-1.5 flex items-center gap-2 overflow-x-auto pb-1">
+     <div className="mb-4 pt-1.5 pl-1 flex items-center gap-2 overflow-x-auto pb-1">
           {checklist.map((c) => (
             <span
               key={c.label}
