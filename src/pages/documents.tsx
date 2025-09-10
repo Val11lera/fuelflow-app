@@ -4,221 +4,188 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { createClient } from "@supabase/supabase-js";
-
-/* =========================
-   Supabase (browser)
-   ========================= */
-const supabase =
-  typeof window !== "undefined"
-    ? createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
-      )
-    : (null as any);
+import { supabaseBrowser, publicFileUrl, PDF_BUCKET } from "@/lib/supabaseClient";
 
 /* =========================
    Types
    ========================= */
 type TankOption = "buy" | "rent";
+type Status = "draft" | "signed" | "approved" | "cancelled";
 
 type ContractRow = {
   id: string;
   email: string | null;
   tank_option: TankOption;
-  status: "draft" | "signed" | "approved" | "cancelled";
+  status: Status;
+  customer_name?: string | null;
   created_at?: string | null;
-  signed_at?: string | null;
   approved_at?: string | null;
-
-  // Optional fields (may or may not exist in your DB)
-  tank_size_l?: number | null;
-  monthly_consumption_l?: number | null;
-  market_price_gbp_l?: number | null;
-  fuelflow_price_gbp_l?: number | null;
-  est_monthly_savings_gbp?: number | null;
-  est_payback_months?: number | null;
-
-  // The download path is OPTIONAL. If you add this column later,
-  // the page will automatically start showing a working link.
+  signed_at?: string | null;
   signed_pdf_path?: string | null;
+  approved_pdf_path?: string | null;
 };
 
-type TermsRow = {
-  id: string;
-  email: string | null;
-  accepted_at: string;
-  version: string;
-};
+const TERMS_VERSION = "v1.1";
 
 /* =========================
-   Small UI tokens
+   UI tokens
    ========================= */
-const uiCard =
-  "rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur px-5 py-4 shadow";
-const uiBadge = "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium";
+const uiPage = "min-h-screen bg-[#061B34] text-white";
+const uiWrap = "mx-auto w-full max-w-6xl px-4 py-8";
+const uiCard = "rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-5 shadow";
+const uiBadge = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold";
 const uiBtn =
-  "inline-flex items-center rounded-xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
-const uiBtnGhost = "bg-white/10 hover:bg-white/15 border border-white/10";
+  "inline-flex items-center justify-center rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
 const uiBtnPrimary = "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
-
-/* =========================
-   Helpers
-   ========================= */
-const GBP = (n: number | null | undefined) =>
-  n == null || !Number.isFinite(n)
-    ? "—"
-    : new Intl.NumberFormat("en-GB", {
-        style: "currency",
-        currency: "GBP",
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      }).format(n);
-
-const prettyDate = (iso?: string | null) => {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString();
-  } catch {
-    return "—";
-  }
-};
-
-function StatusPill({ tone, text }: { tone: "ok" | "warn" | "muted"; text: string }) {
-  const map = {
-    ok: "bg-emerald-500/15 text-emerald-300",
-    warn: "bg-yellow-500/15 text-yellow-300",
-    muted: "bg-white/10 text-white/60",
-  } as const;
-  return <span className={`${uiBadge} ${map[tone]}`}>{text}</span>;
-}
-
-function getPublicUrlIfAny(path?: string | null): string | null {
-  if (!path) return null;
-  const { data } = supabase.storage.from("contracts").getPublicUrl(path);
-  return data?.publicUrl ?? null;
-}
+const uiBtnGhost = "bg-white/10 hover:bg-white/15 text-white border border-white/10";
+const uiBtnSoft = "bg-white/8 border border-white/10 text-white hover:bg-white/12";
+const uiHeading = "text-3xl font-bold";
+const uiRow = "grid grid-cols-1 md:grid-cols-3 gap-5";
+const uiPill = (tone: "ok" | "warn" | "info") =>
+  `${uiBadge} ${tone === "ok" ? "bg-green-500/20 text-green-200" : tone === "warn" ? "bg-amber-500/20 text-amber-200" : "bg-white/15 text-white/80"}`;
 
 /* =========================
    Page
    ========================= */
 export default function DocumentsPage() {
-  const [email, setEmail] = useState<string>("");
-  const [terms, setTerms] = useState<TermsRow | null>(null);
+  const supabase = supabaseBrowser;
+  const [email, setEmail] = useState("");
+  const [termsAccepted, setTermsAccepted] = useState<boolean | null>(null);
+  const [termsAcceptedAt, setTermsAcceptedAt] = useState<string | null>(null);
+
   const [contracts, setContracts] = useState<ContractRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Modal (wizard) state
+  // Wizard
   const [showWizard, setShowWizard] = useState(false);
   const [wizardOption, setWizardOption] = useState<TankOption>("buy");
   const [saving, setSaving] = useState(false);
 
-  // Wizard fields (simple version; expand as needed)
+  // Wizard fields (kept minimal—you can add all previous fields here)
   const [fullName, setFullName] = useState("");
-  const [signatureName, setSignatureName] = useState("");
   const [phone, setPhone] = useState("");
   const [companyName, setCompanyName] = useState("");
+  const [signatureName, setSignatureName] = useState("");
 
+  // Prefill auth email
   useEffect(() => {
     (async () => {
+      const { data } = await supabase.auth.getUser();
+      const em = (data?.user?.email || "").toLowerCase();
+      if (em) setEmail(em);
+    })();
+  }, [supabase]);
+
+  // Load Terms + Contracts
+  useEffect(() => {
+    if (!email) return;
+    setLoading(true);
+    (async () => {
       try {
-        setLoading(true);
-
-        // who am I?
-        const { data: auth } = await supabase.auth.getUser();
-        const em = (auth?.user?.email || "").toLowerCase();
-        setEmail(em);
-
-        // terms (latest for this version)
-        const TERMS_VERSION = "v1.1";
+        // TERMS
         const { data: t } = await supabase
           .from("terms_acceptances")
-          .select("id,email,accepted_at,version")
-          .eq("email", em)
+          .select("accepted_at")
           .eq("version", TERMS_VERSION)
+          .eq("email", email)
           .order("accepted_at", { ascending: false })
-          .limit(1);
-        setTerms((t?.[0] as TermsRow) || null);
+          .limit(1)
+          .maybeSingle();
 
-        // contracts (select * so we don't error if columns are missing)
+        if (t?.accepted_at) {
+          setTermsAccepted(true);
+          setTermsAcceptedAt(t.accepted_at);
+        } else {
+          setTermsAccepted(false);
+          setTermsAcceptedAt(null);
+        }
+
+        // CONTRACTS
         const { data: rows, error } = await supabase
           .from("contracts")
-          .select("*")
-          .eq("email", em)
+          .select(
+            "id,email,tank_option,status,customer_name,created_at,approved_at,signed_at,signed_pdf_path,approved_pdf_path"
+          )
+          .eq("email", email)
           .order("created_at", { ascending: false });
 
-        if (error) {
-          alert(`Failed to load contracts:\n${error.message}`);
-        }
-        setContracts((rows || []) as ContractRow[]);
+        if (error) throw error;
+        setContracts((rows ?? []) as ContractRow[]);
+      } catch (e: any) {
+        alert(`Failed to load contracts:\n${e?.message || e}`);
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [email, supabase]);
 
   const buy = useMemo(
-    () =>
-      contracts.find((r) => r.tank_option === "buy") ||
-      (null as ContractRow | null),
+    () => contracts.find((c) => c.tank_option === "buy"),
     [contracts]
   );
   const rent = useMemo(
-    () =>
-      contracts.find((r) => r.tank_option === "rent") ||
-      (null as ContractRow | null),
+    () => contracts.find((c) => c.tank_option === "rent"),
     [contracts]
   );
 
-  const buyActive = !!buy && (buy.status === "approved" || buy.status === "signed");
-  const rentActive = !!rent && rent.status === "approved";
-  const rentWaiting = !!rent && rent.status === "signed" && !rent.approved_at;
+  const isBuyActive = buy && (buy.status === "signed" || buy.status === "approved");
+  const isRentActive = rent && rent.status === "approved";
 
-  const canContinue = !!terms && (buyActive || rentActive);
+  const canContinue = Boolean(termsAccepted && (isBuyActive || isRentActive));
 
-  async function openWizard(opt: TankOption) {
-    setWizardOption(opt);
-    setShowWizard(true);
+  function pdfUrl(c?: ContractRow | null) {
+    if (!c) return null;
+    // prefer approved PDF for RENT; otherwise signed
+    const path = c.approved_pdf_path || c.signed_pdf_path;
+    return publicFileUrl(path);
   }
 
-  async function saveContract() {
-    if (!email) return alert("Not authenticated.");
-    if (!fullName.trim()) return alert("Please enter full name.");
-    if (!signatureName.trim()) return alert("Please type your legal signature.");
+  async function openTerms() {
+    // Your existing terms page; preserve the return to documents
+    const ret = `/terms?return=/documents${email ? `&email=${encodeURIComponent(email)}` : ""}`;
+    window.location.href = ret;
+  }
 
-    const now = new Date().toISOString();
-
-    // Minimal payload
-    const base = {
-      email,
-      customer_name: fullName,
-      phone: phone || null,
-      company_name: companyName || null,
-      tank_option: wizardOption,
-      status: wizardOption === "buy" ? ("signed" as const) : ("signed" as const), // buy active when signed; rent needs approval
-      signed_at: now,
-    };
-
+  async function saveContract(option: TankOption) {
+    if (!fullName.trim()) {
+      alert("Please enter your full name.");
+      return;
+    }
+    if (!signatureName.trim()) {
+      alert("Please type your full legal name as signature.");
+      return;
+    }
     try {
       setSaving(true);
-
-      const { error } = await supabase.from("contracts").insert(base as any);
-      if (error) throw error;
-
+      const { error } = await supabase.from("contracts").insert({
+        tank_option: option,
+        contract_type: option,
+        email,
+        customer_name: fullName,
+        extra: { phone, companyName },
+        terms_version: TERMS_VERSION,
+        signature_name: signatureName,
+        status: "signed",
+        signed_at: new Date().toISOString(),
+      } as any);
+      if (error) {
+        if (/duplicate|unique/i.test(error.message)) {
+          alert("You already have an active contract of this type.");
+        } else {
+          throw error;
+        }
+      }
+      setShowWizard(false);
       // refresh
       const { data: rows } = await supabase
         .from("contracts")
-        .select("*")
+        .select(
+          "id,email,tank_option,status,customer_name,created_at,approved_at,signed_at,signed_pdf_path,approved_pdf_path"
+        )
         .eq("email", email)
         .order("created_at", { ascending: false });
-      setContracts((rows || []) as ContractRow[]);
-      setShowWizard(false);
-
-      if (wizardOption === "buy") {
-        alert("Purchase contract signed. You can order immediately.");
-      } else {
-        alert("Rental contract signed. Waiting for admin approval.");
-      }
+      setContracts((rows ?? []) as ContractRow[]);
+      alert(option === "buy" ? "Purchase contract signed." : "Rental contract signed. Waiting approval.");
     } catch (e: any) {
       alert(e?.message || "Failed to save contract.");
     } finally {
@@ -227,291 +194,252 @@ export default function DocumentsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#0A223F] text-white">
-      <div className="mx-auto w-full max-w-6xl px-4 py-8">
+    <main className={uiPage}>
+      <div className={uiWrap}>
         {/* Header */}
-        <div className="mb-6 flex items-center gap-3">
-          <img src="/logo-email.png" alt="FuelFlow" width={116} height={28} className="opacity-90" />
-          <h1 className="text-3xl font-bold ml-2">Documents</h1>
-          <div className="ml-auto">
-            <Link href="/client-dashboard" className={`${uiBtn} ${uiBtnGhost}`}>
-              ← Back to dashboard
-            </Link>
+        <div className="mb-6 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <img src="/logo-email.png" alt="FuelFlow" width={116} height={28} className="opacity-90" />
+            <h1 className={uiHeading}>Documents</h1>
           </div>
+          <Link className={`${uiBtn} ${uiBtnSoft}`} href="/client-dashboard">
+            ← Back to dashboard
+          </Link>
         </div>
 
         {/* Cards */}
-        <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <section className={`${uiCard} p-6`}>
+          <div className={uiRow}>
             {/* Terms */}
-            <div className={uiCard}>
-              <div className="flex items-center gap-3">
-                <DocIcon />
-                <div className="text-lg font-semibold">Terms &amp; Conditions</div>
-                <div className="ml-auto">
-                  {terms ? <StatusPill tone="ok" text="Accepted" /> : <StatusPill tone="warn" text="Missing" />}
-                </div>
-              </div>
-              <div className="mt-2 text-white/70 text-sm">
-                {terms ? `Accepted · ${prettyDate(terms.accepted_at)}` : "You must accept before ordering"}
-              </div>
-              <div className="mt-4">
-                <Link href="/terms" className={`${uiBtn} ${uiBtnGhost}`}>
-                  View
-                </Link>
-              </div>
-            </div>
+            <Card
+              title="Terms & Conditions"
+              statusBadge={
+                termsAccepted ? <Badge tone="ok">Accepted</Badge> : <Badge tone="warn">Missing</Badge>
+              }
+              subtitle={termsAccepted ? `Accepted · ${new Date(termsAcceptedAt || "").toLocaleDateString()}` : "You must accept before ordering"}
+              action={
+                <button className={`${uiBtn} ${uiBtnGhost}`} onClick={openTerms}>View</button>
+              }
+            />
 
             {/* Buy */}
-            <div className={uiCard}>
-              <div className="flex items-center gap-3">
-                <ShieldIcon />
-                <div className="text-lg font-semibold">Buy contract</div>
-                <div className="ml-auto">
-                  {buyActive ? (
-                    <StatusPill tone="ok" text="Active" />
-                  ) : buy?.status === "signed" ? (
-                    <StatusPill tone="warn" text="Signed" />
-                  ) : (
-                    <StatusPill tone="muted" text="Not signed" />
-                  )}
-                </div>
-              </div>
-              <div className="mt-2 text-white/70 text-sm">
-                {buyActive
-                  ? "Active — order anytime"
-                  : buy?.status === "signed"
-                  ? "Signed — order anytime"
-                  : "Sign once — then order anytime"}
-              </div>
-              <div className="mt-4 flex gap-2">
-                <button
-                  className={`${uiBtn} ${uiBtnGhost}`}
-                  onClick={() => openWizard("buy")}
-                  disabled={!terms || buyActive}
-                  title={!terms ? "Accept Terms first" : buyActive ? "Already active" : ""}
-                >
-                  {buy ? "Manage" : "Start"}
-                </button>
-
-                {/* Download button (enabled only if we have a path) */}
-                <DownloadButton contract={buy} />
-              </div>
-            </div>
+            <Card
+              title="Buy contract"
+              statusBadge={
+                isBuyActive ? <Badge tone="ok">Active</Badge> : <Badge tone="warn">Not signed</Badge>
+              }
+              subtitle={isBuyActive ? "Active — order anytime" : "Sign once — then order anytime"}
+              action={
+                isBuyActive ? (
+                  <div className="flex items-center gap-3">
+                    <span className={`${uiBtn} bg-white/10 border border-white/10 text-white cursor-default`}>Active</span>
+                    <DownloadButton url={pdfUrl(buy)} />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <button
+                      className={`${uiBtn} ${uiBtnGhost}`}
+                      onClick={() => { setWizardOption("buy"); setShowWizard(true); }}
+                    >
+                      Start
+                    </button>
+                    <DownloadButton url={null} />
+                  </div>
+                )
+              }
+            />
 
             {/* Rent */}
-            <div className={uiCard}>
-              <div className="flex items-center gap-3">
-                <BuildingIcon />
-                <div className="text-lg font-semibold">Rent contract</div>
-                <div className="ml-auto">
-                  {rentActive ? (
-                    <StatusPill tone="ok" text="Active" />
-                  ) : rentWaiting ? (
-                    <StatusPill tone="warn" text="Signed" />
-                  ) : (
-                    <StatusPill tone="muted" text="Not signed" />
-                  )}
-                </div>
-              </div>
-              <div className="mt-2 text-white/70 text-sm">
-                {rentActive
-                  ? "Active — order anytime"
-                  : rentWaiting
-                  ? "Signed · awaiting approval"
-                  : "Needs admin approval after signing"}
-              </div>
-              <div className="mt-4 flex gap-2">
-                <button
-                  className={`${uiBtn} ${uiBtnGhost}`}
-                  onClick={() => openWizard("rent")}
-                  disabled={!terms || rentActive || rentWaiting}
-                  title={
-                    !terms
-                      ? "Accept Terms first"
-                      : rentActive
-                      ? "Already active"
-                      : rentWaiting
-                      ? "Awaiting approval"
-                      : ""
-                  }
-                >
-                  {rent ? "Manage" : "Start"}
-                </button>
-
-                {/* Download button (enabled only if we have a path) */}
-                <DownloadButton contract={rent} />
-              </div>
-            </div>
+            <Card
+              title="Rent contract"
+              statusBadge={
+                isRentActive ? <Badge tone="ok">Active</Badge> : <Badge tone="warn">Not signed</Badge>
+              }
+              subtitle={isRentActive ? "Active — order anytime" : "Needs admin approval after signing"}
+              action={
+                isRentActive ? (
+                  <div className="flex items-center gap-3">
+                    <span className={`${uiBtn} bg-white/10 border border-white/10 text-white cursor-default`}>Active</span>
+                    <DownloadButton url={pdfUrl(rent)} />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <button
+                      className={`${uiBtn} ${uiBtnGhost}`}
+                      onClick={() => { setWizardOption("rent"); setShowWizard(true); }}
+                    >
+                      Start
+                    </button>
+                    <DownloadButton url={null} />
+                  </div>
+                )
+              }
+            />
           </div>
 
-          {/* CTA */}
-          <div className="mt-8 text-center">
+          {/* Continue */}
+          <div className="mt-8 flex items-center justify-center">
             <Link
-              className={`${uiBtn} ${uiBtnPrimary}`}
               href="/order"
+              className={`${uiBtn} ${uiBtnPrimary} text-base px-6 py-3`}
               aria-disabled={!canContinue}
-              onClick={(e) => {
-                if (!canContinue) e.preventDefault();
-              }}
+              onClick={(e) => { if (!canContinue) { e.preventDefault(); } }}
             >
               Continue to Order
             </Link>
-            {!canContinue && (
-              <div className="mt-2 text-sm text-white/60">
-                Accept Terms and have an active contract to continue.
-              </div>
-            )}
           </div>
-        </div>
 
-        {/* Footer mini-links */}
-        <footer className="mt-10 text-sm text-white/70">
-          <div className="border-t border-white/10 pt-4 flex flex-wrap items-center gap-4">
-            <Link href="/terms" className="hover:underline">
-              Terms &amp; Conditions
-            </Link>
-            <span className="opacity-30">|</span>
-            <Link href="/privacy" className="hover:underline">
-              Privacy policy
-            </Link>
-            <span className="opacity-30">|</span>
-            <Link href="/cookies" className="hover:underline">
-              Cookie policy
-            </Link>
-            <span className="opacity-30">|</span>
-            <Link href="/cookies/manage" className="hover:underline">
-              Manage cookies
-            </Link>
-            <div className="ml-auto opacity-60">© {new Date().getFullYear()} FuelFlow</div>
-          </div>
-        </footer>
+          {!canContinue && (
+            <p className="mt-3 text-center text-white/70">
+              Accept Terms and have an active contract to continue.
+            </p>
+          )}
+        </section>
       </div>
 
-      {/* Simple contract wizard modal */}
+      {/* Wizard Modal */}
       {showWizard && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/60" onClick={() => !saving && setShowWizard(false)} />
-          <div className="relative w-[95%] max-w-2xl rounded-2xl bg-[#0B274B] border border-white/10 p-5 shadow-xl">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">
-                Start {wizardOption === "buy" ? "Purchase" : "Rental"} Contract
-              </h3>
-              <button
-                aria-label="Close"
-                className="rounded-lg p-2 text-white/70 hover:bg-white/10"
-                onClick={() => !saving && setShowWizard(false)}
-              >
-                ✕
-              </button>
+        <Modal
+          title={`Start ${wizardOption === "buy" ? "Purchase" : "Rental"} Contract`}
+          onClose={() => !saving && setShowWizard(false)}
+        >
+          <div className="space-y-4">
+            <Field label="Full name">
+              <input className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2"
+                     value={fullName} onChange={(e) => setFullName(e.target.value)} />
+            </Field>
+            <Field label="Phone">
+              <input className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2"
+                     value={phone} onChange={(e) => setPhone(e.target.value)} />
+            </Field>
+            <Field label="Company (optional)">
+              <input className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2"
+                     value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
+            </Field>
+
+            <div className="rounded-xl border border-white/10 bg-gradient-to-r from-yellow-500/10 to-red-500/10 p-3 text-center">
+              <span className="font-semibold text-yellow-300 tracking-wide">
+                ESTIMATE ONLY — prices fluctuate daily based on market conditions
+              </span>
             </div>
 
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Field label="Full name">
-                <input
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                />
-              </Field>
-              <Field label="Phone">
-                <input
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                />
-              </Field>
-              <Field label="Company name">
-                <input
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30"
-                  value={companyName}
-                  onChange={(e) => setCompanyName(e.target.value)}
-                />
-              </Field>
-              <Field label="Type your full legal name as signature">
-                <input
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30"
-                  value={signatureName}
-                  onChange={(e) => setSignatureName(e.target.value)}
-                  placeholder="Jane Smith"
-                />
-              </Field>
-            </div>
+            <Field label="Type your full legal name as signature">
+              <input className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2"
+                     placeholder="Jane Smith"
+                     value={signatureName}
+                     onChange={(e) => setSignatureName(e.target.value)} />
+            </Field>
 
-            <div className="mt-6 flex justify-end gap-3">
-              <button className={`${uiBtn} ${uiBtnGhost}`} disabled={saving} onClick={() => setShowWizard(false)}>
-                Cancel
-              </button>
-              <button className={`${uiBtn} ${uiBtnPrimary}`} disabled={saving} onClick={saveContract}>
+            <div className="flex justify-end gap-3 pt-2">
+              <button className={`${uiBtn} ${uiBtnGhost}`} disabled={saving} onClick={() => setShowWizard(false)}>Cancel</button>
+              <button className={`${uiBtn} ${uiBtnPrimary}`} disabled={saving} onClick={() => saveContract(wizardOption)}>
                 {saving ? "Saving…" : "Sign & Save"}
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
+
+      {/* Footer */}
+      <Footer />
     </main>
   );
 }
 
 /* =========================
-   Small helpers/components
+   Small components
    ========================= */
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Card({
+  title,
+  statusBadge,
+  subtitle,
+  action,
+}: {
+  title: string;
+  statusBadge?: React.ReactNode;
+  subtitle?: string;
+  action?: React.ReactNode;
+}) {
   return (
-    <label className="block">
-      <span className="block mb-1 text-sm text-white/80">{label}</span>
-      {children}
-    </label>
+    <div className="rounded-2xl border border-white/10 bg-white/3 p-5">
+      <div className="flex items-center justify-between">
+        <div className="text-lg font-semibold flex items-center gap-3">
+          {title}
+          {statusBadge}
+        </div>
+      </div>
+      {subtitle && <div className="text-white/70 text-sm mt-1">{subtitle}</div>}
+      <div className="mt-4">{action}</div>
+    </div>
   );
 }
 
-function DownloadButton({ contract }: { contract: ContractRow | null }) {
-  const url = getPublicUrlIfAny(contract?.signed_pdf_path || null);
-  const disabled = !url;
+function Badge({ children, tone }: { children: React.ReactNode; tone: "ok" | "warn" | "info" }) {
+  return <span className={uiPill(tone)}>{children}</span>;
+}
+
+function DownloadButton({ url }: { url: string | null }) {
+  const enabled = Boolean(url);
   return (
     <a
-      href={url || "#"}
-      target={url ? "_blank" : undefined}
-      rel={url ? "noopener noreferrer" : undefined}
-      onClick={(e) => {
-        if (!url) e.preventDefault();
-      }}
-      className={`${uiBtn} ${uiBtnGhost}`}
-      aria-disabled={disabled}
-      title={disabled ? "No signed PDF available yet" : "Download signed PDF"}
-      style={{ pointerEvents: disabled ? "none" : "auto" }}
+      className={`${uiBtn} ${enabled ? uiBtnSoft : "bg-white/5 text-white/50 border border-white/10 cursor-not-allowed"}`}
+      href={enabled ? url! : undefined}
+      target={enabled ? "_blank" : undefined}
+      rel="noreferrer"
+      onClick={(e) => { if (!enabled) e.preventDefault(); }}
     >
       Download signed PDF
     </a>
   );
 }
 
-function DocIcon() {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path
-        fill="currentColor"
-        d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm0 0v6h6"
-        opacity=".6"
-      />
-      <path fill="currentColor" d="M8 13h8v2H8zm0-4h5v2H8zm0 8h8v2H8z" />
-    </svg>
+    <div>
+      <div className="text-sm text-white/80 mb-1">{label}</div>
+      {children}
+    </div>
   );
 }
-function ShieldIcon() {
+
+function Modal({
+  title,
+  children,
+  onClose,
+}: {
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path fill="currentColor" d="M12 2l7 4v6c0 5-3.5 9-7 10c-3.5-1-7-5-7-10V6z" opacity=".6" />
-      <path fill="currentColor" d="M12 6l4 2v3c0 3.5-2.3 6.3-4 7c-1.7-.7-4-3.5-4-7V8z" />
-    </svg>
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} aria-hidden="true" />
+      <div className="relative w-[95%] max-w-3xl rounded-2xl bg-[#0B274B] border border-white/10 p-5 shadow-xl">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-semibold">{title}</h3>
+          <button aria-label="Close" className="rounded-lg p-2 text-white/70 hover:bg-white/10" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="mt-3">{children}</div>
+      </div>
+    </div>
   );
 }
-function BuildingIcon() {
+
+function Footer() {
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" className="text-white/80">
-      <path fill="currentColor" d="M3 21V7l9-4l9 4v14h-7v-5h-4v5z" opacity=".6" />
-      <path fill="currentColor" d="M9 11h2v2H9zm4 0h2v2h-2zM9 15h2v2H9zm4 0h2v2h-2z" />
-    </svg>
+    <footer className="mt-10 border-t border-white/10">
+      <div className="mx-auto max-w-6xl px-4 py-6 text-sm text-white/70 flex items-center justify-between">
+        <div className="flex items-center gap-6">
+          <Link href="/terms" className="hover:text-white">Terms & Conditions</Link>
+          <Link href="/privacy" className="hover:text-white">Privacy policy</Link>
+          <Link href="/cookies" className="hover:text-white">Cookie policy</Link>
+          <Link href="/cookies/manage" className="hover:text-white">Manage cookies</Link>
+        </div>
+        <div>© {new Date().getFullYear()} FuelFlow</div>
+      </div>
+    </footer>
   );
 }
