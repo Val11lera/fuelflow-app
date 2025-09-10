@@ -1,4 +1,5 @@
 // src/pages/login.tsx
+// src/pages/login.tsx
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -148,7 +149,7 @@ export default function Login() {
   }
 
   return (
-    <div className="relative min-h-screen text-white">
+    <div className="relative flex min-h-[100svh] md:min-h-screen flex-col text-white pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       {/* Premium layered background */}
       <div className="absolute inset-0 bg-gradient-to-b from-[#0b2344] via-[#061B34] to-[#041F3E]" />
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.08),transparent_55%)]" />
@@ -174,7 +175,7 @@ export default function Login() {
         </div>
       </header>
 
-      <main className="relative z-10">
+      <main className="relative z-10 flex-1">
         <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-5 py-8 lg:grid-cols-12 lg:py-12">
           {/* Brand / value props (hidden on very small screens) */}
           <section className="order-2 lg:order-1 lg:col-span-7">
@@ -209,9 +210,12 @@ export default function Login() {
           <section className="order-1 lg:order-2 lg:col-span-5">
             <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-6 shadow-2xl backdrop-blur-md ring-1 ring-white/10">
               <div className="mb-4 flex items-center gap-2">
-                <div className="grid h-9 w-9 place-items-center rounded-xl bg-yellow-500 text-[#041F3E] font-bold">
-                  FF
-                </div>
+                {/* Replaced yellow "FF" box with your logo */}
+                <img
+                  src="/logo-email.png"
+                  alt="FuelFlow logo"
+                  className="h-8 w-auto"
+                />
                 <div>
                   <div className="text-lg font-semibold">Client Login</div>
                   <div className="text-xs text-white/60">Use your account email and password</div>
