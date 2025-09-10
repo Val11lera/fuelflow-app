@@ -245,22 +245,20 @@ export default function ClientDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function loadContracts(emailLower: string) {
-    const { data } = await supabase
-      .from("contracts")
-      .select(
-        "id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path"
-      )
-      .eq("email", emailLower)
-      .order("created_at", { ascending: false });
+async function loadContracts(emailLower: string) {
+  const { data } = await supabase
+    .from("contracts")
+    .select(
+      "id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path"
+    )
+    .eq("email", emailLower)
+    .order("created_at", { ascending: false });
 
-    const rows = (data || []) as ContractRow[];
-    const latestBuy = rows.find((r) => r.tank_option === "buy") ?? null;
-    const latestRent = rows.find((r) => r.tank_option === "rent") ?? null;
+  const rows = (data || []) as ContractRow[];
+  setBuyContract(rows.find((r) => r.tank_option === "buy") ?? null);
+  setRentContract(rows.find((r) => r.tank_option === "rent") ?? null);
+}
 
-    setBuyContract(latestBuy);
-    setRentContract(latestRent);
-  }
 
   // Normalises price columns (handles GBP or pence) and picks latest timestamp
 async function loadLatestPrices() {
