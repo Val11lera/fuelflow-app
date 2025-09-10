@@ -55,6 +55,9 @@ type ContractRow = {
 
   signed_pdf_path?: string | null;
   approved_pdf_path?: string | null;
+
+  /* NEW: link to terms acceptance */
+  terms_acceptance_id?: string | null;
 };
 
 type PriceRow = { fuel: string; total_price: number; price_date?: string | null };
@@ -81,6 +84,9 @@ export default function DocumentsPage() {
   // status guide
   const [showGuide, setShowGuide] = useState(false);
 
+  // NEW: capture the acceptance ID from the URL (?ta=uuid)
+  const [taFromQuery, setTaFromQuery] = useState<string | null>(null);
+
   // ---------- load ----------
   useEffect(() => {
     (async () => {
@@ -92,6 +98,11 @@ export default function DocumentsPage() {
       }
       const emailLower = (auth.user.email || "").toLowerCase();
       setUserEmail(emailLower);
+
+      // read ?ta
+      const p = new URLSearchParams(window.location.search);
+      const ta = p.get("ta");
+      setTaFromQuery(ta || null);
 
       // terms
       const { data: t } = await supabase
@@ -247,6 +258,7 @@ export default function DocumentsPage() {
           title="Buy Contract"
           option="buy"
           userEmail={userEmail}
+          taId={taFromQuery}
           defaults={{
             fuelflow_price_gbp_l: petrolPrice ?? dieselPrice ?? undefined,
           }}
@@ -265,6 +277,7 @@ export default function DocumentsPage() {
           title="Rent Contract"
           option="rent"
           userEmail={userEmail}
+          taId={taFromQuery}
           defaults={{
             fuelflow_price_gbp_l: dieselPrice ?? petrolPrice ?? undefined,
           }}
@@ -289,39 +302,14 @@ function StatusBadge({
   status?: ContractStatus;
   onClick?: () => void;
 }) {
-  // Map to label + styles + icon
   const config =
     status === "approved"
-      ? {
-          label: "Active",
-          ring: "ring-emerald-400/30",
-          bg: "from-emerald-600/25 to-emerald-400/15",
-          text: "text-emerald-200",
-          Icon: CheckIcon,
-        }
+      ? { label: "Active", ring: "ring-emerald-400/30", bg: "from-emerald-600/25 to-emerald-400/15", text: "text-emerald-200", Icon: CheckIcon }
       : status === "signed"
-      ? {
-          label: "Awaiting approval",
-          ring: "ring-amber-400/30",
-          bg: "from-amber-600/25 to-amber-400/15",
-          text: "text-amber-200",
-          Icon: HourglassIcon,
-        }
+      ? { label: "Awaiting approval", ring: "ring-amber-400/30", bg: "from-amber-600/25 to-amber-400/15", text: "text-amber-200", Icon: HourglassIcon }
       : status === "cancelled"
-      ? {
-          label: "Cancelled",
-          ring: "ring-rose-400/30",
-          bg: "from-rose-600/25 to-rose-400/15",
-          text: "text-rose-200",
-          Icon: XCircleIcon,
-        }
-      : {
-          label: "Not signed",
-          ring: "ring-slate-400/20",
-          bg: "from-slate-600/25 to-slate-500/10",
-          text: "text-slate-200",
-          Icon: MinusIcon,
-        };
+      ? { label: "Cancelled", ring: "ring-rose-400/30", bg: "from-rose-600/25 to-rose-400/15", text: "text-rose-200", Icon: XCircleIcon }
+      : { label: "Not signed", ring: "ring-slate-400/20", bg: "from-slate-600/25 to-slate-500/10", text: "text-slate-200", Icon: MinusIcon };
 
   const { label, ring, bg, text, Icon } = config;
 
@@ -367,30 +355,10 @@ function CollapsibleGuide({ open, onClose }: { open: boolean; onClose: () => voi
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <GuideCard
-            title="Active"
-            description="Your contract is approved and ready to use. You can place orders immediately."
-            tone="emerald"
-            Icon={CheckIcon}
-          />
-          <GuideCard
-            title="Awaiting approval"
-            description="You’ve signed the contract. Our team must perform a quick compliance check before it goes live."
-            tone="amber"
-            Icon={HourglassIcon}
-          />
-          <GuideCard
-            title="Cancelled"
-            description="This contract is no longer active. Start a new one to continue."
-            tone="rose"
-            Icon={XCircleIcon}
-          />
-          <GuideCard
-            title="Not signed"
-            description="No contract on file. Start and sign to proceed."
-            tone="slate"
-            Icon={MinusIcon}
-          />
+          <GuideCard title="Active" description="Your contract is approved and ready to use. You can place orders immediately." tone="emerald" Icon={CheckIcon} />
+          <GuideCard title="Awaiting approval" description="You’ve signed the contract. Our team must perform a quick compliance check before it goes live." tone="amber" Icon={HourglassIcon} />
+          <GuideCard title="Cancelled" description="This contract is no longer active. Start a new one to continue." tone="rose" Icon={XCircleIcon} />
+          <GuideCard title="Not signed" description="No contract on file. Start and sign to proceed." tone="slate" Icon={MinusIcon} />
         </div>
       </div>
     </div>
@@ -416,16 +384,7 @@ function GuideCard({
   }[tone];
 
   return (
-    <div
-      className={cx(
-        "rounded-xl border border-white/10 p-4",
-        "bg-gradient-to-r",
-        map.bg,
-        map.text,
-        "ring-1",
-        map.ring
-      )}
-    >
+    <div className={cx("rounded-xl border border-white/10 p-4", "bg-gradient-to-r", map.bg, map.text, "ring-1", map.ring)}>
       <div className="mb-1 inline-flex items-center gap-2 text-sm font-semibold">
         <Icon className="h-4 w-4" />
         {title}
@@ -499,10 +458,7 @@ function Tile(props: {
               {props.primary.label}
             </a>
           ) : (
-            <button
-              className="rounded-lg bg-yellow-500 px-3 py-2 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
-              onClick={props.primary.onClick}
-            >
+            <button className="rounded-lg bg-yellow-500 px-3 py-2 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400" onClick={props.primary.onClick}>
               {props.primary.label}
             </button>
           ))}
@@ -517,6 +473,7 @@ function ContractModal({
   title,
   option,
   userEmail,
+  taId,
   defaults,
   existing,
   onClose,
@@ -525,6 +482,7 @@ function ContractModal({
   title: string;
   option: TankOption;
   userEmail: string;
+  taId?: string | null; // NEW
   defaults?: Partial<ContractRow>;
   existing?: ContractRow;
   onClose: () => void;
@@ -588,6 +546,21 @@ function ContractModal({
     return Math.round((capex / monthlySaving) * 10) / 10;
   }, [capex, monthlySaving]);
 
+  // helper: latest acceptance id if taId isn't present
+  async function getLatestAcceptanceId(): Promise<string | null> {
+    const { data, error } = await supabase
+      .from("terms_acceptances")
+      .select("id")
+      .eq("email", userEmail)
+      .eq("version", TERMS_VERSION)
+      .order("accepted_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) return null;
+    return data?.id ?? null;
+  }
+
   async function onSave() {
     try {
       setSubmitting(true);
@@ -599,11 +572,14 @@ function ContractModal({
 
       const now = new Date().toISOString();
 
-      // derive NOT NULL customer_name
+      // pick acceptance id: prefer query one, else latest for this email+version
+      const terms_acceptance_id = taId || (await getLatestAcceptanceId());
+      if (!terms_acceptance_id) {
+        throw new Error("Please accept the latest Terms before signing the contract.");
+      }
+
       const derivedCustomerName =
-        (company_name || "").trim() ||
-        (contact_name || "").trim() ||
-        (signature || "").trim();
+        (company_name || "").trim() || (contact_name || "").trim() || (signature || "").trim();
 
       const payload: Partial<ContractRow> = {
         email: userEmail,
@@ -641,6 +617,9 @@ function ContractModal({
         capex_gbp: numOrNull(capex),
 
         signature_name: signature,
+
+        // NEW: the actual link!
+        terms_acceptance_id,
       } as any;
 
       const { error } = await supabase.from("contracts").insert([payload]);
@@ -719,25 +698,10 @@ function ContractModal({
           <Section title="Tank & ROI">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Field label="Tank size (L)" value={tankSize} onChange={(v) => setTankSize(toNum(v))} type="number" />
-              <Field
-                label="Monthly consumption (L)"
-                value={monthlyLitres}
-                onChange={(v) => setMonthlyLitres(toNum(v))}
-                type="number"
-              />
+              <Field label="Monthly consumption (L)" value={monthlyLitres} onChange={(v) => setMonthlyLitres(toNum(v))} type="number" />
               <span />
-              <Field
-                label="Market price (£/L)"
-                value={marketPrice}
-                onChange={(v) => setMarketPrice(toNum(v))}
-                type="number"
-              />
-              <Field
-                label="FuelFlow price (£/L)"
-                value={ffPrice}
-                onChange={(v) => setFfPrice(toNum(v))}
-                type="number"
-              />
+              <Field label="Market price (£/L)" value={marketPrice} onChange={(v) => setMarketPrice(toNum(v))} type="number" />
+              <Field label="FuelFlow price (£/L)" value={ffPrice} onChange={(v) => setFfPrice(toNum(v))} type="number" />
               <Field label="Capex (£)" value={capex} onChange={(v) => setCapex(toNum(v))} type="number" />
             </div>
 
@@ -762,9 +726,7 @@ function ContractModal({
             </p>
           </Section>
 
-          {error && (
-            <div className="rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">{error}</div>
-          )}
+          {error && <div className="rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">{error}</div>}
         </div>
 
         {/* sticky footer */}
@@ -845,3 +807,4 @@ function fmtMoney(n?: number | null): string {
   const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
   return gbp.format(Number(n));
 }
+
