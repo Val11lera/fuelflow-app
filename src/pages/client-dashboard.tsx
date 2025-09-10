@@ -262,61 +262,86 @@ export default function ClientDashboard() {
     setRentContract(latestRent);
   }
 
-  // Prices loader w/ fallbacks
-  async function loadLatestPrices() {
-    setPetrolPrice(null);
-    setDieselPrice(null);
-    setPriceDate(null);
+  // Normalises price columns (handles GBP or pence) and picks latest timestamp
+async function loadLatestPrices() {
+  setPetrolPrice(null);
+  setDieselPrice(null);
+  setPriceDate(null);
 
-    const apply = (rows: { fuel: string; total_price: number; price_date?: string | null }[]) => {
-      let latest: string | null = null;
-      rows.forEach((r) => {
-        const f = String(r.fuel).toLowerCase();
-        if (f === "petrol") setPetrolPrice(Number(r.total_price));
-        if (f === "diesel") setDieselPrice(Number(r.total_price));
-        if (r.price_date) {
-          if (!latest || new Date(r.price_date) > new Date(latest)) latest = r.price_date;
-        }
-      });
-      if (latest) setPriceDate(latest);
-    };
+  type Row = {
+    fuel?: string;
+    total_price?: number;
+    price?: number;
+    latest_price?: number;
+    unit_price?: number;
+    price_date?: string | null;
+    updated_at?: string | null;
+    created_at?: string | null;
+  };
 
-    const tryTable = async (table: string) => {
-      try {
-        const { data } = await supabase.from(table).select("fuel,total_price,price_date");
-        if (data && data.length) {
-          apply(data as any[]);
-          return true;
-        }
-      } catch {}
-      return false;
-    };
+  // Convert to GBP/L. If it looks like pence (>10), divide by 100.
+  const toGbp = (raw: number | undefined | null) => {
+    if (!Number.isFinite(raw as number)) return null;
+    const n = Number(raw);
+    const v = n > 10 ? n / 100 : n; // tweak threshold if your GBP/L can be > £10
+    return Math.round(v * 1000) / 1000; // 3dp
+  };
 
-    if (await tryTable("latest_prices")) return;
-    if (await tryTable("latest_fuel_prices_view")) return;
-    if (await tryTable("latest_prices_view")) return;
+  const apply = (rows: Row[]) => {
+    let latest: string | null = null;
+    rows.forEach((r) => {
+      const f = String(r.fuel || "").toLowerCase();
+      const v =
+        toGbp(r.total_price) ??
+        toGbp(r.price) ??
+        toGbp(r.latest_price) ??
+        toGbp(r.unit_price);
+      if (v == null) return;
 
+      const ts = r.price_date ?? r.updated_at ?? r.created_at ?? null;
+      if (ts && (!latest || new Date(ts) > new Date(latest))) latest = ts;
+
+      if (f === "petrol") setPetrolPrice(v);
+      if (f === "diesel") setDieselPrice(v);
+    });
+    if (latest) setPriceDate(latest);
+  };
+
+  const tryTable = async (table: string) => {
     try {
-      const { data } = await supabase
-        .from("daily_prices")
-        .select("fuel,total_price,price_date")
-        .order("price_date", { ascending: false })
-        .limit(200);
-      if (data && data.length) apply(data as any[]);
+      const { data } = await supabase.from(table).select("*").limit(10);
+      if (data && data.length) {
+        apply(data as Row[]);
+        return true;
+      }
     } catch {}
-  }
+    return false;
+  };
 
-  function refresh() {
-    window.location.reload();
-  }
+  // Prefer purpose-built “latest” sources first
+  if (await tryTable("latest_prices")) return;
+  if (await tryTable("latest_fuel_prices_view")) return;
+  if (await tryTable("latest_prices_view")) return;
 
-  async function logout() {
-    try {
-      await supabase.auth.signOut();
-    } finally {
-      window.location.href = "/login";
+  // Fallback: daily_prices -> take most recent row per fuel
+  try {
+    const { data } = await supabase
+      .from("daily_prices")
+      .select("*")
+      .order("price_date", { ascending: false })
+      .limit(200);
+
+    if (data && data.length) {
+      const seen = new Map<string, Row>();
+      for (const r of data as Row[]) {
+        const key = String(r.fuel || "").toLowerCase();
+        if (!seen.has(key)) seen.set(key, r);
+      }
+      apply(Array.from(seen.values()));
     }
-  }
+  } catch {}
+}
+
 
   // Usage & Spend (by month, year)
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
