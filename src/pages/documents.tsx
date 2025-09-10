@@ -70,13 +70,16 @@ export default function DocumentsPage() {
   const [buyLatest, setBuyLatest] = useState<ContractRow | null>(null);
   const [rentLatest, setRentLatest] = useState<ContractRow | null>(null);
 
-  // prices (to prefill calculator)
+  // prices (for calculator defaults)
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
   // modals
   const [showBuy, setShowBuy] = useState(false);
   const [showRent, setShowRent] = useState(false);
+
+  // status guide
+  const [showGuide, setShowGuide] = useState(false);
 
   // ---------- load ----------
   useEffect(() => {
@@ -116,8 +119,6 @@ export default function DocumentsPage() {
       .order("created_at", { ascending: false });
 
     const rows = (data || []) as ContractRow[];
-
-    // Take the newest row for each option (whatever its status is)
     const latestBuy = rows.find((r) => r.tank_option === "buy") ?? null;
     const latestRent = rows.find((r) => r.tank_option === "rent") ?? null;
 
@@ -142,7 +143,6 @@ export default function DocumentsPage() {
     rows = rows.length ? rows : await tryLoad("latest_prices_view");
 
     if (!rows.length) {
-      // fallback daily_prices – take latest per fuel
       try {
         const { data } = await supabase
           .from("daily_prices")
@@ -159,8 +159,7 @@ export default function DocumentsPage() {
         const f = (r.fuel || "").toLowerCase();
         if (!seen.has(f)) seen.set(f, r);
       }
-      const vals = Array.from(seen.values());
-      for (const r of vals) {
+      for (const r of Array.from(seen.values())) {
         if (r.fuel.toLowerCase() === "petrol") setPetrolPrice(Number(r.total_price));
         if (r.fuel.toLowerCase() === "diesel") setDieselPrice(Number(r.total_price));
       }
@@ -178,9 +177,19 @@ export default function DocumentsPage() {
           <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
           <h1 className="text-2xl font-bold">Documents</h1>
         </div>
-        <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
-          Back to Dashboard
-        </a>
+
+        <div className="flex items-center gap-2">
+          <button
+            className="rounded-full border border-white/15 bg-white/[0.06] px-3 py-1.5 text-xs font-medium hover:bg-white/[0.1]"
+            onClick={() => setShowGuide((v) => !v)}
+            aria-expanded={showGuide}
+          >
+            {showGuide ? "Hide status guide" : "Show status guide"}
+          </button>
+          <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
+            Back to Dashboard
+          </a>
+        </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 pb-12 space-y-6">
@@ -189,11 +198,14 @@ export default function DocumentsPage() {
           signed (auto-active) or a <strong>Rent</strong> contract is approved.
         </p>
 
+        {/* Collapsible Status Guide */}
+        <CollapsibleGuide open={showGuide} onClose={() => setShowGuide(false)} />
+
         {/* Tiles */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Tile
             title="Terms & Conditions"
-            statusPill={termsAccepted ? ["ok", "ok"] : ["missing", "Missing"]}
+            statusBadge={<StatusBadge status={termsAccepted ? "approved" : undefined} onClick={() => setShowGuide(true)} />}
             body="You must accept the latest Terms before ordering."
             primary={{
               label: "Read & accept",
@@ -203,31 +215,20 @@ export default function DocumentsPage() {
 
           <Tile
             title="Buy Contract"
-            statusPill={statusToPill(buyLatest?.status)}
+            statusBadge={<StatusBadge status={buyLatest?.status} onClick={() => setShowGuide(true)} />}
             body="For purchase agreements: a signed contract becomes Active immediately."
             secondary={{ label: "ROI / Calculator", onClick: () => setShowBuy(true) }}
             primary={{ label: buyLatest ? "Update / Resign" : "Start", onClick: () => setShowBuy(true) }}
           />
 
-            <Tile
-              title="Rent Contract"
-              statusPill={statusToPill(rentLatest?.status)}
-              body="Rental agreements require admin approval after signing."
-              secondary={{ label: "ROI / Calculator", onClick: () => setShowRent(true) }}
-              primary={{ label: rentLatest ? "Update / Resign" : "Start", onClick: () => setShowRent(true) }}
-            />
+          <Tile
+            title="Rent Contract"
+            statusBadge={<StatusBadge status={rentLatest?.status} onClick={() => setShowGuide(true)} />}
+            body="Rental agreements require admin approval after signing."
+            secondary={{ label: "ROI / Calculator", onClick: () => setShowRent(true) }}
+            primary={{ label: rentLatest ? "Update / Resign" : "Start", onClick: () => setShowRent(true) }}
+          />
         </section>
-
-        {/* Status legend */}
-        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-white/85">
-          <div className="font-semibold mb-1">What do the statuses mean?</div>
-          <ul className="list-disc pl-5 space-y-1 text-white/80">
-            <li><span className="text-emerald-300 font-medium">Active</span> — contract is approved and you can order.</li>
-            <li><span className="text-yellow-300 font-medium">Awaiting approval</span> — you’ve signed; our team must approve (Rent only).</li>
-            <li><span className="text-red-300 font-medium">Cancelled</span> — this contract has been cancelled; start a new one to continue.</li>
-            <li><span className="text-white/60 font-medium">Not signed</span> — no contract on file yet.</li>
-          </ul>
-        </div>
 
         {docsComplete && (
           <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-emerald-200">
@@ -279,40 +280,205 @@ export default function DocumentsPage() {
   );
 }
 
-/* --------------------------------- UI bits --------------------------------- */
+/* --------------------------------- Status visuals --------------------------------- */
 
-function statusToPill(status?: ContractStatus): ["ok" | "warn" | "pending" | "missing" | "muted", string] {
-  if (!status) return ["muted", "Not signed"];
-  if (status === "approved") return ["ok", "Active"];
-  if (status === "signed") return ["warn", "Awaiting approval"];
-  if (status === "cancelled") return ["missing", "Cancelled"];
-  return ["pending", status]; // draft or any other
+function StatusBadge({
+  status,
+  onClick,
+}: {
+  status?: ContractStatus;
+  onClick?: () => void;
+}) {
+  // Map to label + styles + icon
+  const config =
+    status === "approved"
+      ? {
+          label: "Active",
+          ring: "ring-emerald-400/30",
+          bg: "from-emerald-600/25 to-emerald-400/15",
+          text: "text-emerald-200",
+          Icon: CheckIcon,
+        }
+      : status === "signed"
+      ? {
+          label: "Awaiting approval",
+          ring: "ring-amber-400/30",
+          bg: "from-amber-600/25 to-amber-400/15",
+          text: "text-amber-200",
+          Icon: HourglassIcon,
+        }
+      : status === "cancelled"
+      ? {
+          label: "Cancelled",
+          ring: "ring-rose-400/30",
+          bg: "from-rose-600/25 to-rose-400/15",
+          text: "text-rose-200",
+          Icon: XCircleIcon,
+        }
+      : {
+          label: "Not signed",
+          ring: "ring-slate-400/20",
+          bg: "from-slate-600/25 to-slate-500/10",
+          text: "text-slate-200",
+          Icon: MinusIcon,
+        };
+
+  const { label, ring, bg, text, Icon } = config;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cx(
+        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
+        "bg-gradient-to-r",
+        ring,
+        text,
+        "ring-1 hover:ring-2 hover:brightness-110 transition"
+      )}
+      title="What does this status mean?"
+      aria-label={`${label} (tap for guide)`}
+    >
+      <Icon className="h-4 w-4" />
+      {label}
+    </button>
+  );
 }
+
+function CollapsibleGuide({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <div
+      className={cx(
+        "rounded-2xl border border-white/10 bg-white/[0.03] transition-all duration-300",
+        open ? "max-h-[800px] opacity-100" : "max-h-0 opacity-0",
+        "overflow-hidden"
+      )}
+      aria-hidden={!open}
+    >
+      <div className="p-4 md:p-5">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="text-sm font-semibold text-white/80">Status guide</div>
+          <button
+            className="rounded-full border border-white/15 bg-white/[0.06] px-3 py-1 text-xs hover:bg-white/[0.1]"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <GuideCard
+            title="Active"
+            description="Your contract is approved and ready to use. You can place orders immediately."
+            tone="emerald"
+            Icon={CheckIcon}
+          />
+          <GuideCard
+            title="Awaiting approval"
+            description="You’ve signed the contract. Our team must perform a quick compliance check before it goes live."
+            tone="amber"
+            Icon={HourglassIcon}
+          />
+          <GuideCard
+            title="Cancelled"
+            description="This contract is no longer active. Start a new one to continue."
+            tone="rose"
+            Icon={XCircleIcon}
+          />
+          <GuideCard
+            title="Not signed"
+            description="No contract on file. Start and sign to proceed."
+            tone="slate"
+            Icon={MinusIcon}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GuideCard({
+  title,
+  description,
+  tone,
+  Icon,
+}: {
+  title: string;
+  description: string;
+  tone: "emerald" | "amber" | "rose" | "slate";
+  Icon: (props: { className?: string }) => JSX.Element;
+}) {
+  const map = {
+    emerald: { ring: "ring-emerald-400/30", text: "text-emerald-200", bg: "from-emerald-600/20 to-emerald-400/10" },
+    amber: { ring: "ring-amber-400/30", text: "text-amber-200", bg: "from-amber-600/20 to-amber-400/10" },
+    rose: { ring: "ring-rose-400/30", text: "text-rose-200", bg: "from-rose-600/20 to-rose-400/10" },
+    slate: { ring: "ring-slate-400/20", text: "text-slate-200", bg: "from-slate-600/20 to-slate-500/10" },
+  }[tone];
+
+  return (
+    <div
+      className={cx(
+        "rounded-xl border border-white/10 p-4",
+        "bg-gradient-to-r",
+        map.bg,
+        map.text,
+        "ring-1",
+        map.ring
+      )}
+    >
+      <div className="mb-1 inline-flex items-center gap-2 text-sm font-semibold">
+        <Icon className="h-4 w-4" />
+        {title}
+      </div>
+      <div className="text-sm text-white/85">{description}</div>
+    </div>
+  );
+}
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function HourglassIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M6 3h12M6 21h12M8 7a4 4 0 0 0 8 0M16 17a4 4 0 0 0-8 0" strokeLinecap="round" />
+    </svg>
+  );
+}
+function XCircleIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M15 9l-6 6M9 9l6 6" strokeLinecap="round" />
+    </svg>
+  );
+}
+function MinusIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M5 12h14" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/* --------------------------------- Tiles --------------------------------- */
 
 function Tile(props: {
   title: string;
   body: string;
-  statusPill: ["ok" | "warn" | "pending" | "missing" | "muted", string];
+  statusBadge: React.ReactNode;
   secondary?: { label: string; onClick?: () => void; href?: string };
   primary?: { label: string; onClick?: () => void; href?: string };
 }) {
-  const [kind, label] = props.statusPill;
-  const pill =
-    kind === "ok"
-      ? "bg-emerald-600/20 text-emerald-300"
-      : kind === "warn"
-      ? "bg-yellow-600/20 text-yellow-300"
-      : kind === "pending"
-      ? "bg-blue-600/20 text-blue-300"
-      : kind === "missing"
-      ? "bg-red-600/20 text-red-300"
-      : "bg-white/15 text-white/60";
-
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
       <div className="mb-2 flex items-center justify-between gap-3">
         <h3 className="text-lg font-semibold">{props.title}</h3>
-        <span className={cx("rounded-full px-2 py-0.5 text-xs font-medium", pill)}>{label}</span>
+        {props.statusBadge}
       </div>
       <p className="text-sm text-white/80">{props.body}</p>
 
@@ -342,33 +508,6 @@ function Tile(props: {
           ))}
       </div>
     </div>
-  );
-}
-
-function Field({
-  label,
-  value,
-  onChange,
-  type = "text",
-  placeholder,
-}: {
-  label: string;
-  value?: string | number;
-  onChange: (v: string) => void;
-  type?: string;
-  placeholder?: string;
-}) {
-  return (
-    <label className="block text-sm">
-      <span className="mb-1 block text-white/70">{label}</span>
-      <input
-        type={type}
-        value={value ?? ""}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-full rounded-lg border border-white/10 bg-white/[0.06] p-2 text-sm placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-yellow-400"
-      />
-    </label>
   );
 }
 
@@ -460,7 +599,7 @@ function ContractModal({
 
       const now = new Date().toISOString();
 
-      // IMPORTANT: customer_name is NOT NULL in your table
+      // derive NOT NULL customer_name
       const derivedCustomerName =
         (company_name || "").trim() ||
         (contact_name || "").trim() ||
@@ -469,11 +608,10 @@ function ContractModal({
       const payload: Partial<ContractRow> = {
         email: userEmail,
         tank_option: option,
-        status: option === "buy" ? "approved" : "signed", // BUY becomes active immediately
+        status: option === "buy" ? "approved" : "signed", // BUY auto-active
         signed_at: now,
         approved_at: option === "buy" ? now : null,
 
-        // satisfies NOT NULL constraint
         customer_name: derivedCustomerName,
 
         company_name,
@@ -647,12 +785,41 @@ function ContractModal({
   );
 }
 
+/* --------------------------------- Shared bits --------------------------------- */
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
       <div className="mb-2 text-sm font-semibold text-white/80">{title}</div>
       <div className="space-y-3">{children}</div>
     </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+}: {
+  label: string;
+  value?: string | number;
+  onChange: (v: string) => void;
+  type?: string;
+  placeholder?: string;
+}) {
+  return (
+    <label className="block text-sm">
+      <span className="mb-1 block text-white/70">{label}</span>
+      <input
+        type={type}
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-lg border border-white/10 bg-white/[0.06] p-2 text-sm placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+      />
+    </label>
   );
 }
 
@@ -665,21 +832,16 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-/* --------------------------- helpers --------------------------- */
-
 function toNum(v: string): number | undefined {
   if (v === "" || v == null) return undefined;
   const n = Number(v);
   return Number.isFinite(n) ? n : undefined;
 }
-
 function numOrNull(n: number | undefined): number | null {
   return typeof n === "number" && Number.isFinite(n) ? n : null;
 }
-
 function fmtMoney(n?: number | null): string {
   if (n == null || !Number.isFinite(Number(n))) return "—";
   const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
   return gbp.format(Number(n));
 }
-
