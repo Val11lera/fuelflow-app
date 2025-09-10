@@ -80,16 +80,24 @@ export default function DocumentsPage() {
     }
   }, [userEmail]);
 
-  async function refreshTerms(emailLower: string) {
-    const { data } = await supabase
-      .from("terms_acceptances")
-      .select("id,email,accepted_at,version")
-      .eq("email", emailLower)
-      .eq("version", TERMS_VERSION)
-      .order("accepted_at", { ascending: false })
-      .limit(1);
-    setTermsAcceptedAt(data?.[0]?.accepted_at ?? null);
+ // inside src/pages/documents.tsx
+async function refreshTerms(emailLower: string) {
+  // 👇 do not ask for accepted_at to keep it cache-proof
+  const { data, error } = await supabase
+    .from("terms_acceptances")
+    .select("id")                // <— presence is enough
+    .eq("email", emailLower)
+    .eq("version", TERMS_VERSION)
+    .limit(1);
+
+  if (error) {
+    // fallback: treat as not accepted to keep UI stable
+    setTermsAcceptedAt(null);
+    return;
   }
+
+  setTermsAcceptedAt(data && data.length ? "yes" : null);
+}
 
   async function refreshContracts(emailLower: string) {
     const { data } = await supabase
