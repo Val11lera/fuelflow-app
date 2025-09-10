@@ -15,7 +15,7 @@ type TankOption = "buy" | "rent";
 
 const TERMS_VERSION = "v1.1";
 const INACTIVITY_MS =
-  Number(process.env.NEXT_PUBLIC_IDLE_LOGOUT_MS ?? "") || 10 * 60 * 1000; // 10 minutes default
+  Number(process.env.NEXT_PUBLIC_IDLE_LOGOUT_MS ?? "") || 10 * 60 * 1000; // 10 minutes
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -76,13 +76,13 @@ function cx(...classes: (string | false | null | undefined)[]) {
 export default function ClientDashboard() {
   const [userEmail, setUserEmail] = useState<string>("");
 
-  // force-refresh flow
+  // gating: UI disabled until Refresh
   const [hasRefreshed, setHasRefreshed] = useState(false);
   const [lastRefreshAt, setLastRefreshAt] = useState<string | null>(null);
   const refreshedWeekday =
-    lastRefreshAt ?
-      new Date(lastRefreshAt).toLocaleDateString(undefined, { weekday: "long" }) :
-      "—";
+    lastRefreshAt
+      ? new Date(lastRefreshAt).toLocaleDateString(undefined, { weekday: "long" })
+      : "—";
 
   // prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
@@ -95,13 +95,13 @@ export default function ClientDashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // docs (we only use to fetch latest per option if you ever need later; not shown as status)
+  // optional docs fetch (not shown as status)
   const [buyContract, setBuyContract] = useState<ContractRow | null>(null);
   const [rentContract, setRentContract] = useState<ContractRow | null>(null);
 
   // usage UI
   const currentYear = new Date().getFullYear();
-  const currentMonthIdx = new Date().getMonth(); // 0..11
+  const currentMonthIdx = new Date().getMonth();
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
@@ -117,7 +117,7 @@ export default function ClientDashboard() {
     })();
   }, []);
 
-  // ----------------- Auto logout on inactivity (10m) -----------------
+  // ----------------- Auto logout on inactivity -----------------
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const reset = () => {
@@ -132,11 +132,7 @@ export default function ClientDashboard() {
     };
 
     const events: (keyof WindowEventMap)[] = [
-      "mousemove",
-      "mousedown",
-      "keydown",
-      "scroll",
-      "touchstart",
+      "mousemove", "mousedown", "keydown", "scroll", "touchstart",
     ];
     events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
     const onVis = () => reset();
@@ -150,7 +146,7 @@ export default function ClientDashboard() {
     };
   }, []);
 
-  // ----------------- Bulk loader (runs after you press Refresh) -----------------
+  // ----------------- Loaders (triggered by Refresh) -----------------
   async function loadAll() {
     try {
       setLoading(true);
@@ -169,9 +165,7 @@ export default function ClientDashboard() {
     if (!userEmail) return;
     const { data } = await supabase
       .from("contracts")
-      .select(
-        "id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path"
-      )
+      .select("id,tank_option,status,signed_at,approved_at,created_at,email")
       .eq("email", userEmail)
       .order("created_at", { ascending: false });
 
@@ -180,7 +174,6 @@ export default function ClientDashboard() {
     setRentContract(rows.find((r) => r.tank_option === "rent") ?? null);
   }
 
-  // Latest-price loader (normalises GBP vs pence; robust to different table names)
   async function loadLatestPrices() {
     setPetrolPrice(null);
     setDieselPrice(null);
@@ -196,8 +189,7 @@ export default function ClientDashboard() {
     const toGbp = (raw: number | undefined | null) => {
       if (!Number.isFinite(raw as number)) return null;
       const n = Number(raw);
-      const v = n > 10 ? n / 100 : n; // if stored in pence, convert
-      return Math.round(v * 1000) / 1000;
+      return (n > 10 ? n / 100 : n); // normalise pence→GBP
     };
 
     const apply = (rows: Row[]) => {
@@ -209,8 +201,8 @@ export default function ClientDashboard() {
           toGbp(r.latest_price) ??
           toGbp(r.unit_price);
         if (v == null) return;
-        if (f === "petrol") setPetrolPrice(v);
-        if (f === "diesel") setDieselPrice(v);
+        if (f === "petrol") setPetrolPrice(Math.round(v * 1000) / 1000);
+        if (f === "diesel") setDieselPrice(Math.round(v * 1000) / 1000);
       });
     };
 
@@ -237,7 +229,6 @@ export default function ClientDashboard() {
         .limit(200);
 
       if (data && data.length) {
-        // take the first seen per fuel
         const seen = new Map<string, Row>();
         for (const r of data as Row[]) {
           const key = String(r.fuel || "").toLowerCase();
@@ -253,9 +244,7 @@ export default function ClientDashboard() {
 
     const { data: rawOrders, error: ordErr } = await supabase
       .from("orders")
-      .select(
-        "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status"
-      )
+      .select("id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status")
       .eq("user_email", userEmail)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -283,10 +272,8 @@ export default function ClientDashboard() {
       let totalPence: number | null =
         fromOrders ?? (fromPayments as number | null) ?? null;
 
-      if (totalPence == null) {
-        if (o.unit_price_pence != null && o.litres != null) {
-          totalPence = Math.round(o.unit_price_pence * o.litres);
-        }
+      if (totalPence == null && o.unit_price_pence != null && o.litres != null) {
+        totalPence = Math.round(o.unit_price_pence * o.litres);
       }
 
       const amountGBP = totalPence != null ? totalPence / 100 : 0;
@@ -300,10 +287,9 @@ export default function ClientDashboard() {
     setOrders(withTotals);
   }
 
-  // ---------- simple UI helpers ----------
+  // ---------- UI actions ----------
   function refresh() {
-    // Loads everything and unlocks the page
-    loadAll();
+    loadAll(); // make sure refresh is always present
   }
 
   async function logout() {
@@ -320,10 +306,7 @@ export default function ClientDashboard() {
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
   const usageByMonth: MonthAgg[] = useMemo(() => {
     const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({
-      monthIdx: i,
-      monthLabel: months[i],
-      litres: 0,
-      spend: 0,
+      monthIdx: i, monthLabel: months[i], litres: 0, spend: 0,
     }));
     orders.forEach((o) => {
       const d = new Date(o.created_at);
@@ -337,23 +320,18 @@ export default function ClientDashboard() {
 
   const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
   const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
-
-  const rowsToShow = showAllMonths
-    ? usageByMonth
-    : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
+  const rowsToShow = showAllMonths ? usageByMonth : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
 
   /* =========================
      Render
      ========================= */
 
-  // Allow ordering if we have both prices and the page has been refreshed
   const canOrder = hasRefreshed && petrolPrice != null && dieselPrice != null;
-
-  const uiDisabled = !hasRefreshed; // grey-out content until Refresh pressed
+  const uiDisabled = !hasRefreshed;
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
-      {/* Sticky mobile CTA */}
+      {/* Sticky mobile Order CTA */}
       <div className="md:hidden fixed bottom-4 inset-x-4 z-40">
         <a
           href="/order"
@@ -367,13 +345,15 @@ export default function ClientDashboard() {
         </a>
       </div>
 
-      <div className="max-w-6xl mx-auto px-4 py-4 space-y-6">
+      <div className="max-w-6xl mx-auto px-4 py-4 space-y-4">
         {/* Header */}
         <div className="flex items-center gap-3">
           <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
           <div className="text-sm text-white/70">
             Welcome back, <span className="font-medium">{userEmail}</span>
           </div>
+
+          {/* Desktop actions */}
           <div className="ml-auto hidden md:flex gap-2">
             <a
               href="/order"
@@ -385,31 +365,44 @@ export default function ClientDashboard() {
             >
               Order Fuel
             </a>
-            <a
-              href="/documents"
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-            >
+            <a href="/documents" className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
               Documents
             </a>
-            <button
-              onClick={refresh}
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-            >
+            <button onClick={refresh} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
               Refresh
             </button>
-            <button
-              onClick={logout}
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-            >
+            <button onClick={logout} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
               Log out
             </button>
           </div>
         </div>
 
-        {/* When UI is disabled, we overlay a subtle notice for desktop users */}
+        {/* Mobile top action row (ALWAYS visible) */}
+        <div className="md:hidden flex items-center gap-2">
+          <button
+            onClick={refresh}
+            className="flex-1 rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/15"
+          >
+            {loading ? "Refreshing…" : "Refresh"}
+          </button>
+          <a
+            href="/documents"
+            className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/15"
+          >
+            Documents
+          </a>
+          <button
+            onClick={logout}
+            className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/15"
+          >
+            Log out
+          </button>
+        </div>
+
+        {/* Paused notice until refreshed */}
         {!hasRefreshed && (
           <div className="rounded-xl border border-yellow-400/30 bg-yellow-500/10 p-4 text-sm text-yellow-200">
-            The dashboard is paused. Click <span className="font-semibold">Refresh</span> to load the latest data.
+            The dashboard is paused. Tap <span className="font-semibold">Refresh</span> to load the latest data.
           </div>
         )}
 
@@ -420,9 +413,7 @@ export default function ClientDashboard() {
               {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            <div className="mt-1 text-xs text-white/60">
-              Refreshed: {refreshedWeekday}
-            </div>
+            <div className="mt-1 text-xs text-white/60">Refreshed: {refreshedWeekday}</div>
           </Card>
 
           <Card title="Diesel">
@@ -430,19 +421,14 @@ export default function ClientDashboard() {
               {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            <div className="mt-1 text-xs text-white/60">
-              Refreshed: {refreshedWeekday}
-            </div>
+            <div className="mt-1 text-xs text-white/60">Refreshed: {refreshedWeekday}</div>
           </Card>
 
           <div className="bg-gray-800 rounded-xl p-4 md:p-5">
             <p className="text-gray-400 mb-1">Documents</p>
-            {/* Only keep the action button per your request */}
             <a
               href="/documents"
-              className={cx(
-                "mt-1 inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
-              )}
+              className="mt-1 inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
             >
               Open documents
             </a>
@@ -565,21 +551,15 @@ export default function ClientDashboard() {
                 <tbody>
                   {orders.map((o) => (
                     <tr key={o.id} className="border-b border-gray-800">
-                      <td className="py-2 pr-4">
-                        {new Date(o.created_at).toLocaleString()}
-                      </td>
-                      <td className="py-2 pr-4 capitalize">
-                        {(o.fuel as string) || "—"}
-                      </td>
+                      <td className="py-2 pr-4">{new Date(o.created_at).toLocaleString()}</td>
+                      <td className="py-2 pr-4 capitalize">{(o.fuel as string) || "—"}</td>
                       <td className="py-2 pr-4">{o.litres ?? "—"}</td>
                       <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
                       <td className="py-2 pr-4">
                         <span
                           className={cx(
                             "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                            (o.status || "").toLowerCase() === "paid"
-                              ? "bg-green-600/70"
-                              : "bg-gray-600/70"
+                            (o.status || "").toLowerCase() === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
                           )}
                         >
                           {(o.status || o.paymentStatus || "pending").toLowerCase()}
