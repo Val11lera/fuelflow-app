@@ -227,7 +227,7 @@ export default function DocumentsPage() {
         </div>
       </header>
 
-      {/* Subhead checklist (scrollable on mobile) */}
+      {/* Subhead checklist */}
       <div className="mx-auto max-w-6xl px-4">
         <div className="mb-4 flex items-center gap-2 overflow-x-auto pb-1">
           {checklist.map((c) => (
@@ -628,6 +628,20 @@ function ContractModal({
     return data?.id ?? null;
   }
 
+  function toNum(v: string): number | undefined {
+    if (v === "" || v == null) return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  function numOrNull(n: number | undefined): number | null {
+    return typeof n === "number" && Number.isFinite(n) ? n : null;
+  }
+  function fmtMoney(n?: number | null): string {
+    if (n == null || !Number.isFinite(Number(n))) return "—";
+    const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
+    return gbp.format(Number(n));
+  }
+
   async function onSave() {
     try {
       setSubmitting(true);
@@ -903,21 +917,5 @@ function BackIcon({ className }: { className?: string }) {
       <path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
-}
-
-/* ------------------------------ utils ------------------------------ */
-
-function toNum(v: string): number | undefined {
-  if (v === "" || v == null) return undefined;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
-}
-function numOrNull(n: number | undefined): number | null {
-  return typeof n === "number" && Number.isFinite(n) ? n : null;
-}
-function fmtMoney(n?: number | null): string {
-  if (n == null || !Number.isFinite(Number(n))) return "—";
-  const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
-  return gbp.format(Number(n));
 }
 
