@@ -87,6 +87,10 @@ function cx(...classes: (string | false | null | undefined)[]) {
 export default function ClientDashboard() {
   const [userEmail, setUserEmail] = useState<string>("");
 
+  // "live" gate — blocks UI until Refresh is pressed
+  const [isLive, setIsLive] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
+
   // prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
@@ -97,10 +101,10 @@ export default function ClientDashboard() {
   const [orders, setOrders] = useState<
     (OrderRow & { amountGBP: number; paymentStatus?: string })[]
   >([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // documents state (still loaded, but no status text shown in UI)
+  // documents (kept, but not shown as status)
   const [termsAcceptedAt, setTermsAcceptedAt] = useState<string | null>(null);
   const [buyContract, setBuyContract] = useState<ContractRow | null>(null);
   const [rentContract, setRentContract] = useState<ContractRow | null>(null);
@@ -144,94 +148,55 @@ export default function ClientDashboard() {
     };
   }, []);
 
-  // ----------------- Data loading -----------------
+  // --------- get user email ASAP (even before live) ----------
   useEffect(() => {
     (async () => {
-      try {
-        setLoading(true);
-        setError(null);
-
-        // Auth
-        const { data: auth } = await supabase.auth.getUser();
-        if (!auth?.user) {
-          window.location.href = "/login";
-          return;
-        }
-        const emailLower = (auth.user.email || "").toLowerCase();
-        setUserEmail(emailLower);
-
-        // PRICES
-        await loadLatestPrices();
-
-        // TERMS — latest acceptance for this version
-        const { data: ta } = await supabase
-          .from("terms_acceptances")
-          .select("accepted_at")
-          .eq("email", emailLower)
-          .eq("version", TERMS_VERSION)
-          .order("accepted_at", { ascending: false })
-          .limit(1);
-        setTermsAcceptedAt(ta?.[0]?.accepted_at ?? null);
-
-        // CONTRACTS — pick latest per tank_option
-        await loadContracts(emailLower);
-
-        // ORDERS
-        const { data: rawOrders, error: ordErr } = await supabase
-          .from("orders")
-          .select(
-            "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status"
-          )
-          .eq("user_email", emailLower)
-          .order("created_at", { ascending: false })
-          .limit(50);
-
-        if (ordErr) throw ordErr;
-
-        const ordersArr = (rawOrders || []) as OrderRow[];
-        const ids = ordersArr.map((o) => o.id).filter(Boolean);
-
-        let payMap = new Map<string, PaymentRow>();
-        if (ids.length) {
-          const { data: pays } = await supabase
-            .from("payments")
-            .select("order_id, amount, currency, status")
-            .in("order_id", ids);
-          (pays || []).forEach((p: any) => {
-            if (p.order_id) payMap.set(p.order_id, p);
-          });
-        }
-
-        const withTotals = ordersArr.map((o) => {
-          const fromOrders = o.total_pence ?? null;
-          const fromPayments = payMap.get(o.id || "")?.amount ?? null;
-
-        let totalPence: number | null =
-            fromOrders ?? (fromPayments as number | null) ?? null;
-
-          if (totalPence == null) {
-            if (o.unit_price_pence != null && o.litres != null) {
-              totalPence = Math.round(o.unit_price_pence * o.litres);
-            }
-          }
-
-          const amountGBP = totalPence != null ? totalPence / 100 : 0;
-          return {
-            ...o,
-            amountGBP,
-            paymentStatus: payMap.get(o.id || "")?.status,
-          };
-        });
-
-        setOrders(withTotals);
-      } catch (e: any) {
-        setError(e?.message || "Failed to load dashboard.");
-      } finally {
-        setLoading(false);
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth?.user) {
+        window.location.href = "/login";
+        return;
       }
+      setUserEmail((auth.user.email || "").toLowerCase());
+    })();
+  }, []);
+
+  // --------- load everything when going "live" or when refreshing ----------
+  useEffect(() => {
+    if (!isLive || !userEmail) return;
+    (async () => {
+      await loadAll(userEmail);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isLive, userEmail]);
+
+  async function loadAll(emailLower: string) {
+    try {
+      setLoading(true);
+      setError(null);
+
+      await loadLatestPrices();
+      await loadTerms(emailLower);
+      await loadContracts(emailLower);
+      await loadOrders(emailLower);
+
+      setLastRefreshed(new Date().toISOString());
+    } catch (e: any) {
+      setError(e?.message || "Failed to load dashboard.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadTerms(emailLower: string) {
+    const { data } = await supabase
+      .from("terms_acceptances")
+      .select("accepted_at")
+      .eq("email", emailLower)
+      .eq("version", TERMS_VERSION)
+      .order("accepted_at", { ascending: false })
+      .limit(1);
+    setTermsAcceptedAt(data?.[0]?.accepted_at ?? null);
+  }
 
   async function loadContracts(emailLower: string) {
     const { data } = await supabase
@@ -245,6 +210,56 @@ export default function ClientDashboard() {
     const rows = (data || []) as ContractRow[];
     setBuyContract(rows.find((r) => r.tank_option === "buy") ?? null);
     setRentContract(rows.find((r) => r.tank_option === "rent") ?? null);
+  }
+
+  async function loadOrders(emailLower: string) {
+    const { data: rawOrders, error: ordErr } = await supabase
+      .from("orders")
+      .select(
+        "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status"
+      )
+      .eq("user_email", emailLower)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (ordErr) throw ordErr;
+
+    const ordersArr = (rawOrders || []) as OrderRow[];
+    const ids = ordersArr.map((o) => o.id).filter(Boolean);
+
+    let payMap = new Map<string, PaymentRow>();
+    if (ids.length) {
+      const { data: pays } = await supabase
+        .from("payments")
+        .select("order_id, amount, currency, status")
+        .in("order_id", ids);
+      (pays || []).forEach((p: any) => {
+        if (p.order_id) payMap.set(p.order_id, p);
+      });
+    }
+
+    const withTotals = ordersArr.map((o) => {
+      const fromOrders = o.total_pence ?? null;
+      const fromPayments = payMap.get(o.id || "")?.amount ?? null;
+
+      let totalPence: number | null =
+        fromOrders ?? (fromPayments as number | null) ?? null;
+
+      if (totalPence == null) {
+        if (o.unit_price_pence != null && o.litres != null) {
+          totalPence = Math.round(o.unit_price_pence * o.litres);
+        }
+      }
+
+      const amountGBP = totalPence != null ? totalPence / 100 : 0;
+      return {
+        ...o,
+        amountGBP,
+        paymentStatus: payMap.get(o.id || "")?.status,
+      };
+    });
+
+    setOrders(withTotals);
   }
 
   // Robust latest-price loader with normalisation (handles GBP or pence)
@@ -324,9 +339,14 @@ export default function ClientDashboard() {
     } catch {}
   }
 
-  // ---------- simple UI helpers ----------
-  function refresh() {
-    window.location.reload();
+  // ---------- UI actions ----------
+  async function doRefresh() {
+    if (!isLive) {
+      setIsLive(true); // first-time activation triggers loadAll via useEffect
+      return;
+    }
+    if (!userEmail) return;
+    await loadAll(userEmail); // normal refresh (no full page reload)
   }
 
   async function logout() {
@@ -369,15 +389,42 @@ export default function ClientDashboard() {
      Render
      ========================= */
 
-  const canOrder = pricesAreToday && petrolPrice != null && dieselPrice != null;
+  const canOrder = isLive && pricesAreToday && petrolPrice != null && dieselPrice != null;
 
-  // footer day label
+  // labels for price cards & footer
+  const refreshedLabel =
+    lastRefreshed
+      ? new Intl.DateTimeFormat("en-GB", {
+          weekday: "long",
+          day: "2-digit",
+          month: "short",
+        }).format(new Date(lastRefreshed))
+      : "—";
+
   const todayLabel = new Intl.DateTimeFormat("en-GB", { weekday: "long" }).format(new Date());
 
   return (
-    <div className="min-h-screen bg-[#0b1220] text-white">
+    <div className="relative min-h-screen bg-[#0b1220] text-white">
+      {/* Dim + lock overlay until live */}
+      {!isLive && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="rounded-2xl border border-white/10 bg-[#0f172a] p-6 text-center">
+            <div className="text-lg font-semibold mb-2">Dashboard paused</div>
+            <p className="text-white/70 mb-4">
+              Press <strong>Refresh</strong> to load today’s prices and enable actions.
+            </p>
+            <button
+              onClick={doRefresh}
+              className="rounded-lg bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400"
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Sticky mobile CTA */}
-      <div className="md:hidden fixed bottom-4 inset-x-4 z-40">
+      <div className="md:hidden fixed bottom-4 inset-x-4 z-20">
         <a
           href="/order"
           aria-disabled={!canOrder}
@@ -411,7 +458,7 @@ export default function ClientDashboard() {
             <a href="/documents" className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
               Documents
             </a>
-            <button onClick={refresh} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
+            <button onClick={doRefresh} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
               Refresh
             </button>
             <button onClick={logout} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
@@ -420,183 +467,182 @@ export default function ClientDashboard() {
           </div>
         </div>
 
-        {/* Top cards: Prices + Documents (button only) */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Card title="Petrol (95)">
-            <div className="text-3xl font-bold">
-              {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
-              <span className="text-base font-normal text-gray-300"> / litre</span>
-            </div>
-            <div className="mt-1 text-xs text-white/60">
-              {priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : "As of —"}
-            </div>
-          </Card>
+        {/* MAIN CONTENT (dimmed/disabled visually until live) */}
+        <div className={cx(!isLive && "opacity-40 pointer-events-none select-none")}>
+          {/* Top cards: Prices + Documents (button only) */}
+          <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <Card title="Petrol (95)">
+              <div className="text-3xl font-bold">
+                {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
+                <span className="text-base font-normal text-gray-300"> / litre</span>
+              </div>
+              <div className="mt-1 text-xs text-white/60">Refreshed {refreshedLabel}</div>
+            </Card>
 
-          <Card title="Diesel">
-            <div className="text-3xl font-bold">
-              {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
-              <span className="text-base font-normal text-gray-300"> / litre</span>
-            </div>
-            <div className="mt-1 text-xs text-white/60">
-              {priceDate ? `As of ${new Date(priceDate).toLocaleDateString()}` : "As of —"}
-            </div>
-          </Card>
+            <Card title="Diesel">
+              <div className="text-3xl font-bold">
+                {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
+                <span className="text-base font-normal text-gray-300"> / litre</span>
+              </div>
+              <div className="mt-1 text-xs text-white/60">Refreshed {refreshedLabel}</div>
+            </Card>
 
-          <div className="bg-gray-800 rounded-xl p-4 md:p-5">
-            <p className="text-gray-400 mb-2">Documents</p>
-            <a
-              href="/documents"
-              className="inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
-            >
-              Open documents
-            </a>
-          </div>
-        </section>
+            <div className="bg-gray-800 rounded-xl p-4 md:p-5">
+              <p className="text-gray-400 mb-2">Documents</p>
+              <a
+                href="/documents"
+                className="inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
+              >
+                Open documents
+              </a>
+            </div>
+          </section>
 
-        {/* Usage & Spend */}
-        <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
-            <h2 className="text-xl md:text-2xl font-semibold">Usage &amp; Spend</h2>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-white/70">Year:</span>
-              <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
+          {/* Usage & Spend */}
+          <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
+              <h2 className="text-xl md:text-2xl font-semibold">Usage &amp; Spend</h2>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-white/70">Year:</span>
+                <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
+                  <button
+                    onClick={() => setSelectedYear(currentYear - 1)}
+                    disabled={selectedYear === currentYear - 1}
+                    className={cx(
+                      "px-3 py-1.5",
+                      selectedYear === currentYear - 1 ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
+                    )}
+                  >
+                    {currentYear - 1}
+                  </button>
+                  <button
+                    onClick={() => setSelectedYear(currentYear)}
+                    disabled={selectedYear === currentYear}
+                    className={cx(
+                      "px-3 py-1.5",
+                      selectedYear === currentYear ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
+                    )}
+                  >
+                    {currentYear}
+                  </button>
+                </div>
                 <button
-                  onClick={() => setSelectedYear(currentYear - 1)}
-                  disabled={selectedYear === currentYear - 1}
-                  className={cx(
-                    "px-3 py-1.5",
-                    selectedYear === currentYear - 1 ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
-                  )}
+                  onClick={() => setShowAllMonths((s) => !s)}
+                  className="ml-3 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
                 >
-                  {currentYear - 1}
-                </button>
-                <button
-                  onClick={() => setSelectedYear(currentYear)}
-                  disabled={selectedYear === currentYear}
-                  className={cx(
-                    "px-3 py-1.5",
-                    selectedYear === currentYear ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
-                  )}
-                >
-                  {currentYear}
+                  {showAllMonths ? "Show current month" : "Show 12 months"}
                 </button>
               </div>
-              <button
-                onClick={() => setShowAllMonths((s) => !s)}
-                className="ml-3 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-              >
-                {showAllMonths ? "Show current month" : "Show 12 months"}
-              </button>
             </div>
-          </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="text-gray-300">
-                <tr className="border-b border-gray-700/60">
-                  <th className="py-2 pr-4">Month</th>
-                  <th className="py-2 pr-4">Litres</th>
-                  <th className="py-2 pr-4">Spend</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
-                  <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
-                    <td className="py-2 pr-4">
-                      {r.monthLabel} {String(selectedYear).slice(2)}
-                    </td>
-                    <td className="py-2 pr-4 align-middle">
-                      {Math.round(r.litres).toLocaleString()}
-                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                        <div
-                          className="h-1.5 rounded bg-yellow-500/80"
-                          style={{ width: `${(r.litres / maxL) * 100}%` }}
-                        />
-                      </div>
-                    </td>
-                    <td className="py-2 pr-4 align-middle">
-                      {gbp.format(r.spend)}
-                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                        <div
-                          className="h-1.5 rounded bg-white/40"
-                          style={{ width: `${(r.spend / maxS) * 100}%` }}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        {/* errors */}
-        {error && (
-          <div className="bg-red-800/60 border border-red-500 text-red-100 p-4 rounded">
-            {error}
-          </div>
-        )}
-
-        {/* recent orders */}
-        <section className="bg-gray-800 rounded-xl p-4 md:p-6 mb-24 md:mb-0">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl md:text-2xl font-semibold">Recent Orders</h2>
-            <button
-              onClick={refresh}
-              className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
-            >
-              Refresh
-            </button>
-          </div>
-
-          {loading ? (
-            <div className="text-gray-300">Loading…</div>
-          ) : orders.length === 0 ? (
-            <div className="text-gray-400">No orders yet.</div>
-          ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="text-gray-300">
-                  <tr className="border-b border-gray-700">
-                    <th className="py-2 pr-4">Date</th>
-                    <th className="py-2 pr-4">Product</th>
+                  <tr className="border-b border-gray-700/60">
+                    <th className="py-2 pr-4">Month</th>
                     <th className="py-2 pr-4">Litres</th>
-                    <th className="py-2 pr-4">Amount</th>
-                    <th className="py-2 pr-4">Status</th>
+                    <th className="py-2 pr-4">Spend</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {orders.map((o) => (
-                    <tr key={o.id} className="border-b border-gray-800">
+                  {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
+                    <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
                       <td className="py-2 pr-4">
-                        {new Date(o.created_at).toLocaleString()}
+                        {r.monthLabel} {String(selectedYear).slice(2)}
                       </td>
-                      <td className="py-2 pr-4 capitalize">
-                        {(o.fuel as string) || "—"}
+                      <td className="py-2 pr-4 align-middle">
+                        {Math.round(r.litres).toLocaleString()}
+                        <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                          <div
+                            className="h-1.5 rounded bg-yellow-500/80"
+                            style={{ width: `${(r.litres / maxL) * 100}%` }}
+                          />
+                        </div>
                       </td>
-                      <td className="py-2 pr-4">{o.litres ?? "—"}</td>
-                      <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
-                      <td className="py-2 pr-4">
-                        <span
-                          className={cx(
-                            "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                            (o.status || "").toLowerCase() === "paid"
-                              ? "bg-green-600/70"
-                              : "bg-gray-600/70"
-                          )}
-                        >
-                          {(o.status || o.paymentStatus || "pending").toLowerCase()}
-                        </span>
+                      <td className="py-2 pr-4 align-middle">
+                        {gbp.format(r.spend)}
+                        <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                          <div
+                            className="h-1.5 rounded bg-white/40"
+                            style={{ width: `${(r.spend / maxS) * 100}%` }}
+                          />
+                        </div>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          )}
-        </section>
+          </section>
 
-        {/* Footer — show the day */}
+          {/* errors */}
+          {error && (
+            <div className="bg-red-800/60 border border-red-500 text-red-100 p-4 rounded">
+              {error}
+            </div>
+          )}
+
+          {/* recent orders */}
+          <section className="bg-gray-800 rounded-xl p-4 md:p-6 mb-24 md:mb-0">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl md:text-2xl font-semibold">Recent Orders</h2>
+              <button
+                onClick={doRefresh}
+                className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+              >
+                Refresh
+              </button>
+            </div>
+
+            {loading ? (
+              <div className="text-gray-300">Loading…</div>
+            ) : orders.length === 0 ? (
+              <div className="text-gray-400">No orders yet.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="text-gray-300">
+                    <tr className="border-b border-gray-700">
+                      <th className="py-2 pr-4">Date</th>
+                      <th className="py-2 pr-4">Product</th>
+                      <th className="py-2 pr-4">Litres</th>
+                      <th className="py-2 pr-4">Amount</th>
+                      <th className="py-2 pr-4">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orders.map((o) => (
+                      <tr key={o.id} className="border-b border-gray-800">
+                        <td className="py-2 pr-4">
+                          {new Date(o.created_at).toLocaleString()}
+                        </td>
+                        <td className="py-2 pr-4 capitalize">
+                          {(o.fuel as string) || "—"}
+                        </td>
+                        <td className="py-2 pr-4">{o.litres ?? "—"}</td>
+                        <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
+                        <td className="py-2 pr-4">
+                          <span
+                            className={cx(
+                              "inline-flex items-center rounded px-2 py-0.5 text-xs",
+                              (o.status || "").toLowerCase() === "paid"
+                                ? "bg-green-600/70"
+                                : "bg-gray-600/70"
+                            )}
+                          >
+                            {(o.status || o.paymentStatus || "pending").toLowerCase()}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </div>
+
+        {/* Footer — show the day (keep/remove as you like) */}
         <footer className="text-center text-xs text-white/60 py-4">
           Today: {todayLabel}
         </footer>
