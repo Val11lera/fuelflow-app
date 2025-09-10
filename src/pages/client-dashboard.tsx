@@ -446,14 +446,20 @@ export default function ClientDashboard() {
               {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
+            {/* NEW: per-card refreshed stamp */}
+            <div className="mt-1 text-xs text-white/60">
+              Refreshed: {formatShortDMY(refreshedAt)}
+            </div>
           </Card>
 
-        </section>
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card title="Diesel">
             <div className="text-3xl font-bold">
               {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
+            </div>
+            {/* NEW: per-card refreshed stamp */}
+            <div className="mt-1 text-xs text-white/60">
+              Refreshed: {formatShortDMY(refreshedAt)}
             </div>
           </Card>
 
@@ -467,11 +473,6 @@ export default function ClientDashboard() {
             </a>
           </div>
         </section>
-
-        {/* Refreshed date under the cards */}
-        <div className="text-xs text-white/60">
-          Refreshed: {formatShortDMY(refreshedAt)}
-        </div>
 
         {/* Usage & Spend */}
         <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
@@ -520,10 +521,10 @@ export default function ClientDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {(showAllMonths ? usageByMonth : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx)).map((r) => (
+                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
                   <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
                     <td className="py-2 pr-4">
-                      {["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sept","Oct","Nov","Dec"][r.monthIdx]} {String(selectedYear).slice(2)}
+                      {months[r.monthIdx]} {String(selectedYear).slice(2)}
                     </td>
                     <td className="py-2 pr-4 align-middle">
                       {Math.round(r.litres).toLocaleString()}
@@ -539,7 +540,7 @@ export default function ClientDashboard() {
                       <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
                         <div
                           className="h-1.5 rounded bg-white/40"
-                          style={{ width: `${(r.spend / Math.max(1, ...usageByMonth.map(x => x.spend))) * 100}%` }}
+                          style={{ width: `${(r.spend / Math.max(1, ...usageByMonth.map(x => x.spend))) * 100)%` }}
                         />
                       </div>
                     </td>
@@ -616,7 +617,7 @@ export default function ClientDashboard() {
           )}
         </section>
 
-        {/* bottom refresh date */}
+        {/* bottom refresh date (kept) */}
         <div className="text-center text-xs text-white/50">
           Refreshed: {formatShortDMY(refreshedAt)}
         </div>
@@ -637,5 +638,4 @@ function Card(props: { title: string; children: React.ReactNode }) {
     </div>
   );
 }
-
 
