@@ -149,17 +149,12 @@ export default function Login() {
   }
 
   return (
-    <div className="relative flex min-h-[100svh] md:min-h-screen flex-col text-white pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-      {/* Premium layered background */}
-      <div className="absolute inset-0 bg-gradient-to-b from-[#0b2344] via-[#061B34] to-[#041F3E]" />
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.08),transparent_55%)]" />
-      <div className="absolute -top-24 -left-24 w-[520px] h-[520px] rounded-full blur-3xl opacity-20 bg-yellow-500/20" />
-      <div className="absolute -bottom-32 -right-24 w-[420px] h-[420px] rounded-full blur-3xl opacity-10 bg-cyan-400/20" />
-
-      <header className="relative z-10">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-4">
+    <div className="relative flex min-h-[100svh] md:min-h-screen flex-col bg-[#0b1220] text-white">
+      {/* Header (matches dashboard tone) */}
+      <header className="relative">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
           <div className="flex items-center gap-3">
-            <img src="/logo-email.png" alt="FuelFlow" className="h-8 w-auto" />
+            <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
             <span className="hidden sm:block text-sm text-white/70">
               Secure client access
             </span>
@@ -168,54 +163,38 @@ export default function Login() {
             href="https://fuelflow.co.uk"
             target="_blank"
             rel="noreferrer"
-            className="rounded-xl border border-white/15 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+            className="rounded-lg bg-white/10 px-3 py-2 text-xs hover:bg-white/15"
           >
             Back to fuelflow.co.uk
           </a>
         </div>
       </header>
 
-      <main className="relative z-10 flex-1">
-        <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-5 py-8 lg:grid-cols-12 lg:py-12">
-          {/* Brand / value props (hidden on very small screens) */}
+      <main className="relative flex-1">
+        <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
+          {/* Brand / value props */}
           <section className="order-2 lg:order-1 lg:col-span-7">
-            <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-6 backdrop-blur-sm ring-1 ring-white/5">
+            <div className="rounded-xl bg-gray-800/40 p-6 md:p-6">
               <h1 className="text-2xl md:text-3xl font-bold">Welcome back</h1>
               <p className="mt-2 max-w-xl text-white/70">
                 Sign in to manage your fuel orders, contracts and invoices in one secure place.
               </p>
 
               <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <ValueCard
-                  title="Transparent pricing"
-                  body="Live price cards keep you in control."
-                />
-                <ValueCard
-                  title="Fast delivery"
-                  body="Choose a date two weeks out—sorted."
-                />
-                <ValueCard
-                  title="Secure payments"
-                  body="Stripe checkout with 3-D Secure."
-                />
-                <ValueCard
-                  title="UK-based support"
-                  body="We’re here if you need a hand."
-                />
+                <ValueCard title="Transparent pricing" body="Live price cards keep you in control." />
+                <ValueCard title="Fast delivery" body="Choose a date two weeks out—sorted." />
+                <ValueCard title="Secure payments" body="Stripe checkout with 3-D Secure." />
+                <ValueCard title="UK-based support" body="We’re here if you need a hand." />
               </div>
             </div>
           </section>
 
           {/* Login card */}
           <section className="order-1 lg:order-2 lg:col-span-5">
-            <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-6 shadow-2xl backdrop-blur-md ring-1 ring-white/10">
+            <div className="rounded-xl bg-gray-800 p-6 md:p-6">
               <div className="mb-4 flex items-center gap-2">
-                {/* Replaced yellow "FF" box with your logo */}
-                <img
-                  src="/logo-email.png"
-                  alt="FuelFlow logo"
-                  className="h-8 w-auto"
-                />
+                {/* Use logo instead of FF box */}
+                <img src="/logo-email.png" alt="FuelFlow logo" className="h-7 w-auto" />
                 <div>
                   <div className="text-lg font-semibold">Client Login</div>
                   <div className="text-xs text-white/60">Use your account email and password</div>
@@ -266,11 +245,7 @@ export default function Login() {
                     </button>
                   </div>
                 </label>
-                {capsOn && (
-                  <div className="mt-1 text-xs text-amber-300">
-                    Caps Lock is ON
-                  </div>
-                )}
+                {capsOn && <div className="mt-1 text-xs text-amber-300">Caps Lock is ON</div>}
               </div>
 
               {/* hCaptcha */}
@@ -311,14 +286,14 @@ export default function Login() {
                 <button
                   onClick={handleLogin}
                   disabled={loading}
-                  className="rounded-xl bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
+                  className="rounded-lg bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
                 >
                   {loading ? "Signing in…" : "Sign In"}
                 </button>
                 <button
                   onClick={handleMagicLink}
                   disabled={loading || !email}
-                  className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 font-semibold hover:bg-white/10 disabled:opacity-50"
+                  className="rounded-lg bg-white/10 px-4 py-2 font-semibold hover:bg-white/15 disabled:opacity-50"
                   title={!email ? "Enter your email first" : ""}
                 >
                   Email me a magic link
@@ -356,9 +331,9 @@ export default function Login() {
         </div>
       </main>
 
-      <footer className="relative z-10 border-t border-white/10 bg-white/[0.02]">
-        <div className="mx-auto max-w-6xl px-5 py-4 text-center text-xs text-white/60">
-          © {new Date().getFullYear()} FuelFlow. Secure login powered by Supabase & hCaptcha.
+      <footer className="relative border-t border-white/10">
+        <div className="mx-auto max-w-6xl px-4 py-4 text-center text-xs text-white/60">
+          © {new Date().getFullYear()} FuelFlow. Secure login powered by Supabase &amp; hCaptcha.
         </div>
       </footer>
     </div>
@@ -369,7 +344,7 @@ export default function Login() {
 
 function ValueCard({ title, body }: { title: string; body: string }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 ring-1 ring-white/5">
+    <div className="rounded-xl bg-gray-800 p-4">
       <div className="text-sm font-semibold">{title}</div>
       <div className="mt-1 text-sm text-white/75">{body}</div>
     </div>
@@ -378,13 +353,7 @@ function ValueCard({ title, body }: { title: string; body: string }) {
 
 function MailIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M4 6h16v12H4z" />
       <path d="M22 6l-10 7L2 6" />
     </svg>
