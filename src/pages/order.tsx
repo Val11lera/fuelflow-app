@@ -1,65 +1,37 @@
 // src/pages/order.tsx
-// /src/pages/order.tsx
+// src/pages/order.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { createClient } from "@supabase/supabase-js";
-import HCaptcha from "@hcaptcha/react-hcaptcha";
+import { supabaseBrowser } from "@/lib/supabaseClient";
 
-/* ========= Supabase ========= */
-const supabase =
-  typeof window !== "undefined"
-    ? createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
-      )
-    : (null as any);
-
-/* ========= UI tokens ========= */
-const wrap = "rounded-2xl border border-white/10 bg-white/5 backdrop-blur px-5 py-4 shadow transition";
-const btn = "rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
-const btnPrimary = "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
-const btnGhost = "bg-white/10 hover:bg-white/15 text-white border border-white/10";
-const input = "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30";
-const label = "block text-sm font-medium text-white/80 mb-1";
-const row = "grid grid-cols-1 md:grid-cols-2 gap-4";
-
-/* ========= Types ========= */
 type Fuel = "diesel" | "petrol";
-type TankOption = "buy" | "rent";
-type ContractRow = {
-  id: string;
-  email: string | null;
-  tank_option: TankOption;
-  status: "draft" | "signed" | "approved" | "cancelled";
-};
+const TERMS_VERSION = "v1.1";
 
-/* ========= Helpers ========= */
-const GBP = (n: number | null | undefined) =>
-  n == null || !Number.isFinite(n)
-    ? "—"
-    : new Intl.NumberFormat("en-GB", {
-        style: "currency",
-        currency: "GBP",
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      }).format(n);
+/* UI */
+const uiPage = "min-h-screen bg-[#061B34] text-white pb-20";
+const uiWrap = "mx-auto w-full max-w-6xl px-4 pt-10";
+const uiHeading = "text-3xl md:text-4xl font-bold";
+const uiCard = "rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-5 shadow";
+const uiTile = "rounded-2xl bg-white/5 border border-white/10 p-4";
+const uiLabel = "block text-sm font-medium text-white/80 mb-1";
+const uiInput = "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30";
+const uiBtn = "inline-flex items-center justify-center rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
+const uiBtnPrimary = "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
 
+/* Page */
 export default function OrderPage() {
-  // auth & email
-  const [email, setEmail] = useState("");
+  const supabase = supabaseBrowser;
 
-  // live prices
+  const [email, setEmail] = useState("");
+  const [termsAccepted, setTermsAccepted] = useState<boolean | null>(null);
+
+  // Prices
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
-  // contracts / requirements
-  const [accepted, setAccepted] = useState(false);
-  const [hasBuy, setHasBuy] = useState(false);
-  const [hasRentApproved, setHasRentApproved] = useState(false);
-
-  // form
+  // Form
   const [fuel, setFuel] = useState<Fuel>("diesel");
   const [litres, setLitres] = useState<number>(1000);
   const [deliveryDate, setDeliveryDate] = useState("");
@@ -69,33 +41,24 @@ export default function OrderPage() {
   const [postcode, setPostcode] = useState("");
   const [city, setCity] = useState("");
 
-  // hCaptcha
-  const [captchaOk, setCaptchaOk] = useState(false);
-  const hSiteKey = process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY || "";
-
-  // checkout
   const [startingCheckout, setStartingCheckout] = useState(false);
 
-  /* ---------- auth & email ---------- */
+  // Prefill user email
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getUser();
       const em = (data?.user?.email || "").toLowerCase();
-      setEmail(em);
+      if (em) setEmail(em);
     })();
-  }, []);
+  }, [supabase]);
 
-  /* ---------- prices ---------- */
+  // Prices
   useEffect(() => {
     (async () => {
       try {
-        let { data: lp } = await supabase
-          .from("latest_prices")
-          .select("fuel,total_price");
+        let { data: lp } = await supabase.from("latest_prices").select("fuel,total_price");
         if (!lp?.length) {
-          const { data: dp } = await supabase
-            .from("latest_daily_prices")
-            .select("fuel,total_price");
+          const { data: dp } = await supabase.from("latest_daily_prices").select("fuel,total_price");
           if (dp?.length) lp = dp as any;
         }
         if (lp?.length) {
@@ -106,56 +69,70 @@ export default function OrderPage() {
         }
       } catch {}
     })();
-  }, []);
+  }, [supabase]);
 
-  /* ---------- requirements ---------- */
+  // Terms
   useEffect(() => {
     if (!email) return;
     (async () => {
-      // T&C
-      const { data: t } = await supabase
+      const { data } = await supabase
         .from("terms_acceptances")
-        .select("id")
+        .select("id,accepted_at")
         .eq("email", email)
-        .order("accepted_at", { ascending: false })
-        .limit(1)
+        .eq("version", TERMS_VERSION)
         .maybeSingle();
-      setAccepted(!!t);
-
-      // contracts
-      const { data: c } = await supabase
-        .from("contracts")
-        .select("id,tank_option,status")
-        .eq("email", email)
-        .order("created_at", { ascending: false });
-
-      const rows = (c ?? []) as ContractRow[];
-      setHasBuy(rows.some((r) => r.tank_option === "buy" && (r.status === "signed" || r.status === "approved")));
-      setHasRentApproved(rows.some((r) => r.tank_option === "rent" && r.status === "approved"));
+      setTermsAccepted(Boolean(data?.id));
     })();
-  }, [email]);
+  }, [email, supabase]);
 
-  /* ---------- derived ---------- */
-  const unitPrice = fuel === "diesel" ? dieselPrice : petrolPrice;
+  // Contracts gate (buy signed/approved OR rent approved)
+  const [canOrder, setCanOrder] = useState<boolean>(false);
+  useEffect(() => {
+    if (!email) return;
+    (async () => {
+      const { data } = await supabase
+        .from("contracts")
+        .select("tank_option,status")
+        .eq("email", email);
+      const rows = (data ?? []) as { tank_option: "buy" | "rent"; status: "draft" | "signed" | "approved" | "cancelled" }[];
+      const buyActive = rows.some(r => r.tank_option === "buy" && (r.status === "signed" || r.status === "approved"));
+      const rentActive = rows.some(r => r.tank_option === "rent" && r.status === "approved");
+      setCanOrder(Boolean(buyActive || rentActive));
+    })();
+  }, [email, supabase]);
+
+  const unitPriceSelected = fuel === "diesel" ? dieselPrice : petrolPrice;
   const estTotal = useMemo(
-    () => (unitPrice != null && Number.isFinite(litres) ? litres * unitPrice : 0),
-    [litres, unitPrice]
+    () => (unitPriceSelected != null && Number.isFinite(litres) ? litres * unitPriceSelected : 0),
+    [litres, unitPriceSelected]
   );
+  const GBP = (n: number | null | undefined) =>
+    n == null || !Number.isFinite(n)
+      ? "—"
+      : new Intl.NumberFormat("en-GB", {
+          style: "currency",
+          currency: "GBP",
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }).format(n || 0);
 
-  const requirementsOkay = accepted && (hasBuy || hasRentApproved);
+  const payDisabled =
+    !(termsAccepted && canOrder) ||
+    !email ||
+    !fullName ||
+    !address1 ||
+    !postcode ||
+    !city ||
+    !deliveryDate ||
+    !Number.isFinite(litres) ||
+    litres <= 0;
 
-  /* ---------- checkout ---------- */
   async function startCheckout() {
     try {
-      if (!requirementsOkay) {
-        alert("Complete requirements first (Terms + active contract). Go to Documents.");
+      if (!(termsAccepted && canOrder)) {
+        alert("Please accept Terms and ensure your contract is active on the Documents page.");
         return;
       }
-      if (hSiteKey && !captchaOk) {
-        alert("Please complete the hCaptcha.");
-        return;
-      }
-
       setStartingCheckout(true);
       const res = await fetch("/api/stripe/checkout/create", {
         method: "POST",
@@ -187,140 +164,106 @@ export default function OrderPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#061B34] text-white pb-20">
-      <div className="mx-auto w-full max-w-6xl px-4 pt-10">
+    <main className={uiPage}>
+      <div className={uiWrap}>
         {/* Header */}
-        <div className="mb-6 flex items-center gap-3">
-          <img src="/logo-email.png" alt="FuelFlow" width={116} height={28} className="opacity-90" />
-          <h1 className="ml-3 text-3xl md:text-4xl font-bold">Place an Order</h1>
-          <div className="ml-auto">
-            <Link href="/client-dashboard" className="text-white/70 hover:text-white">
-              Back to Dashboard
-            </Link>
+        <div className="mb-6 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <img src="/logo-email.png" alt="FuelFlow" width={116} height={28} className="opacity-90" />
+            <h1 className={uiHeading}>Place an Order</h1>
           </div>
+          <Link href="/client-dashboard" className="text-white/70 hover:text-white">
+            Back to Dashboard
+          </Link>
         </div>
 
-        {/* Requirements banner */}
-        {!requirementsOkay && (
-          <div className="mb-4 rounded-xl border border-yellow-400/30 bg-yellow-400/10 p-3 text-sm text-yellow-100">
+        {/* Banner */}
+        <div className={`${uiCard} mb-6`}>
+          <div className="text-sm">
             You need to accept the latest Terms and have an active contract (Buy or approved Rent).
             Manage them on the{" "}
-            <Link href="/documents" className="underline decoration-yellow-300 underline-offset-2">
+            <Link href="/documents" className="underline hover:text-white">
               Documents
             </Link>{" "}
             page.
           </div>
-        )}
-
-        {/* Prices row */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 my-6">
-          <Tile title="Petrol (95)" value={petrolPrice != null ? GBP(petrolPrice) : "—"} suffix="/ litre" />
-          <Tile title="Diesel" value={dieselPrice != null ? GBP(dieselPrice) : "—"} suffix="/ litre" />
-          <Tile title="Estimated Total" value={GBP(estTotal)} />
         </div>
 
-        {/* Order form */}
-        <section className={`${wrap} px-5 md:px-6 py-6`}>
-          <div className={row}>
+        {/* Prices */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div className={uiTile}>
+            <div className="text-white/70 text-sm">Petrol (95)</div>
+            <div className="mt-1 text-2xl font-semibold">
+              {GBP(petrolPrice)} <span className="text-white/50 text-base">/ litre</span>
+            </div>
+          </div>
+          <div className={uiTile}>
+            <div className="text-white/70 text-sm">Diesel</div>
+            <div className="mt-1 text-2xl font-semibold">
+              {GBP(dieselPrice)} <span className="text-white/50 text-base">/ litre</span>
+            </div>
+          </div>
+          <div className={uiTile}>
+            <div className="text-white/70 text-sm">Estimated Total</div>
+            <div className="mt-1 text-2xl font-semibold">{GBP(estTotal)}</div>
+          </div>
+        </div>
+
+        {/* Form */}
+        <section className={uiCard}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className={label}>Fuel</label>
-              <select className={input} value={fuel} onChange={(e) => setFuel(e.target.value as Fuel)}>
+              <label className={uiLabel}>Fuel</label>
+              <select className={uiInput} value={fuel} onChange={(e) => setFuel(e.target.value as Fuel)}>
                 <option value="diesel">Diesel</option>
                 <option value="petrol">Petrol</option>
               </select>
             </div>
-
             <div>
-              <label className={label}>Litres</label>
-              <input className={input} type="number" min={1} value={litres} onChange={(e) => setLitres(Number(e.target.value))} />
+              <label className={uiLabel}>Litres</label>
+              <input className={uiInput} type="number" min={1} value={litres} onChange={(e) => setLitres(Number(e.target.value))} />
             </div>
-
             <div>
-              <label className={label}>Delivery date</label>
-              <input className={input} type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} />
+              <label className={uiLabel}>Delivery date</label>
+              <input className={uiInput} type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} />
             </div>
-
             <div>
-              <label className={label}>Your email (receipt)</label>
-              <input className={input} type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+              <label className={uiLabel}>Your email (receipt)</label>
+              <input className={uiInput} type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
             </div>
-
             <div className="md:col-span-2">
-              <label className={label}>Full name</label>
-              <input className={input} value={fullName} onChange={(e) => setFullName(e.target.value)} />
+              <label className={uiLabel}>Full name</label>
+              <input className={uiInput} value={fullName} onChange={(e) => setFullName(e.target.value)} />
             </div>
-
             <div>
-              <label className={label}>Address line 1</label>
-              <input className={input} value={address1} onChange={(e) => setAddress1(e.target.value)} />
+              <label className={uiLabel}>Address line 1</label>
+              <input className={uiInput} value={address1} onChange={(e) => setAddress1(e.target.value)} />
             </div>
-
             <div>
-              <label className={label}>Address line 2</label>
-              <input className={input} value={address2} onChange={(e) => setAddress2(e.target.value)} />
+              <label className={uiLabel}>Address line 2</label>
+              <input className={uiInput} value={address2} onChange={(e) => setAddress2(e.target.value)} />
             </div>
-
             <div>
-              <label className={label}>Postcode</label>
-              <input className={input} value={postcode} onChange={(e) => setPostcode(e.target.value)} />
+              <label className={uiLabel}>Postcode</label>
+              <input className={uiInput} value={postcode} onChange={(e) => setPostcode(e.target.value)} />
             </div>
-
             <div>
-              <label className={label}>City</label>
-              <input className={input} value={city} onChange={(e) => setCity(e.target.value)} />
+              <label className={uiLabel}>City</label>
+              <input className={uiInput} value={city} onChange={(e) => setCity(e.target.value)} />
             </div>
           </div>
 
-          {/* T&C + hCaptcha */}
-          <div className="mt-5 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <input
-                type="checkbox"
-                checked={accepted}
-                disabled
-                className="h-5 w-5 accent-yellow-400 rounded"
-                readOnly
-              />
-              <div className="text-sm text-white/80">
-                <span className="font-semibold">Terms &amp; Conditions</span> — already accepted.
-                <Link href="/terms" className="ml-2 underline decoration-yellow-300 underline-offset-2">
-                  View
-                </Link>
-              </div>
-            </div>
-
-            {/* hCaptcha appears only if site key exists */}
-            {hSiteKey ? (
-              <HCaptcha
-                sitekey={hSiteKey}
-                onVerify={() => setCaptchaOk(true)}
-                onExpire={() => setCaptchaOk(false)}
-                theme="dark"
-              />
-            ) : (
-              <div className="text-xs text-white/50">
-                hCaptcha not configured (set NEXT_PUBLIC_HCAPTCHA_SITE_KEY to enable)
-              </div>
-            )}
+          {/* Terms tick, reflects accepted */}
+          <div className="mt-4 flex items-center gap-3">
+            <input type="checkbox" checked={!!termsAccepted} readOnly className="h-4 w-4 rounded border-white/20 bg-white/5" />
+            <span className="text-sm text-white/80">
+              <span className="font-medium">Terms & Conditions</span> — already accepted.{" "}
+              <Link href="/terms" className="underline">View</Link>
+            </span>
           </div>
 
-          <div className="mt-5">
-            <button
-              className={`${btn} ${btnPrimary}`}
-              onClick={startCheckout}
-              disabled={
-                !email ||
-                !fullName ||
-                !address1 ||
-                !postcode ||
-                !city ||
-                !deliveryDate ||
-                litres <= 0 ||
-                startingCheckout ||
-                !requirementsOkay ||
-                (hSiteKey ? !captchaOk : false)
-              }
-            >
+          <div className="mt-4">
+            <button className={`${uiBtn} ${uiBtnPrimary}`} disabled={payDisabled || startingCheckout} onClick={startCheckout}>
               {startingCheckout ? "Starting checkout…" : "Pay with Stripe"}
             </button>
           </div>
@@ -329,15 +272,3 @@ export default function OrderPage() {
     </main>
   );
 }
-
-function Tile({ title, value, suffix }: { title: string; value: string; suffix?: string }) {
-  return (
-    <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-      <div className="text-white/70 text-sm">{title}</div>
-      <div className="mt-1 text-2xl font-semibold">
-        {value} {suffix && <span className="text-white/50 text-base">{suffix}</span>}
-      </div>
-    </div>
-  );
-}
-
