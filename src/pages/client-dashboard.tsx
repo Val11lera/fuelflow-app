@@ -96,6 +96,16 @@ function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
 
+// Map statuses to labels exactly like documents.tsx semantics
+function labelFromStatus(status?: ContractStatus | null, kind: "Buy" | "Rent") {
+  if (!status) return `${kind} not signed`;
+  if (status === "approved") return `${kind} active`;
+  if (status === "signed") return `${kind} awaiting approval`;
+  if (status === "cancelled") return `${kind} cancelled`;
+  // draft or anything unexpected
+  return `${kind} not signed`;
+}
+
 /* =========================
    Page
    ========================= */
@@ -182,7 +192,7 @@ export default function ClientDashboard() {
         // TERMS — latest acceptance for this version
         await loadTerms(emailLower);
 
-        // CONTRACTS — latest signed/approved per option
+        // CONTRACTS — latest per option (mirror documents.tsx)
         await loadContracts(emailLower);
 
         // ORDERS
@@ -253,23 +263,19 @@ export default function ClientDashboard() {
     setTermsAcceptedAt(data?.[0]?.accepted_at ?? null);
   }
 
+  // >>> UPDATED: mirror documents.tsx — pick latest by created_at for each option
   async function loadContracts(emailLower: string) {
     const { data } = await supabase
       .from("contracts")
-      .select("id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path")
+      .select(
+        "id,tank_option,status,signed_at,approved_at,created_at,email,pdf_url,pdf_storage_path"
+      )
       .eq("email", emailLower)
       .order("created_at", { ascending: false });
 
     const rows = (data || []) as ContractRow[];
-    const latestBuy =
-      rows.find((r) => r.tank_option === "buy" && (r.status === "approved" || r.status === "signed")) ??
-      rows.find((r) => r.tank_option === "buy") ??
-      null;
-
-    const latestRent =
-      rows.find((r) => r.tank_option === "rent" && (r.status === "approved" || r.status === "signed")) ??
-      rows.find((r) => r.tank_option === "rent") ??
-      null;
+    const latestBuy = rows.find((r) => r.tank_option === "buy") ?? null;
+    const latestRent = rows.find((r) => r.tank_option === "rent") ?? null;
 
     setBuyContract(latestBuy);
     setRentContract(latestRent);
@@ -395,11 +401,11 @@ export default function ClientDashboard() {
 
   const canOrder = pricesAreToday && petrolPrice != null && dieselPrice != null;
 
-  // nice one-line summary for the Documents card
+  // >>> UPDATED: build summary with same semantics as documents page
   const documentsSummary = [
     termsAcceptedAt ? "Terms accepted" : "Terms pending",
-    buyContract ? (buyContract.status === "approved" ? "Buy active" : "Buy signed") : "Buy not signed",
-    rentContract ? (rentContract.status === "approved" ? "Rent active" : "Rent signed") : "Rent not signed",
+    labelFromStatus(buyContract?.status, "Buy"),
+    labelFromStatus(rentContract?.status, "Rent"),
   ].join(" · ");
 
   return (
@@ -437,7 +443,7 @@ export default function ClientDashboard() {
               Order Fuel
             </a>
 
-            {/* NEW: Documents button (keeps alignment tidy) */}
+            {/* Documents */}
             <a
               href="/documents"
               className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
@@ -474,7 +480,7 @@ export default function ClientDashboard() {
           </div>
         )}
 
-        {/* Top cards: Prices + Clean Documents summary card */}
+        {/* Top cards: Prices + Documents summary */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card title="Petrol (95)">
             <div className="text-3xl font-bold">
@@ -496,7 +502,7 @@ export default function ClientDashboard() {
             </div>
           </Card>
 
-          {/* Replaces the old DocumentsHub tiles with a sleek summary card */}
+          {/* Documents summary (aligned with documents page logic) */}
           <div className="bg-gray-800 rounded-xl p-4 md:p-5">
             <p className="text-gray-400 mb-1">Documents</p>
             <div className="text-sm text-white/80">{documentsSummary}</div>
@@ -509,7 +515,7 @@ export default function ClientDashboard() {
           </div>
         </section>
 
-        {/* Usage & Spend (condensed by default) */}
+        {/* Usage & Spend */}
         <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
             <h2 className="text-xl md:text-2xl font-semibold">Usage &amp; Spend</h2>
