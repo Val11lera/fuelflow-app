@@ -80,8 +80,11 @@ function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
 
-// Exact label semantics to match documents.tsx
-function labelFromStatus(status?: ContractStatus | null, kind: "Buy" | "Rent") {
+// Map statuses to labels exactly like documents.tsx semantics
+function labelFromStatus(
+  status: ContractStatus | null | undefined,
+  kind: "Buy" | "Rent"
+): string {
   if (!status) return `${kind} not signed`;
   if (status === "approved") return `${kind} active`;
   if (status === "signed") return `${kind} awaiting approval`;
