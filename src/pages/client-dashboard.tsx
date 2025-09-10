@@ -76,7 +76,7 @@ function cx(...classes: (string | false | null | undefined)[]) {
 export default function ClientDashboard() {
   const [userEmail, setUserEmail] = useState<string>("");
 
-  // gating: UI hidden until Refresh
+  // gating: UI hidden until first refresh completes (we auto-trigger it)
   const [hasRefreshed, setHasRefreshed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +95,7 @@ export default function ClientDashboard() {
     (OrderRow & { amountGBP: number; paymentStatus?: string })[]
   >([]);
 
-  // (we load contracts but don't show status on the dashboard)
+  // (we load contracts but don’t display status on dashboard)
   const [buyContract, setBuyContract] = useState<ContractRow | null>(null);
   const [rentContract, setRentContract] = useState<ContractRow | null>(null);
 
@@ -144,7 +144,17 @@ export default function ClientDashboard() {
     };
   }, []);
 
-  // ----------------- Loaders (triggered by Refresh) -----------------
+  // ----------------- Loaders -----------------
+  const firstLoadTriggered = useRef(false);
+
+  useEffect(() => {
+    // Automatically “press” Refresh as soon as we know the user
+    if (userEmail && !firstLoadTriggered.current) {
+      firstLoadTriggered.current = true;
+      loadAll();
+    }
+  }, [userEmail]);
+
   async function loadAll() {
     try {
       setLoading(true);
@@ -287,7 +297,6 @@ export default function ClientDashboard() {
 
   // ---------- Actions ----------
   function refresh() {
-    // central big button uses this
     loadAll();
   }
 
@@ -327,7 +336,7 @@ export default function ClientDashboard() {
 
   const canOrder = hasRefreshed && petrolPrice != null && dieselPrice != null;
 
-  // --- BEFORE REFRESH: show centered CTA only ---
+  // --- BEFORE REFRESH COMPLETES: show centered “Refreshing…” card ---
   if (!hasRefreshed) {
     return (
       <div className="min-h-screen bg-[#0b1220] text-white">
@@ -344,24 +353,24 @@ export default function ClientDashboard() {
           </div>
         </div>
 
-        {/* Centered Refresh CTA */}
+        {/* Centered loading card */}
         <div className="max-w-6xl mx-auto px-4">
           <div className="min-h-[60vh] grid place-items-center">
             <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/[0.03] p-6 text-center">
-              <h1 className="text-2xl font-semibold">Dashboard paused</h1>
+              <h1 className="text-2xl font-semibold">Dashboard refreshing…</h1>
               <p className="mt-2 text-white/70">
-                Press refresh to load today’s prices and your latest activity.
+                Loading today’s prices and your latest activity.
               </p>
               <button
                 onClick={refresh}
                 disabled={loading}
                 className={cx(
                   "mt-5 w-full rounded-xl px-4 py-3 text-base font-semibold",
-                  "bg-white/10 hover:bg-white/15",
-                  loading && "opacity-60 cursor-not-allowed"
+                  "bg-white/10",
+                  loading ? "opacity-60 cursor-not-allowed" : "hover:bg-white/15"
                 )}
               >
-                {loading ? "Refreshing…" : "Refresh"}
+                {loading ? "Refreshing…" : "Refresh now"}
               </button>
               {error && (
                 <div className="mt-3 rounded-lg border border-rose-400/40 bg-rose-500/10 p-2 text-sm text-rose-200">
@@ -400,7 +409,7 @@ export default function ClientDashboard() {
             Welcome back, <span className="font-medium">{userEmail}</span>
           </div>
 
-        <div className="ml-auto hidden md:flex gap-2">
+          <div className="ml-auto hidden md:flex gap-2">
             <a
               href="/order"
               aria-disabled={!canOrder}
