@@ -77,7 +77,7 @@ export default function DocumentsPage() {
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
   // modals
-  the
+
   const [showBuy, setShowBuy] = useState(false);
   const [showRent, setShowRent] = useState(false);
 
