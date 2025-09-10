@@ -76,10 +76,12 @@ export default function DocumentsPage() {
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
-  // modals
-
+  // modals (full contract)
   const [showBuy, setShowBuy] = useState(false);
   const [showRent, setShowRent] = useState(false);
+  // NEW: ROI-only modals
+  const [showBuyCalc, setShowBuyCalc] = useState(false);
+  const [showRentCalc, setShowRentCalc] = useState(false);
 
   // status guide as OVERLAY (bottom sheet)
   const [showGuide, setShowGuide] = useState(false);
@@ -229,7 +231,7 @@ export default function DocumentsPage() {
       </header>
 
       {/* Subhead checklist (scrollable on mobile) */}
-      <div className="mx-auto max-w-6xl px-4">
+      <div className="mx-auto max-w-6xl px-4 mt-3 sm:mt-0">
         <div className="mb-4 flex items-center gap-2 overflow-x-auto pb-1">
           {checklist.map((c) => (
             <span
@@ -271,7 +273,7 @@ export default function DocumentsPage() {
             title="Buy Contract"
             statusBadge={<StatusBadge status={buyLatest?.status} onClick={() => setShowGuide(true)} />}
             body="For purchase agreements: a signed contract becomes Active immediately."
-            secondary={{ label: "ROI / Calculator", onClick: () => setShowBuy(true) }}
+            secondary={{ label: "ROI / Calculator", onClick: () => setShowBuyCalc(true) }}
             primary={{ label: buyLatest ? "Update / Resign" : "Start", onClick: () => setShowBuy(true) }}
           />
 
@@ -279,7 +281,7 @@ export default function DocumentsPage() {
             title="Rent Contract"
             statusBadge={<StatusBadge status={rentLatest?.status} onClick={() => setShowGuide(true)} />}
             body="Rental agreements require admin approval after signing."
-            secondary={{ label: "ROI / Calculator", onClick: () => setShowRent(true) }}
+            secondary={{ label: "ROI / Calculator", onClick: () => setShowRentCalc(true) }}
             primary={{ label: rentLatest ? "Update / Resign" : "Start", onClick: () => setShowRent(true) }}
           />
         </section>
@@ -319,7 +321,25 @@ export default function DocumentsPage() {
       {/* Status Guide Bottom Sheet (overlay) */}
       <StatusGuideSheet open={showGuide} onClose={() => setShowGuide(false)} />
 
-      {/* BUY modal */}
+      {/* ROI-only modals */}
+      {showBuyCalc && (
+        <RoiModal
+          title="Buy – ROI calculator"
+          defaults={{ fuelflow_price_gbp_l: petrolPrice ?? dieselPrice ?? undefined }}
+          existing={buyLatest || undefined}
+          onClose={() => setShowBuyCalc(false)}
+        />
+      )}
+      {showRentCalc && (
+        <RoiModal
+          title="Rent – ROI calculator"
+          defaults={{ fuelflow_price_gbp_l: dieselPrice ?? petrolPrice ?? undefined }}
+          existing={rentLatest || undefined}
+          onClose={() => setShowRentCalc(false)}
+        />
+      )}
+
+      {/* BUY modal (full) */}
       {showBuy && (
         <ContractModal
           title="Buy Contract"
@@ -336,7 +356,7 @@ export default function DocumentsPage() {
         />
       )}
 
-      {/* RENT modal */}
+      {/* RENT modal (full) */}
       {showRent && (
         <ContractModal
           title="Rent Contract"
@@ -536,7 +556,105 @@ function Tile(props: {
   );
 }
 
-/* --------------------------- Contract modal --------------------------- */
+/* --------------------------- ROI-only modal --------------------------- */
+
+function RoiModal({
+  title,
+  defaults,
+  existing,
+  onClose,
+}: {
+  title: string;
+  defaults?: Partial<ContractRow>;
+  existing?: ContractRow;
+  onClose: () => void;
+}) {
+  // ROI inputs only
+  const [tankSize, setTankSize] = useState<number | undefined>(
+    existing?.tank_size_l ?? (defaults?.tank_size_l as number | undefined)
+  );
+  const [monthlyLitres, setMonthlyLitres] = useState<number | undefined>(
+    existing?.monthly_consumption_l ?? (defaults?.monthly_consumption_l as number | undefined)
+  );
+  const [marketPrice, setMarketPrice] = useState<number | undefined>(
+    existing?.market_price_gbp_l ?? (defaults?.market_price_gbp_l as number | undefined)
+  );
+  const [ffPrice, setFfPrice] = useState<number | undefined>(
+    existing?.fuelflow_price_gbp_l ?? (defaults?.fuelflow_price_gbp_l as number | undefined)
+  );
+  const [capex, setCapex] = useState<number | undefined>(
+    existing?.capex_gbp ?? (defaults?.capex_gbp as number | undefined)
+  );
+
+  const monthlySaving = useMemo(() => {
+    if (!marketPrice || !ffPrice || !monthlyLitres) return 0;
+    const diff = marketPrice - ffPrice;
+    return Math.max(0, diff) * monthlyLitres;
+  }, [marketPrice, ffPrice, monthlyLitres]);
+
+  const paybackMonths = useMemo(() => {
+    if (!capex || !monthlySaving) return null;
+    if (monthlySaving <= 0) return null;
+    return Math.round((capex / monthlySaving) * 10) / 10;
+  }, [capex, monthlySaving]);
+
+  function toNum(v: string): number | undefined {
+    if (v === "" || v == null) return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  function fmtMoney(n?: number | null): string {
+    if (n == null || !Number.isFinite(Number(n))) return "—";
+    const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
+    return gbp.format(Number(n));
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* backdrop */}
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0f172a] shadow-2xl">
+        <div className="flex items-center justify-between p-4 border-b border-white/10">
+          <h3 className="text-lg font-semibold">{title}</h3>
+          <button onClick={onClose} className="rounded-md bg-white/10 px-2 py-1 text-sm hover:bg-white/15">
+            ✕
+          </button>
+        </div>
+
+        <div className="max-h-[70vh] overflow-y-auto p-4 space-y-5">
+          <Section title="Tank & ROI">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Field label="Tank size (L)" value={tankSize} onChange={(v) => setTankSize(toNum(v))} type="number" />
+              <Field label="Monthly consumption (L)" value={monthlyLitres} onChange={(v) => setMonthlyLitres(toNum(v))} type="number" />
+              <span />
+              <Field label="Market price (£/L)" value={marketPrice} onChange={(v) => setMarketPrice(toNum(v))} type="number" />
+              <Field label="FuelFlow price (£/L)" value={ffPrice} onChange={(v) => setFfPrice(toNum(v))} type="number" />
+              <Field label="Capex (£)" value={capex} onChange={(v) => setCapex(toNum(v))} type="number" />
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+              <SummaryCard label="FuelFlow price" value={fmtMoney(ffPrice)} />
+              <SummaryCard label="Est. monthly savings" value={fmtMoney(monthlySaving)} />
+              <SummaryCard label="Est. payback" value={paybackMonths ? `${paybackMonths} mo` : "—"} />
+            </div>
+
+            <p className="mt-3 text-xs text-white/60">
+              These figures are estimates for comparison only.
+            </p>
+          </Section>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 p-4 border-t border-white/10">
+          <button className="rounded-lg bg-yellow-500 px-3 py-2 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------- Contract modal (full) --------------------------- */
 
 function ContractModal({
   title,
@@ -551,7 +669,7 @@ function ContractModal({
   title: string;
   option: TankOption;
   userEmail: string;
-  taId?: string | null; // NEW
+  taId?: string | null;
   defaults?: Partial<ContractRow>;
   existing?: ContractRow;
   onClose: () => void;
@@ -636,7 +754,7 @@ function ContractModal({
   }
   function numOrNull(n: number | undefined): number | null {
     return typeof n === "number" && Number.isFinite(n) ? n : null;
-  }
+    }
   function fmtMoney(n?: number | null): string {
     if (n == null || !Number.isFinite(Number(n))) return "—";
     const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
