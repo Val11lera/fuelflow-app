@@ -76,8 +76,10 @@ function cx(...classes: (string | false | null | undefined)[]) {
 export default function ClientDashboard() {
   const [userEmail, setUserEmail] = useState<string>("");
 
-  // gating: UI disabled until Refresh
+  // gating: UI hidden until Refresh
   const [hasRefreshed, setHasRefreshed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [lastRefreshAt, setLastRefreshAt] = useState<string | null>(null);
   const refreshedWeekday =
     lastRefreshAt
@@ -92,10 +94,8 @@ export default function ClientDashboard() {
   const [orders, setOrders] = useState<
     (OrderRow & { amountGBP: number; paymentStatus?: string })[]
   >([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // optional docs fetch (not shown as status)
+  // (we load contracts but don't show status on the dashboard)
   const [buyContract, setBuyContract] = useState<ContractRow | null>(null);
   const [rentContract, setRentContract] = useState<ContractRow | null>(null);
 
@@ -131,9 +131,7 @@ export default function ClientDashboard() {
       }, INACTIVITY_MS);
     };
 
-    const events: (keyof WindowEventMap)[] = [
-      "mousemove", "mousedown", "keydown", "scroll", "touchstart",
-    ];
+    const events: (keyof WindowEventMap)[] = ["mousemove","mousedown","keydown","scroll","touchstart"];
     events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
     const onVis = () => reset();
     document.addEventListener("visibilitychange", onVis, { passive: true });
@@ -189,7 +187,7 @@ export default function ClientDashboard() {
     const toGbp = (raw: number | undefined | null) => {
       if (!Number.isFinite(raw as number)) return null;
       const n = Number(raw);
-      return (n > 10 ? n / 100 : n); // normalise pence→GBP
+      return n > 10 ? n / 100 : n; // handle pence or GBP
     };
 
     const apply = (rows: Row[]) => {
@@ -287,9 +285,10 @@ export default function ClientDashboard() {
     setOrders(withTotals);
   }
 
-  // ---------- UI actions ----------
+  // ---------- Actions ----------
   function refresh() {
-    loadAll(); // make sure refresh is always present
+    // central big button uses this
+    loadAll();
   }
 
   async function logout() {
@@ -301,7 +300,7 @@ export default function ClientDashboard() {
   }
 
   // ---------- Usage & Spend (by month, year) ----------
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sept","Oct","Nov","Dec"];
 
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
   const usageByMonth: MonthAgg[] = useMemo(() => {
@@ -327,8 +326,56 @@ export default function ClientDashboard() {
      ========================= */
 
   const canOrder = hasRefreshed && petrolPrice != null && dieselPrice != null;
-  const uiDisabled = !hasRefreshed;
 
+  // --- BEFORE REFRESH: show centered CTA only ---
+  if (!hasRefreshed) {
+    return (
+      <div className="min-h-screen bg-[#0b1220] text-white">
+        {/* simple header with logout only */}
+        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center">
+          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+          <div className="ml-auto">
+            <button
+              onClick={logout}
+              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
+            >
+              Log out
+            </button>
+          </div>
+        </div>
+
+        {/* Centered Refresh CTA */}
+        <div className="max-w-6xl mx-auto px-4">
+          <div className="min-h-[60vh] grid place-items-center">
+            <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/[0.03] p-6 text-center">
+              <h1 className="text-2xl font-semibold">Dashboard paused</h1>
+              <p className="mt-2 text-white/70">
+                Press refresh to load today’s prices and your latest activity.
+              </p>
+              <button
+                onClick={refresh}
+                disabled={loading}
+                className={cx(
+                  "mt-5 w-full rounded-xl px-4 py-3 text-base font-semibold",
+                  "bg-white/10 hover:bg-white/15",
+                  loading && "opacity-60 cursor-not-allowed"
+                )}
+              >
+                {loading ? "Refreshing…" : "Refresh"}
+              </button>
+              {error && (
+                <div className="mt-3 rounded-lg border border-rose-400/40 bg-rose-500/10 p-2 text-sm text-rose-200">
+                  {error}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- AFTER REFRESH: full dashboard ---
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
       {/* Sticky mobile Order CTA */}
@@ -353,8 +400,7 @@ export default function ClientDashboard() {
             Welcome back, <span className="font-medium">{userEmail}</span>
           </div>
 
-          {/* Desktop actions */}
-          <div className="ml-auto hidden md:flex gap-2">
+        <div className="ml-auto hidden md:flex gap-2">
             <a
               href="/order"
               aria-disabled={!canOrder}
@@ -377,37 +423,8 @@ export default function ClientDashboard() {
           </div>
         </div>
 
-        {/* Mobile top action row (ALWAYS visible) */}
-        <div className="md:hidden flex items-center gap-2">
-          <button
-            onClick={refresh}
-            className="flex-1 rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/15"
-          >
-            {loading ? "Refreshing…" : "Refresh"}
-          </button>
-          <a
-            href="/documents"
-            className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/15"
-          >
-            Documents
-          </a>
-          <button
-            onClick={logout}
-            className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/15"
-          >
-            Log out
-          </button>
-        </div>
-
-        {/* Paused notice until refreshed */}
-        {!hasRefreshed && (
-          <div className="rounded-xl border border-yellow-400/30 bg-yellow-500/10 p-4 text-sm text-yellow-200">
-            The dashboard is paused. Tap <span className="font-semibold">Refresh</span> to load the latest data.
-          </div>
-        )}
-
-        {/* Top cards: Prices + Documents */}
-        <section className={cx("grid grid-cols-1 lg:grid-cols-3 gap-4", uiDisabled && "opacity-50 pointer-events-none")}>
+        {/* Top cards */}
+        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card title="Petrol (95)">
             <div className="text-3xl font-bold">
               {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
@@ -436,7 +453,7 @@ export default function ClientDashboard() {
         </section>
 
         {/* Usage & Spend */}
-        <section className={cx("bg-gray-800/40 rounded-xl p-4 md:p-6", uiDisabled && "opacity-50 pointer-events-none")}>
+        <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
             <h2 className="text-xl md:text-2xl font-semibold">Usage &amp; Spend</h2>
             <div className="flex items-center gap-2">
@@ -520,7 +537,7 @@ export default function ClientDashboard() {
         )}
 
         {/* recent orders */}
-        <section className={cx("bg-gray-800 rounded-xl p-4 md:p-6 mb-24 md:mb-0", uiDisabled && "opacity-50 pointer-events-none")}>
+        <section className="bg-gray-800 rounded-xl p-4 md:p-6 mb-24 md:mb-0">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl md:text-2xl font-semibold">Recent Orders</h2>
             <button
