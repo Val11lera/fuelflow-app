@@ -40,9 +40,11 @@ const supabase =
 const card =
   "rounded-2xl border border-white/10 bg-white/5 backdrop-blur px-5 py-4 shadow transition";
 const button =
-  "rounded-2xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
+  "rounded-xl px-4 py-2 font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
 const buttonPrimary =
   "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400 active:bg-yellow-300";
+const buttonGhost =
+  "border border-white/15 bg-white/5 hover:bg-white/10 text-white";
 const input =
   "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30";
 const label = "block text-sm font-medium text-white/80 mb-1";
@@ -69,7 +71,6 @@ function toDateMaybe(r: any): Date | null {
 }
 
 function ymd(d: Date) {
-  // returns YYYY-MM-DD in local time
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -229,8 +230,8 @@ export default function OrderPage() {
   // gating:
   // - Terms must be accepted
   // - Either Buy is signed/approved OR Rent is approved
-  const hasBuy = !!buyContract; // buy: signed or approved counted above
-  const hasRentApproved = !!rentContract; // rent: only approved counted above
+  const hasBuy = !!buyContract;
+  const hasRentApproved = !!rentContract;
   const requirementsMet = termsAccepted && (hasBuy || hasRentApproved);
 
   // date validation
@@ -310,9 +311,16 @@ export default function OrderPage() {
   /* ---------- render ---------- */
 
   return (
-    <main className="min-h-screen bg-[#061B34] text-white pb-24 md:pb-12">
+    <main className="relative min-h-screen bg-[#061B34] text-white pb-24 md:pb-12">
+      {/* Layered premium background */}
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute inset-0 bg-gradient-to-b from-[#0b2344] via-[#061B34] to-[#041F3E]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.08),transparent_55%)]" />
+        <div className="absolute -top-24 -right-24 w-[520px] h-[520px] rounded-full blur-3xl opacity-20 bg-yellow-500/20" />
+      </div>
+
       {/* Header */}
-      <div className="mx-auto w-full max-w-6xl px-4 pt-6 md:pt-10">
+      <div className="relative mx-auto w-full max-w-6xl px-4 pt-6 md:pt-10">
         <div className="mb-6 flex items-center gap-3">
           <img
             src="/logo-email.png"
@@ -322,11 +330,15 @@ export default function OrderPage() {
             className="opacity-90 hidden sm:block"
           />
           <div className="text-2xl md:text-3xl font-bold">Place an Order</div>
-          <div className="ml-auto flex gap-3">
-            <Link href="/client-dashboard" className="text-white/70 hover:text-white">
+
+          <div className="ml-auto flex gap-2">
+            <Link
+              href="/client-dashboard"
+              className={`${button} ${buttonGhost}`}
+            >
               Back to Dashboard
             </Link>
-            <Link href="/documents" className="text-white/70 hover:text-white">
+            <Link href="/documents" className={`${button} ${buttonGhost}`}>
               Documents
             </Link>
           </div>
@@ -338,7 +350,7 @@ export default function OrderPage() {
           <Tile title="Diesel" value={dieselPrice != null ? GBP(dieselPrice) : "—"} suffix="/ litre" />
           <Tile title="Estimated Total" value={GBP(estTotal)} />
         </div>
-        <div className="mb-6 text-xs text-white/60">
+        <div className="mb-6 text-xs text-white/70">
           {loadingPrices
             ? "Loading prices…"
             : pricesUpdatedAt
@@ -348,7 +360,7 @@ export default function OrderPage() {
 
         {/* Requirements hint */}
         {!requirementsMet && (
-          <div className="mb-6 rounded-xl border border-yellow-400/40 bg-yellow-500/10 p-4 text-sm text-yellow-200">
+          <div className="mb-6 rounded-2xl border border-yellow-400/40 bg-yellow-500/10 p-4 text-sm text-yellow-200">
             <div className="font-semibold mb-1">Complete your documents to order</div>
             <div>
               You must accept the Terms and have either a <b>Buy</b> contract signed or a{" "}
@@ -365,9 +377,9 @@ export default function OrderPage() {
         )}
 
         {/* Main content: Form left, Summary right (stack on mobile) */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start relative">
           {/* Form */}
-          <section className={`lg:col-span-2 ${card} px-5 md:px-6 py-6`}>
+          <section className={`lg:col-span-2 ${card} px-5 md:px-6 py-6 ring-1 ring-white/5`}>
             {/* Order details */}
             <h2 className="mb-3 text-lg font-semibold">Order details</h2>
             <div className={row}>
@@ -397,7 +409,9 @@ export default function OrderPage() {
               <div>
                 <label className={label}>
                   Delivery date{" "}
-                  <span className="text-white/50">(earliest {new Date(minDeliveryDateStr).toLocaleDateString()})</span>
+                  <span className="text-white/50">
+                    (earliest {new Date(minDeliveryDateStr).toLocaleDateString()})
+                  </span>
                 </label>
                 <input
                   className={input}
@@ -480,21 +494,11 @@ export default function OrderPage() {
               </div>
             </div>
 
-            {/* Action */}
-            <div className="mt-6">
-              <button
-                className={`${button} ${buttonPrimary} w-full md:w-auto`}
-                disabled={payDisabled || startingCheckout}
-                onClick={startCheckout}
-                title={!requirementsMet ? "Complete Documents first" : ""}
-              >
-                {startingCheckout ? "Starting checkout…" : "Pay with Stripe"}
-              </button>
-            </div>
+            {/* (Removed the form-area Pay with Stripe button as requested) */}
           </section>
 
-          {/* Summary */}
-          <aside className={`${card} p-5`}>
+          {/* Summary (with the only desktop Pay button) */}
+          <aside className={`${card} p-5 ring-1 ring-white/5`}>
             <h3 className="text-lg font-semibold mb-3">Summary</h3>
 
             <div className="space-y-2 text-sm">
@@ -525,10 +529,19 @@ export default function OrderPage() {
               <span className="font-semibold">{GBP(estTotal)}</span>
             </div>
 
-            <p className="mt-4 text-xs text-white/60">
+            <p className="mt-4 text-xs text-white/70">
               Final amount may vary if delivery conditions require adjustments (e.g., timed slots,
               restricted access or waiting time). You’ll receive a receipt by email.
             </p>
+
+            <button
+              className={`${button} ${buttonPrimary} w-full mt-4 hidden md:block`}
+              disabled={payDisabled || startingCheckout}
+              onClick={startCheckout}
+              title={!requirementsMet ? "Complete Documents first" : ""}
+            >
+              {startingCheckout ? "Processing…" : "Pay"}
+            </button>
           </aside>
         </div>
       </div>
@@ -550,7 +563,7 @@ export default function OrderPage() {
         </div>
       </div>
 
-      <footer className="mt-12 text-center text-white/40 text-xs">
+      <footer className="mt-12 text-center text-white/40 text-xs relative">
         © {new Date().getFullYear()} FuelFlow. All rights reserved.
       </footer>
     </main>
@@ -571,7 +584,7 @@ function Tile({
   suffix?: string;
 }) {
   return (
-    <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+    <div className="rounded-2xl bg-white/5 border border-white/10 p-4 ring-1 ring-white/5">
       <div className="text-white/70 text-sm">{title}</div>
       <div className="mt-1 text-2xl font-semibold">
         {value} {suffix && <span className="text-white/50 text-base">{suffix}</span>}
