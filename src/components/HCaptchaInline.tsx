@@ -1,3 +1,4 @@
+// src/components/HCaptchaInline.tsx
 "use client";
 
 import React, { useEffect, useRef } from "react";
@@ -12,11 +13,12 @@ type Props = {
 
 const SCRIPT_SRC = "https://js.hcaptcha.com/1/api.js?render=explicit";
 const SCRIPT_ID = "__hcaptcha_script__";
-
 let loadPromise: Promise<void> | null = null;
+
 function loadHCaptcha(): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
-  if ((window as any).hcaptcha?.render) return Promise.resolve();
+  const w: any = window;
+  if (w.hcaptcha?.render) return Promise.resolve();
   if (loadPromise) return loadPromise;
 
   loadPromise = new Promise<void>((resolve, reject) => {
@@ -39,13 +41,7 @@ function loadHCaptcha(): Promise<void> {
   return loadPromise;
 }
 
-const HCaptchaInline: React.FC<Props> = ({
-  sitekey,
-  onVerify,
-  onExpire,
-  theme = "dark",
-  size = "normal",
-}) => {
+const HCaptchaInline: React.FC<Props> = ({ sitekey, onVerify, onExpire, theme = "dark", size = "normal" }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<number | null>(null);
 
@@ -73,6 +69,7 @@ const HCaptchaInline: React.FC<Props> = ({
         });
       }
     }
+
     mount();
 
     return () => {
@@ -88,5 +85,4 @@ const HCaptchaInline: React.FC<Props> = ({
 };
 
 export default HCaptchaInline;
-
 
