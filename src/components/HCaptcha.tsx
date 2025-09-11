@@ -1,80 +1,66 @@
-import React, { useEffect, useRef } from "react";
+// src/components/HCaptcha.tsx
+"use client";
 
-declare global {
-  interface Window {
-    hcaptcha?: {
-      render: (el: HTMLElement, opts: any) => string | number;
-      reset: (id?: string | number) => void;
-      getResponse: (id?: string | number) => string;
-      execute: (id?: string | number) => void;
-      remove: (id?: string | number) => void;
-    };
-    onHCaptchaLoad?: () => void;
-  }
-}
+import React, { useEffect, useRef } from "react";
 
 type Props = {
   sitekey: string;
-  theme?: "light" | "dark";
-  size?: "normal" | "compact" | "invisible";
   onVerify: (token: string) => void;
   onExpire?: () => void;
-  onError?: () => void;
-  className?: string;
+  theme?: "light" | "dark";
+  size?: "normal" | "compact";
 };
 
-export default function HCaptcha({
+const HCaptcha: React.FC<Props> = ({
   sitekey,
-  theme = "dark",
-  size = "normal",
   onVerify,
   onExpire,
-  onError,
-  className,
-}: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const widgetId = useRef<string | number | null>(null);
-  const scriptLoaded = useRef(false);
+  theme = "dark",
+  size = "normal",
+}) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const widgetIdRef = useRef<number | null>(null);
 
+  // Load the script once (client only)
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const render = () => {
-      if (!containerRef.current || !window.hcaptcha || widgetId.current != null) return;
-      widgetId.current = window.hcaptcha.render(containerRef.current, {
+    const id = "hcaptcha-script";
+    if (!document.getElementById(id)) {
+      const s = document.createElement("script");
+      s.id = id;
+      s.src = "https://hcaptcha.com/1/api.js?render=explicit";
+      s.async = true;
+      s.defer = true;
+      document.body.appendChild(s);
+    }
+  }, []);
+
+  // Render the widget when script is ready
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const renderWhenReady = () => {
+      if (!window.hcaptcha || !containerRef.current) {
+        requestAnimationFrame(renderWhenReady);
+        return;
+      }
+      if (widgetIdRef.current != null) return;
+
+      // Types come from our .d.ts file
+      widgetIdRef.current = window.hcaptcha.render(containerRef.current, {
         sitekey,
         theme,
         size,
-        "callback": (token: string) => onVerify(token),
+        callback: (token: string) => onVerify(token),
         "expired-callback": () => onExpire?.(),
-        "error-callback": () => onError?.(),
-      });
+      }) as unknown as number;
     };
 
-    if (window.hcaptcha) {
-      render();
-      return;
-    }
+    renderWhenReady();
+  }, [sitekey, theme, size, onVerify, onExpire]);
 
-    if (scriptLoaded.current) return;
-    scriptLoaded.current = true;
+  return <div ref={containerRef} className="h-captcha" />;
+};
 
-    const script = document.createElement("script");
-    script.src = "https://js.hcaptcha.com/1/api.js?onload=onHCaptchaLoad&render=explicit";
-    script.async = true;
-    script.defer = true;
-
-    window.onHCaptchaLoad = () => render();
-    document.head.appendChild(script);
-
-    return () => {
-      try {
-        if (widgetId.current != null && window.hcaptcha) {
-          window.hcaptcha.remove(widgetId.current);
-        }
-      } catch {}
-    };
-  }, [sitekey, theme, size, onVerify, onExpire, onError]);
-
-  return <div ref={containerRef} className={className} />;
-}
+export default HCaptcha;
