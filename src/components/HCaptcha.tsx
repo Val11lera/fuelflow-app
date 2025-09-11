@@ -1,6 +1,4 @@
 // src/components/HCaptcha.tsx
-// src/components/HCaptcha.tsx
-// src/components/HCaptcha.tsx
 "use client";
 
 import React, { useEffect, useRef } from "react";
@@ -16,7 +14,6 @@ type Props = {
 const SCRIPT_SRC = "https://js.hcaptcha.com/1/api.js?render=explicit";
 const SCRIPT_ID = "__hcaptcha_script__";
 
-// ensure we only load the script once
 let loadPromise: Promise<void> | null = null;
 function loadHCaptcha(): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
@@ -30,7 +27,6 @@ function loadHCaptcha(): Promise<void> {
       existing.addEventListener("error", () => reject(new Error("hCaptcha failed to load")), { once: true });
       return;
     }
-
     const s = document.createElement("script");
     s.id = SCRIPT_ID;
     s.src = SCRIPT_SRC;
@@ -63,46 +59,34 @@ const HCaptcha: React.FC<Props> = ({
       if (cancelled || !containerRef.current) return;
 
       const w: any = window;
-      // render only once
       if (widgetIdRef.current == null) {
         widgetIdRef.current = w.hcaptcha.render(containerRef.current, {
           sitekey,
           theme,
           size,
-          callback: (token: string) => {
-            try {
-              onVerify?.(token);
-            } catch {}
-          },
+          callback: (token: string) => onVerify?.(token),
           "expired-callback": () => {
+            onExpire?.();
             try {
-              onExpire?.();
-            } catch {}
-            try {
-              if (widgetIdRef.current != null) {
-                w.hcaptcha?.reset(widgetIdRef.current);
-              }
+              if (widgetIdRef.current != null) w.hcaptcha?.reset(widgetIdRef.current);
             } catch {}
           },
         });
       }
     }
-
     mount();
 
     return () => {
       cancelled = true;
       try {
         const w: any = window;
-        if (w?.hcaptcha && widgetIdRef.current != null) {
-          w.hcaptcha.reset(widgetIdRef.current);
-        }
+        if (w?.hcaptcha && widgetIdRef.current != null) w.hcaptcha.reset(widgetIdRef.current);
       } catch {}
     };
   }, [sitekey, theme, size, onVerify, onExpire]);
 
-  // Give the widget a bit of height so the layout doesn't jump while the script loads
   return <div ref={containerRef} style={{ minHeight: 78 }} />;
 };
 
 export default HCaptcha;
+
