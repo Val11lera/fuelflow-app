@@ -13,25 +13,6 @@ type Props = {
   tabindex?: number;
 };
 
-declare global {
-  interface Window {
-    hcaptcha?: {
-      render: (
-        el: HTMLElement,
-        opts: {
-          sitekey: string;
-          theme?: "light" | "dark";
-          size?: "normal" | "compact";
-          callback?: (token: string) => void;
-          "expired-callback"?: () => void;
-          tabindex?: number;
-        }
-      ) => string | number;
-      reset?: (id?: string | number) => void;
-    };
-  }
-}
-
 const HCaptcha: React.FC<Props> = ({
   sitekey,
   onVerify,
@@ -41,15 +22,19 @@ const HCaptcha: React.FC<Props> = ({
   tabindex,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const widgetIdRef = useRef<string | number | null>(null);
+  const widgetIdRef = useRef<any>(null);
 
   useEffect(() => {
+    let mounted = true;
+
     const ensureScript = () =>
       new Promise<void>((resolve, reject) => {
-        if (window.hcaptcha) {
+        const w = window as any;
+        if (w.hcaptcha) {
           resolve();
           return;
         }
+
         const existing = document.querySelector<HTMLScriptElement>(
           'script[src*="hcaptcha.com/1/api.js"]'
         );
@@ -60,6 +45,7 @@ const HCaptcha: React.FC<Props> = ({
           );
           return;
         }
+
         const s = document.createElement("script");
         s.src = "https://js.hcaptcha.com/1/api.js?render=explicit";
         s.async = true;
@@ -69,14 +55,13 @@ const HCaptcha: React.FC<Props> = ({
         document.head.appendChild(s);
       });
 
-    let mounted = true;
-
     (async () => {
       try {
         await ensureScript();
-        if (!mounted || !window.hcaptcha || !containerRef.current) return;
+        if (!mounted || !containerRef.current) return;
 
-        widgetIdRef.current = window.hcaptcha.render(containerRef.current, {
+        const w = window as any;
+        widgetIdRef.current = w.hcaptcha?.render(containerRef.current, {
           sitekey,
           theme,
           size,
@@ -84,14 +69,14 @@ const HCaptcha: React.FC<Props> = ({
           callback: (token: string) => onVerify(token),
           "expired-callback": () => onExpire?.(),
         });
-      } catch (e) {
+      } catch {
         // optionally log
       }
     })();
 
     return () => {
       mounted = false;
-      // Optional: if you want, you can call window.hcaptcha?.reset(widgetIdRef.current as any)
+      // optional: (window as any).hcaptcha?.reset?.(widgetIdRef.current);
     };
   }, [sitekey, theme, size, tabindex, onVerify, onExpire]);
 
