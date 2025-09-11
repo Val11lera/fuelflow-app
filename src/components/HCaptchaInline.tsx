@@ -1,5 +1,3 @@
-// src/components/HCaptcha.tsx
-// src/components/HCaptcha.tsx
 "use client";
 
 import React, { useEffect, useRef } from "react";
@@ -41,7 +39,7 @@ function loadHCaptcha(): Promise<void> {
   return loadPromise;
 }
 
-const HCaptcha: React.FC<Props> = ({
+const HCaptchaInline: React.FC<Props> = ({
   sitekey,
   onVerify,
   onExpire,
@@ -89,6 +87,6 @@ const HCaptcha: React.FC<Props> = ({
   return <div ref={containerRef} style={{ minHeight: 78 }} />;
 };
 
-export default HCaptcha;
+export default HCaptchaInline;
 
 
