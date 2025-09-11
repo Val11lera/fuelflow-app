@@ -1,4 +1,5 @@
 // src/components/HCaptcha.tsx
+// src/components/HCaptcha.tsx
 "use client";
 
 import React, { useEffect, useRef } from "react";
@@ -89,4 +90,5 @@ const HCaptcha: React.FC<Props> = ({
 };
 
 export default HCaptcha;
+
 
