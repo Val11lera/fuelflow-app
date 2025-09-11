@@ -1,14 +1,15 @@
-"use client";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 
 declare global {
   interface Window {
     hcaptcha?: {
-      render: (el: HTMLElement, opts: any) => number;
-      reset: (id?: number) => void;
-      getResponse: (id?: number) => string;
-      onLoad?: () => void;
+      render: (el: HTMLElement, opts: any) => string | number;
+      reset: (id?: string | number) => void;
+      getResponse: (id?: string | number) => string;
+      execute: (id?: string | number) => void;
+      remove: (id?: string | number) => void;
     };
+    onHCaptchaLoad?: () => void;
   }
 }
 
@@ -31,49 +32,49 @@ export default function HCaptcha({
   onError,
   className,
 }: Props) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const widgetIdRef = useRef<number | null>(null);
-  const [loaded, setLoaded] = useState<boolean>(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const widgetId = useRef<string | number | null>(null);
+  const scriptLoaded = useRef(false);
 
   useEffect(() => {
-    const ensureScript = () =>
-      new Promise<void>((resolve) => {
-        if (window.hcaptcha) return resolve();
-        const s = document.createElement("script");
-        s.src = "https://js.hcaptcha.com/1/api.js?render=explicit&recaptchacompat=off";
-        s.async = true;
-        s.defer = true;
-        s.onload = () => resolve();
-        document.head.appendChild(s);
-      });
+    if (typeof window === "undefined") return;
 
-    let cancelled = false;
-    (async () => {
-      await ensureScript();
-      if (cancelled) return;
-      setLoaded(true);
-    })();
+    const render = () => {
+      if (!containerRef.current || !window.hcaptcha || widgetId.current != null) return;
+      widgetId.current = window.hcaptcha.render(containerRef.current, {
+        sitekey,
+        theme,
+        size,
+        "callback": (token: string) => onVerify(token),
+        "expired-callback": () => onExpire?.(),
+        "error-callback": () => onError?.(),
+      });
+    };
+
+    if (window.hcaptcha) {
+      render();
+      return;
+    }
+
+    if (scriptLoaded.current) return;
+    scriptLoaded.current = true;
+
+    const script = document.createElement("script");
+    script.src = "https://js.hcaptcha.com/1/api.js?onload=onHCaptchaLoad&render=explicit";
+    script.async = true;
+    script.defer = true;
+
+    window.onHCaptchaLoad = () => render();
+    document.head.appendChild(script);
 
     return () => {
-      cancelled = true;
+      try {
+        if (widgetId.current != null && window.hcaptcha) {
+          window.hcaptcha.remove(widgetId.current);
+        }
+      } catch {}
     };
-  }, []);
-
-  useEffect(() => {
-    if (!loaded || !containerRef.current || !window.hcaptcha) return;
-    if (widgetIdRef.current != null) return; // already rendered
-
-    const id = window.hcaptcha.render(containerRef.current, {
-      sitekey,
-      theme,
-      size,
-      callback: (token: string) => onVerify(token),
-      "expired-callback": () => onExpire?.(),
-      "error-callback": () => onError?.(),
-    });
-
-    widgetIdRef.current = id;
-  }, [loaded, sitekey, theme, size, onVerify, onExpire, onError]);
+  }, [sitekey, theme, size, onVerify, onExpire, onError]);
 
   return <div ref={containerRef} className={className} />;
 }
