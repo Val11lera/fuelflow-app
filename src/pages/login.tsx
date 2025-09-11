@@ -51,6 +51,11 @@ export default function Login() {
     setCapsOn(e.getModifierState && e.getModifierState("CapsLock"));
   }
 
+  function resetCaptcha() {
+    captchaRef.current?.resetCaptcha();
+    setCaptchaToken(null);
+  }
+
   async function handleLogin() {
     try {
       setLoading(true);
@@ -68,14 +73,12 @@ export default function Login() {
       const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
-        // Captcha token is only enforced if you've enabled hCaptcha in Supabase Auth
         options: { captchaToken },
       });
 
       if (error) {
         setMsg({ type: "error", text: "Login failed: " + error.message });
-        captchaRef.current?.resetCaptcha();
-        setCaptchaToken(null);
+        resetCaptcha();
         return;
       }
 
@@ -97,17 +100,24 @@ export default function Login() {
         setMsg({ type: "error", text: "Enter your email to receive a magic link." });
         return;
       }
+      if (!captchaToken) {
+        setMsg({ type: "error", text: "Please complete the captcha." });
+        return;
+      }
 
       const redirectTo = `${window.location.origin}/client-dashboard`;
       const { error } = await supabase.auth.signInWithOtp({
         email,
-        options: { emailRedirectTo: redirectTo },
+        options: { emailRedirectTo: redirectTo, captchaToken },
       });
 
       if (error) {
         setMsg({ type: "error", text: "Couldn’t send magic link: " + error.message });
+        resetCaptcha();
         return;
       }
+
+      resetCaptcha();
       setMsg({ type: "success", text: "Magic link sent! Check your inbox." });
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
@@ -125,18 +135,24 @@ export default function Login() {
         setMsg({ type: "error", text: "Enter your email to receive a reset link." });
         return;
       }
+      if (!captchaToken) {
+        setMsg({ type: "error", text: "Please complete the captcha." });
+        return;
+      }
 
-      // IMPORTANT: This page must exist (see step 3)
       const redirectTo = `${window.location.origin}/update-password`;
-
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo,
+        captchaToken,
       });
 
       if (error) {
         setMsg({ type: "error", text: "Couldn’t send reset email: " + error.message });
+        resetCaptcha();
         return;
       }
+
+      resetCaptcha();
       setMsg({ type: "success", text: "Password reset email sent." });
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
@@ -171,7 +187,7 @@ export default function Login() {
 
       <main className="relative flex-1">
         <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
-          {/* Value props */}
+          {/* Brand / value props */}
           <section className="order-2 lg:order-1 lg:col-span-7">
             <div className="rounded-xl bg-gray-800/40 p-6 md:p-6">
               <h1 className="text-2xl md:text-3xl font-bold">Welcome back</h1>
@@ -334,6 +350,8 @@ export default function Login() {
     </div>
   );
 }
+
+/* ---------- small components ---------- */
 
 function ValueCard({ title, body }: { title: string; body: string }) {
   return (
