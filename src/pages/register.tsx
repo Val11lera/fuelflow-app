@@ -1,7 +1,8 @@
 // src/pages/register.tsx
+// src/pages/register.tsx
 "use client";
 
-import React, { useRef, useState, type ReactElement } from "react";
+import React, { useRef, useState } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 import type HCaptchaType from "@hcaptcha/react-hcaptcha";
 import { createClient } from "@supabase/supabase-js";
@@ -13,47 +14,6 @@ const supabase = createClient(
 );
 
 type Msg = { type: "error" | "success" | "info"; text: string };
-type FeatureKey = "pricing" | "delivery" | "checkout" | "support";
-
-/* ---- same features/illustrations as login ---- */
-const FEATURES: Record<
-  FeatureKey,
-  {
-    title: string;
-    blurb: string;
-    detail: string;
-    Art: (p: { className?: string }) => ReactElement;
-  }
-> = {
-  pricing: {
-    title: "Live pricing",
-    blurb: "See today’s rate before you order.",
-    detail:
-      "Prices update from our suppliers throughout the day. View your personalised rate card and lock a price before you place an order.",
-    Art: ChartArt,
-  },
-  delivery: {
-    title: "Scheduled delivery",
-    blurb: "Pick a preferred date — subject to availability.",
-    detail:
-      "Choose a delivery window that suits you. Availability varies by area and supplier, and may change without notice.",
-    Art: TruckArt,
-  },
-  checkout: {
-    title: "Secure checkout",
-    blurb: "3-D Secure payments powered by Stripe.",
-    detail:
-      "All payments are processed through Stripe with 3-D Secure. Your card details never touch our servers.",
-    Art: ShieldCardArt,
-  },
-  support: {
-    title: "UK-based support",
-    blurb: "Email or live chat when you need a hand.",
-    detail:
-      "Reach our UK team by email or live chat for account queries, delivery questions and billing help during business hours.",
-    Art: HeadsetArt,
-  },
-};
 
 export default function Register() {
   const router = useRouter();
@@ -78,6 +38,7 @@ export default function Register() {
   function handleCaps(e: React.KeyboardEvent<HTMLInputElement>) {
     setCapsOn(e.getModifierState && e.getModifierState("CapsLock"));
   }
+
   function resetCaptcha() {
     captchaRef.current?.resetCaptcha();
     setCaptchaToken(null);
@@ -117,9 +78,9 @@ export default function Register() {
       setMsg({
         type: "success",
         text:
-          "Registration successful! Please check your email for a verification link.",
+          "Registration successful! Check your email for a verification link, then sign in.",
       });
-      // Optionally route to login after a short pause:
+      // If you want to auto-route to login after success:
       // setTimeout(() => router.push("/login"), 1200);
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
@@ -134,7 +95,13 @@ export default function Register() {
 
   return (
     <div className="relative flex min-h-[100svh] md:min-h-screen flex-col bg-[#0b1220] text-white">
-      {/* Header — same as login (uses the SAME logo file) */}
+      {/* Google Font just for this page (distinct look vs login) */}
+      <style jsx global>{`
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
+        .ff-display { font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; }
+      `}</style>
+
+      {/* Header (uses the same logo asset as login) */}
       <header className="relative">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
           <a href="https://fuelflow.co.uk" className="flex items-center gap-3">
@@ -152,63 +119,53 @@ export default function Register() {
       </header>
 
       <main className="relative flex-1">
-        {/* Equal-height columns; mirrors login grid */}
+        {/* Background accents to differentiate from login */}
+        <div className="pointer-events-none absolute inset-0 -z-10">
+          <div
+            className="absolute -top-24 -left-16 h-72 w-72 rounded-full blur-3xl opacity-25"
+            style={{ background: "radial-gradient(circle at 30% 30%, #FFE27A, transparent 60%)" }}
+          />
+          <div
+            className="absolute -bottom-28 -right-10 h-96 w-96 rounded-full blur-3xl opacity-20"
+            style={{ background: "radial-gradient(circle at 30% 30%, #FDB022, transparent 60%)" }}
+          />
+          <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.04)_0%,rgba(255,255,255,0.02)_30%,transparent_30%),linear-gradient(0deg,transparent_0%,transparent_96%,rgba(255,255,255,0.06)_96%)]" />
+        </div>
+
+        {/* Flip the grid: form on LEFT, benefits on RIGHT */}
         <div className="mx-auto grid max-w-6xl grid-cols-1 items-stretch gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
-          {/* VISUAL / Welcome (left) */}
-          <section className="order-2 flex lg:order-1 lg:col-span-7">
-            <div className="flex-1 rounded-2xl bg-gray-800/40 p-6 md:p-7 h-full">
-              <h1 className="text-3xl font-bold tracking-tight">Create your FuelFlow account</h1>
-              <p className="mt-2 max-w-xl text-white/70">
-                Access live pricing, manage orders and documents, and get support — all in one secure dashboard.
-              </p>
+          {/* Register card (left) */}
+          <section className="order-1 flex lg:order-1 lg:col-span-5">
+            <div className="flex-1 rounded-2xl bg-white/5 backdrop-blur p-6 md:p-7 ring-1 ring-inset ring-white/10">
+              {/* Stepper */}
+              <ol className="ff-display mb-5 flex items-center justify-between gap-2 text-[11px] uppercase tracking-widest text-white/70">
+                <li className="flex items-center gap-2">
+                  <StepDot active /> Create
+                </li>
+                <Line />
+                <li className="flex items-center gap-2">
+                  <StepDot /> Verify
+                </li>
+                <Line />
+                <li className="flex items-center gap-2">
+                  <StepDot /> Start
+                </li>
+              </ol>
 
-              <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {(
-                  [
-                    ["pricing", FEATURES.pricing],
-                    ["delivery", FEATURES.delivery],
-                    ["checkout", FEATURES.checkout],
-                    ["support", FEATURES.support],
-                  ] as [FeatureKey, (typeof FEATURES)[FeatureKey]][]
-                ).map(([key, f]) => (
-                  <button
-                    key={key}
-                    className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 text-left ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20"
-                    type="button"
-                    title={f.title}
-                  >
-                    <span className="pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-yellow-500/10 blur-2xl" />
-                    <div className="mb-3">
-                      <f.Art className="h-12 w-12 opacity-90 transition group-hover:scale-105" />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="text-lg font-semibold">{f.title}</div>
-                      <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wider group-hover:bg-white/15">
-                        Included
-                      </span>
-                    </div>
-                    <div className="mt-2 text-sm text-white/75">{f.blurb}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </section>
-
-          {/* REGISTER card (right) — same visual style as login card */}
-          <section className="order-1 flex lg:order-2 lg:col-span-5">
-            <div className="flex-1 rounded-2xl bg-gray-800 p-6 md:p-7 h-full">
-              <div className="mb-5">
-                <h2 className="text-xl font-semibold tracking-tight">Register as a client</h2>
-                <p className="mt-1 text-sm text-white/70">Use a valid email and a strong password.</p>
+              <div className="mb-2 ff-display">
+                <h1 className="text-2xl font-extrabold tracking-tight">Register your account</h1>
+                <p className="mt-1 text-sm font-medium text-white/70">
+                  Quick setup — verify by email, then you’re in.
+                </p>
               </div>
 
               {/* Email */}
-              <label className="block text-sm">
+              <label className="mt-4 block text-sm">
                 <span className="mb-1 block text-white/85">Email</span>
                 <div className="relative">
                   <input
                     type="email"
-                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-10 text-white placeholder-white/40 outline-none focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
+                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-10 text-white placeholder-white/45 outline-none focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
                     placeholder="name@company.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
@@ -228,7 +185,7 @@ export default function Register() {
                   <div className="relative">
                     <input
                       type={showPassword ? "text" : "password"}
-                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-16 text-white placeholder-white/40 outline-none focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
+                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-16 text-white placeholder-white/45 outline-none focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
                       placeholder="Minimum 8 characters"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -248,7 +205,7 @@ export default function Register() {
                 </label>
                 {capsOn && <div className="mt-1 text-xs text-amber-300">Caps Lock is ON</div>}
                 <p className="mt-1 text-xs text-white/60">
-                  Use at least 8 characters. Adding numbers and symbols improves strength.
+                  Tip: include numbers & symbols for a stronger password.
                 </p>
               </div>
 
@@ -283,29 +240,16 @@ export default function Register() {
                 .
               </label>
 
-              {/* CTAs */}
+              {/* CTA */}
               <div className="mt-4 grid grid-cols-1 gap-2">
                 <button
                   onClick={handleRegister}
                   disabled={loading}
-                  className="rounded-lg bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
+                  className="ff-display rounded-lg bg-yellow-500 px-4 py-2 text-sm font-semibold tracking-wide text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
                 >
                   {loading ? "Creating account…" : "Create account"}
                 </button>
               </div>
-
-              {/* Divider + Login link */}
-              <div className="my-5 flex items-center gap-3 text-white/40">
-                <span className="h-px w-full bg-white/10" />
-                <span className="text-[11px] uppercase tracking-widest">Already have an account?</span>
-                <span className="h-px w-full bg-white/10" />
-              </div>
-              <a
-                href="https://dashboard.fuelflow.co.uk/login"
-                className="inline-flex w-full items-center justify-center rounded-lg border border-white/15 bg-transparent px-4 py-2 text-sm font-semibold hover:bg-white/5"
-              >
-                Back to login
-              </a>
 
               {/* Message */}
               {msg && (
@@ -323,8 +267,59 @@ export default function Register() {
                 </div>
               )}
 
-              <p className="mt-4 text-[11px] leading-relaxed text-white/60">
-                We’ll send a verification email after you register. You can only access the dashboard once verified.
+              {/* Switch to login */}
+              <p className="mt-4 text-center text-xs text-white/70">
+                Already have an account?{" "}
+                <a href="/login" className="text-yellow-300 underline-offset-2 hover:underline">
+                  Sign in
+                </a>
+              </p>
+            </div>
+          </section>
+
+          {/* Right: bold hero/benefits (very different vibe vs login) */}
+          <section className="order-2 flex lg:order-2 lg:col-span-7">
+            <div className="relative flex-1 overflow-hidden rounded-2xl bg-[radial-gradient(1200px_400px_at_80%_-10%,rgba(253,176,34,0.18),transparent),radial-gradient(1000px_500px_at_-10%_110%,rgba(255,226,122,0.14),transparent)] p-6 md:p-8 ring-1 ring-inset ring-white/10">
+              {/* subtle glow */}
+              <span className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-yellow-500/15 blur-3xl" />
+              <div className="ff-display">
+                <h2 className="text-4xl font-extrabold leading-tight tracking-tight">
+                  Join FuelFlow
+                  <br />
+                  <span className="text-yellow-300">in minutes</span>
+                </h2>
+                <p className="mt-3 max-w-xl text-white/75">
+                  A modern client area for pricing, orders, and documents — built for clarity and speed.
+                </p>
+              </div>
+
+              {/* three large “reasons to join” tiles */}
+              <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Benefit
+                  title="Clear pricing"
+                  blurb="See today’s rates and lock a price before you order."
+                  Icon={ChartIcon}
+                />
+                <Benefit
+                  title="Secure checkout"
+                  blurb="3-D Secure payments via Stripe; card details never touch our servers."
+                  Icon={ShieldIcon}
+                />
+                <Benefit
+                  title="Flexible delivery"
+                  blurb="Pick a preferred slot — availability may vary by area and supplier."
+                  Icon={TruckIcon}
+                />
+                <Benefit
+                  title="Human support"
+                  blurb="Email or live chat with our UK-based team during business hours."
+                  Icon={HeadsetIcon}
+                />
+              </div>
+
+              {/* little note */}
+              <p className="mt-6 text-xs text-white/60">
+                No marketing spam. We’ll email you only about your account and orders.
               </p>
             </div>
           </section>
@@ -340,7 +335,42 @@ export default function Register() {
   );
 }
 
-/* ---------- small components & illustrations (same as login) ---------- */
+/* ---------- tiny UI helpers & icons (no external libs) ---------- */
+function StepDot({ active = false }: { active?: boolean }) {
+  return (
+    <span
+      className={[
+        "inline-block h-2.5 w-2.5 rounded-full",
+        active ? "bg-yellow-400 shadow-[0_0_0_3px_rgba(253,176,34,0.25)]" : "bg-white/30",
+      ].join(" ")}
+    />
+  );
+}
+function Line() {
+  return <span className="h-px w-12 bg-white/15" />;
+}
+
+function Benefit({
+  title,
+  blurb,
+  Icon,
+}: {
+  title: string;
+  blurb: string;
+  Icon: (p: { className?: string }) => JSX.Element;
+}) {
+  return (
+    <div className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20">
+      <span className="pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-yellow-500/10 blur-2xl" />
+      <div className="mb-3">
+        <Icon className="h-12 w-12 opacity-90 transition group-hover:scale-105" />
+      </div>
+      <div className="text-lg font-semibold">{title}</div>
+      <div className="mt-1 text-sm text-white/75">{blurb}</div>
+    </div>
+  );
+}
+
 function MailIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -349,31 +379,32 @@ function MailIcon({ className }: { className?: string }) {
     </svg>
   );
 }
-
-function ChartArt({ className }: { className?: string }) {
+function ChartIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
       <defs>
         <linearGradient id="g1" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0" stopColor="#FFD000" stopOpacity="0.2" />
-          <stop offset="1" stopColor="#FFD000" stopOpacity="0.4" />
+          <stop offset="0" stopColor="#FFD000" stopOpacity="0.25" />
+          <stop offset="1" stopColor="#FFD000" stopOpacity="0.45" />
         </linearGradient>
       </defs>
       <rect x="6" y="10" width="52" height="40" rx="8" fill="none" stroke="currentColor" opacity="0.3" />
-      <path
-        d="M12 40 L24 28 L34 33 L46 20 L54 24"
-        fill="none"
-        stroke="url(#g1)"
-        strokeWidth="3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
+      <path d="M12 40 L24 28 L34 33 L46 20 L54 24" fill="none" stroke="url(#g1)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
       <circle cx="24" cy="28" r="2" fill="#FFD000" />
       <circle cx="46" cy="20" r="2" fill="#FFD000" />
     </svg>
   );
 }
-function TruckArt({ className }: { className?: string }) {
+function ShieldIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className}>
+      <path d="M32 10l16 6v12c0 10-7 18-16 22-9-4-16-12-16-22V16l16-6z" fill="none" stroke="currentColor" opacity="0.35" />
+      <rect x="22" y="24" width="20" height="12" rx="3" fill="none" stroke="#FFD000" opacity="0.6" />
+      <circle cx="32" cy="30" r="2" fill="#FFD000" />
+    </svg>
+  );
+}
+function TruckIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
       <rect x="6" y="22" width="30" height="16" rx="3" fill="none" stroke="currentColor" opacity="0.35" />
@@ -384,16 +415,7 @@ function TruckArt({ className }: { className?: string }) {
     </svg>
   );
 }
-function ShieldCardArt({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 64 64" className={className}>
-      <path d="M32 10l16 6v12c0 10-7 18-16 22-9-4-16-12-16-22V16l16-6z" fill="none" stroke="currentColor" opacity="0.35" />
-      <rect x="22" y="24" width="20" height="12" rx="3" fill="none" stroke="#FFD000" opacity="0.6" />
-      <circle cx="32" cy="30" r="2" fill="#FFD000" />
-    </svg>
-  );
-}
-function HeadsetArt({ className }: { className?: string }) {
+function HeadsetIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
       <path d="M12 36v-4c0-11 9-20 20-20s20 9 20 20v4" fill="none" stroke="currentColor" opacity="0.35" />
@@ -403,3 +425,4 @@ function HeadsetArt({ className }: { className?: string }) {
     </svg>
   );
 }
+
