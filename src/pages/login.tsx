@@ -14,35 +14,39 @@ const supabase = createClient(
 );
 
 type Msg = { type: "error" | "success" | "info"; text: string };
-
 type FeatureKey = "pricing" | "delivery" | "checkout" | "support";
+
 const FEATURES: Record<
   FeatureKey,
-  { title: string; blurb: string; detail: string }
+  { title: string; blurb: string; detail: string; Art: (p: { className?: string }) => JSX.Element }
 > = {
   pricing: {
     title: "Live pricing",
     blurb: "Know today’s rate before you order.",
     detail:
       "We update prices live from our suppliers. View your personalised rate card and lock a price before you place an order.",
+    Art: ChartArt,
   },
   delivery: {
     title: "Fast delivery",
     blurb: "Pick a delivery date up to two weeks ahead.",
     detail:
       "Choose a delivery slot that suits your schedule. Track orders and get ETA updates as we dispatch your fuel.",
+    Art: TruckArt,
   },
   checkout: {
     title: "Secure checkout",
     blurb: "3-D Secure payments powered by Stripe.",
     detail:
       "All payments are processed through Stripe with 3-D Secure. Your card details never touch our servers.",
+    Art: ShieldCardArt,
   },
   support: {
     title: "UK support",
     blurb: "Talk to a real person when you need a hand.",
     detail:
       "Our UK team is available on business days for account help, delivery questions and billing support.",
+    Art: HeadsetArt,
   },
 };
 
@@ -125,7 +129,7 @@ export default function Login() {
     }
   }
 
-  /** NEW: call our API so the magic-link email uses our branded template */
+  /** Call our API so the magic-link email uses our branded template + consent step */
   async function handleMagicLink() {
     try {
       setLoading(true);
@@ -157,13 +161,9 @@ export default function Login() {
 
       if (data.sent) {
         setMsg({ type: "success", text: "Magic link sent! Check your inbox." });
-      } else if (data.actionUrl) {
-        setMsg({
-          type: "success",
-          text: "Magic link generated. Opening…",
-        });
-        // Optional: auto-open if email wasn’t sent (nodemailer unavailable)
-        window.location.href = data.actionUrl;
+      } else if (data.consentUrl) {
+        setMsg({ type: "success", text: "Opening your sign-in link…" });
+        window.location.href = data.consentUrl;
       } else {
         setMsg({ type: "success", text: "Magic link generated." });
       }
@@ -188,7 +188,6 @@ export default function Login() {
         return;
       }
 
-      // keep current Supabase reset flow (your send-reset API already formats emails)
       const redirectTo = `${window.location.origin}/update-password`;
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo,
@@ -383,7 +382,7 @@ export default function Login() {
             </div>
           </section>
 
-          {/* Interactive Welcome / benefits */}
+          {/* VISUAL Welcome */}
           <section className="order-2 lg:order-1 lg:col-span-7">
             <div className="rounded-2xl bg-gray-800/40 p-6 md:p-7">
               <h1 className="text-3xl font-bold tracking-tight">Welcome to FuelFlow</h1>
@@ -403,10 +402,16 @@ export default function Login() {
                   <button
                     key={key}
                     onClick={() => setOpenFeature(key)}
-                    className="group rounded-xl bg-gray-800 p-4 text-left ring-1 ring-inset ring-white/10 hover:ring-white/20 hover:bg-gray-800/90 transition shadow-sm hover:shadow"
+                    className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 text-left ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20"
                   >
+                    {/* Soft glow */}
+                    <span className="pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-yellow-500/10 blur-2xl" />
+                    {/* Illustration */}
+                    <div className="mb-3">
+                      <f.Art className="h-12 w-12 opacity-90 transition group-hover:scale-105" />
+                    </div>
                     <div className="flex items-center justify-between">
-                      <div className="text-base font-semibold">{f.title}</div>
+                      <div className="text-lg font-semibold">{f.title}</div>
                       <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wider group-hover:bg-white/15">
                         Learn more
                       </span>
@@ -420,7 +425,7 @@ export default function Login() {
         </div>
       </main>
 
-      {/* Simple modal for feature details */}
+      {/* Modal */}
       {openFeature && (
         <div
           aria-modal="true"
@@ -433,8 +438,15 @@ export default function Login() {
             className="relative w-full max-w-md rounded-2xl bg-gray-900 p-6 ring-1 ring-white/10"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="mb-2 text-lg font-semibold">{FEATURES[openFeature].title}</div>
-            <p className="text-sm text-white/80">{FEATURES[openFeature].detail}</p>
+            <div className="mb-3 flex items-center gap-3">
+              <FEATURES[typeof openFeature === "string" ? openFeature : "pricing"].Art className="h-8 w-8" />
+              <div className="text-lg font-semibold">
+                {openFeature ? FEATURES[openFeature].title : ""}
+              </div>
+            </div>
+            <p className="text-sm text-white/80">
+              {openFeature ? FEATURES[openFeature].detail : ""}
+            </p>
             <div className="mt-5 flex justify-end">
               <button
                 onClick={() => setOpenFeature(null)}
@@ -456,13 +468,68 @@ export default function Login() {
   );
 }
 
-/* ---------- small components ---------- */
+/* ---------- small components & illustrations ---------- */
 
 function MailIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
       <rect x="3" y="5" width="18" height="14" rx="2" ry="2" />
       <path d="M3 7l9 6 9-6" />
+    </svg>
+  );
+}
+
+/* Minimal, elegant SVGs (no external libs) */
+function ChartArt({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className}>
+      <defs>
+        <linearGradient id="g1" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0" stopColor="#FFD000" stopOpacity="0.2" />
+          <stop offset="1" stopColor="#FFD000" stopOpacity="0.4" />
+        </linearGradient>
+      </defs>
+      <rect x="6" y="10" width="52" height="40" rx="8" fill="none" stroke="currentColor" opacity="0.3" />
+      <path
+        d="M12 40 L24 28 L34 33 L46 20 L54 24"
+        fill="none"
+        stroke="url(#g1)"
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="24" cy="28" r="2" fill="#FFD000" />
+      <circle cx="46" cy="20" r="2" fill="#FFD000" />
+    </svg>
+  );
+}
+function TruckArt({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className}>
+      <rect x="6" y="22" width="30" height="16" rx="3" fill="none" stroke="currentColor" opacity="0.35" />
+      <path d="M36 26h10l6 6v6H36z" fill="none" stroke="currentColor" opacity="0.35" />
+      <circle cx="18" cy="42" r="4" fill="#FFD000" />
+      <circle cx="46" cy="42" r="4" fill="#FFD000" />
+      <path d="M8 22h26" stroke="#FFD000" strokeWidth="2" opacity="0.5" />
+    </svg>
+  );
+}
+function ShieldCardArt({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className}>
+      <path d="M32 10l16 6v12c0 10-7 18-16 22-9-4-16-12-16-22V16l16-6z" fill="none" stroke="currentColor" opacity="0.35" />
+      <rect x="22" y="24" width="20" height="12" rx="3" fill="none" stroke="#FFD000" opacity="0.6" />
+      <circle cx="32" cy="30" r="2" fill="#FFD000" />
+    </svg>
+  );
+}
+function HeadsetArt({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className}>
+      <path d="M12 36v-4c0-11 9-20 20-20s20 9 20 20v4" fill="none" stroke="currentColor" opacity="0.35" />
+      <rect x="10" y="34" width="10" height="12" rx="3" fill="#FFD000" />
+      <rect x="44" y="34" width="10" height="12" rx="3" fill="#FFD000" />
+      <path d="M40 48c0 3-4 6-8 6" stroke="currentColor" opacity="0.35" />
     </svg>
   );
 }
