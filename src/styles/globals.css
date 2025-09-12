@@ -3,15 +3,10 @@
 @tailwind components;
 @tailwind utilities;
 
-/* keep your variables and custom CSS */
 :root {
   --background: #ffffff;
   --foreground: #171717;
 }
-
-/* REMOVE the v4-only block:
-@theme inline { ... }
-*/
 
 @media (prefers-color-scheme: dark) {
   :root {
