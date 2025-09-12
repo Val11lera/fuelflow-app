@@ -2,35 +2,26 @@
   "name": "fuelflow-app",
   "version": "0.1.0",
   "private": true,
+  "engines": { "node": "18.x || 20.x || 22.x" },
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "next dev",
     "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
+    "start": "next start"
   },
   "dependencies": {
-    "@hcaptcha/react-hcaptcha": "^1.12.0",
-    "@supabase/auth-helpers-nextjs": "^0.10.0",
-    "@supabase/supabase-js": "^2.53.0",
-    "next": "15.4.4",
-    "react": "19.1.0",
-    "react-dom": "19.1.0",
-<<<<<<< HEAD
-    "micro": "^9.4.1",
-    "stripe": "^16.0.0"
-=======
-    "resend": "^6.0.3"
->>>>>>> ab3b8b1 (chore: add resend sdk)
+    "@hcaptcha/react-hcaptcha": "^1.11.1",
+    "@supabase/supabase-js": "^2.45.0",
+    "next": "^14.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "stripe": "^16.0.0",
+    "resend": "^3.0.0",
+    "pdfkit": "^0.15.0",
+    "raw-body": "^2.5.2"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.0.0",
-    "@types/node": "^20.0.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "autoprefixer": "^10.4.21",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^4.1.11",
-    "typescript": "^5.0.0"
+    "@types/pdfkit": "^0.13.4",
+    "typescript": "^5.5.0"
   }
 }
 
