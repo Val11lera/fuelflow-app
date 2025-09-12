@@ -2,7 +2,7 @@
 // src/pages/login.tsx
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, type ReactElement } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 import type HCaptchaType from "@hcaptcha/react-hcaptcha";
 import { createClient } from "@supabase/supabase-js";
@@ -18,7 +18,12 @@ type FeatureKey = "pricing" | "delivery" | "checkout" | "support";
 
 const FEATURES: Record<
   FeatureKey,
-  { title: string; blurb: string; detail: string; Art: (p: { className?: string }) => JSX.Element }
+  {
+    title: string;
+    blurb: string;
+    detail: string;
+    Art: (p: { className?: string }) => ReactElement;
+  }
 > = {
   pricing: {
     title: "Live pricing",
@@ -439,7 +444,11 @@ export default function Login() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center gap-3">
-              <FEATURES[typeof openFeature === "string" ? openFeature : "pricing"].Art className="h-8 w-8" />
+              {(() => {
+                const Art =
+                  openFeature ? FEATURES[openFeature].Art : FEATURES.pricing.Art;
+                return <Art className="h-8 w-8" />;
+              })()}
               <div className="text-lg font-semibold">
                 {openFeature ? FEATURES[openFeature].title : ""}
               </div>
