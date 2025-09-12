@@ -15,6 +15,37 @@ const supabase = createClient(
 
 type Msg = { type: "error" | "success" | "info"; text: string };
 
+type FeatureKey = "pricing" | "delivery" | "checkout" | "support";
+const FEATURES: Record<
+  FeatureKey,
+  { title: string; blurb: string; detail: string }
+> = {
+  pricing: {
+    title: "Live pricing",
+    blurb: "Know today’s rate before you order.",
+    detail:
+      "We update prices live from our suppliers. View your personalised rate card and lock a price before you place an order.",
+  },
+  delivery: {
+    title: "Fast delivery",
+    blurb: "Pick a delivery date up to two weeks ahead.",
+    detail:
+      "Choose a delivery slot that suits your schedule. Track orders and get ETA updates as we dispatch your fuel.",
+  },
+  checkout: {
+    title: "Secure checkout",
+    blurb: "3-D Secure payments powered by Stripe.",
+    detail:
+      "All payments are processed through Stripe with 3-D Secure. Your card details never touch our servers.",
+  },
+  support: {
+    title: "UK support",
+    blurb: "Talk to a real person when you need a hand.",
+    detail:
+      "Our UK team is available on business days for account help, delivery questions and billing support.",
+  },
+};
+
 export default function Login() {
   const router = useRouter();
   const captchaRef = useRef<HCaptchaType>(null);
@@ -34,6 +65,9 @@ export default function Login() {
 
   // hCaptcha
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+
+  // feature modal
+  const [openFeature, setOpenFeature] = useState<FeatureKey | null>(null);
 
   // hydrate remembered email
   useEffect(() => {
@@ -91,6 +125,7 @@ export default function Login() {
     }
   }
 
+  /** NEW: call our API so the magic-link email uses our branded template */
   async function handleMagicLink() {
     try {
       setLoading(true);
@@ -105,20 +140,33 @@ export default function Login() {
         return;
       }
 
-      const redirectTo = `${window.location.origin}/client-dashboard`;
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: redirectTo, captchaToken },
+      const r = await fetch("/api/auth/send-magic-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, captchaToken }),
       });
+      const data = await r.json();
 
-      if (error) {
-        setMsg({ type: "error", text: "Couldn’t send magic link: " + error.message });
+      if (!r.ok || data?.error) {
+        setMsg({ type: "error", text: data?.error || "Couldn’t send magic link." });
         resetCaptcha();
         return;
       }
 
       resetCaptcha();
-      setMsg({ type: "success", text: "Magic link sent! Check your inbox." });
+
+      if (data.sent) {
+        setMsg({ type: "success", text: "Magic link sent! Check your inbox." });
+      } else if (data.actionUrl) {
+        setMsg({
+          type: "success",
+          text: "Magic link generated. Opening…",
+        });
+        // Optional: auto-open if email wasn’t sent (nodemailer unavailable)
+        window.location.href = data.actionUrl;
+      } else {
+        setMsg({ type: "success", text: "Magic link generated." });
+      }
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
     } finally {
@@ -140,6 +188,7 @@ export default function Login() {
         return;
       }
 
+      // keep current Supabase reset flow (your send-reset API already formats emails)
       const redirectTo = `${window.location.origin}/update-password`;
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo,
@@ -172,7 +221,6 @@ export default function Login() {
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
           <a href="https://fuelflow.co.uk" className="flex items-center gap-3">
             <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-            {/* removed the small 'Secure client access' caption */}
           </a>
           <a
             href="https://fuelflow.co.uk"
@@ -187,7 +235,7 @@ export default function Login() {
 
       <main className="relative flex-1">
         <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
-          {/* Login card (primary action) */}
+          {/* Login card */}
           <section className="order-1 lg:order-2 lg:col-span-5">
             <div className="rounded-2xl bg-gray-800 p-6 md:p-7">
               <div className="mb-5">
@@ -335,24 +383,69 @@ export default function Login() {
             </div>
           </section>
 
-          {/* Welcome / benefits */}
+          {/* Interactive Welcome / benefits */}
           <section className="order-2 lg:order-1 lg:col-span-7">
             <div className="rounded-2xl bg-gray-800/40 p-6 md:p-7">
-              <h1 className="text-3xl font-bold tracking-tight">Welcome back to FuelFlow</h1>
+              <h1 className="text-3xl font-bold tracking-tight">Welcome to FuelFlow</h1>
               <p className="mt-2 max-w-xl text-white/70">
                 Your hub for live fuel pricing, orders, contracts and invoices — all in one place.
               </p>
 
-              <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <ValueCard title="Live pricing" body="Know today’s rate before you place an order." />
-                <ValueCard title="Fast delivery" body="Pick a delivery date up to two weeks ahead." />
-                <ValueCard title="Secure checkout" body="3-D Secure payments powered by Stripe." />
-                <ValueCard title="UK support" body="Talk to a real person when you need a hand." />
+              <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {(
+                  [
+                    ["pricing", FEATURES.pricing],
+                    ["delivery", FEATURES.delivery],
+                    ["checkout", FEATURES.checkout],
+                    ["support", FEATURES.support],
+                  ] as [FeatureKey, (typeof FEATURES)[FeatureKey]][]
+                ).map(([key, f]) => (
+                  <button
+                    key={key}
+                    onClick={() => setOpenFeature(key)}
+                    className="group rounded-xl bg-gray-800 p-4 text-left ring-1 ring-inset ring-white/10 hover:ring-white/20 hover:bg-gray-800/90 transition shadow-sm hover:shadow"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="text-base font-semibold">{f.title}</div>
+                      <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wider group-hover:bg-white/15">
+                        Learn more
+                      </span>
+                    </div>
+                    <div className="mt-2 text-sm text-white/75">{f.blurb}</div>
+                  </button>
+                ))}
               </div>
             </div>
           </section>
         </div>
       </main>
+
+      {/* Simple modal for feature details */}
+      {openFeature && (
+        <div
+          aria-modal="true"
+          role="dialog"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          onClick={() => setOpenFeature(null)}
+        >
+          <div className="absolute inset-0 bg-black/60" />
+          <div
+            className="relative w-full max-w-md rounded-2xl bg-gray-900 p-6 ring-1 ring-white/10"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-2 text-lg font-semibold">{FEATURES[openFeature].title}</div>
+            <p className="text-sm text-white/80">{FEATURES[openFeature].detail}</p>
+            <div className="mt-5 flex justify-end">
+              <button
+                onClick={() => setOpenFeature(null)}
+                className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <footer className="relative border-t border-white/10">
         <div className="mx-auto max-w-6xl px-4 py-4 text-center text-xs text-white/60">
@@ -364,15 +457,6 @@ export default function Login() {
 }
 
 /* ---------- small components ---------- */
-
-function ValueCard({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="rounded-xl bg-gray-800 p-4">
-      <div className="text-sm font-semibold">{title}</div>
-      <div className="mt-1 text-sm text-white/75">{body}</div>
-    </div>
-  );
-}
 
 function MailIcon({ className }: { className?: string }) {
   return (
