@@ -15,8 +15,12 @@
     "next": "15.4.4",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+<<<<<<< HEAD
     "micro": "^9.4.1",
     "stripe": "^16.0.0"
+=======
+    "resend": "^6.0.3"
+>>>>>>> ab3b8b1 (chore: add resend sdk)
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.0",
