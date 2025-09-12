@@ -172,7 +172,7 @@ export default function Login() {
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
           <a href="https://fuelflow.co.uk" className="flex items-center gap-3">
             <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-            {/* removed secondary caption per request */}
+            {/* removed the small 'Secure client access' caption */}
           </a>
           <a
             href="https://fuelflow.co.uk"
@@ -187,24 +187,7 @@ export default function Login() {
 
       <main className="relative flex-1">
         <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
-          {/* Welcome / value props */}
-          <section className="order-2 lg:order-1 lg:col-span-7">
-            <div className="rounded-2xl bg-gray-800/40 p-6 md:p-7">
-              <h1 className="text-3xl font-bold tracking-tight">Welcome back to FuelFlow</h1>
-              <p className="mt-2 max-w-xl text-white/70">
-                Your hub for live fuel pricing, orders, contracts and invoices — all in one place.
-              </p>
-
-              <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <ValueCard title="Live pricing" body="Know today’s rate before you place an order." />
-                <ValueCard title="Fast delivery" body="Pick a delivery date up to two weeks ahead." />
-                <ValueCard title="Secure checkout" body="3-D Secure payments powered by Stripe." />
-                <ValueCard title="UK support" body="Talk to a real person when you need a hand." />
-              </div>
-            </div>
-          </section>
-
-          {/* Login card */}
+          {/* Login card (primary action) */}
           <section className="order-1 lg:order-2 lg:col-span-5">
             <div className="rounded-2xl bg-gray-800 p-6 md:p-7">
               <div className="mb-5">
@@ -349,6 +332,23 @@ export default function Login() {
                 </a>
                 .
               </p>
+            </div>
+          </section>
+
+          {/* Welcome / benefits */}
+          <section className="order-2 lg:order-1 lg:col-span-7">
+            <div className="rounded-2xl bg-gray-800/40 p-6 md:p-7">
+              <h1 className="text-3xl font-bold tracking-tight">Welcome back to FuelFlow</h1>
+              <p className="mt-2 max-w-xl text-white/70">
+                Your hub for live fuel pricing, orders, contracts and invoices — all in one place.
+              </p>
+
+              <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <ValueCard title="Live pricing" body="Know today’s rate before you place an order." />
+                <ValueCard title="Fast delivery" body="Pick a delivery date up to two weeks ahead." />
+                <ValueCard title="Secure checkout" body="3-D Secure payments powered by Stripe." />
+                <ValueCard title="UK support" body="Talk to a real person when you need a hand." />
+              </div>
             </div>
           </section>
         </div>
