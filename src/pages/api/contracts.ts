@@ -3,7 +3,7 @@
 // src/pages/api/contracts.ts
 // src/pages/api/contracts.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import supabaseAdmin from "@/lib/supabaseAdmin";
+import supabaseAdmin from "../../lib/supabaseAdmin";
 
 const HCAPTCHA_SECRET = process.env.HCAPTCHA_SECRET_KEY || "";
 
