@@ -1,6 +1,7 @@
 // src/pages/api/auth/send-magic-link.ts
 // @ts-nocheck
 import type { NextApiRequest, NextApiResponse } from "next";
+export const runtime = 'nodejs';
 import { createClient } from "@supabase/supabase-js";
 
 /** Runtime nodemailer (prevents build-time errors if package not present) */
