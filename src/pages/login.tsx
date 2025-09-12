@@ -27,16 +27,16 @@ const FEATURES: Record<
 > = {
   pricing: {
     title: "Live pricing",
-    blurb: "Know today’s rate before you order.",
+    blurb: "See today’s rate before you order.",
     detail:
-      "We update prices live from our suppliers. View your personalised rate card and lock a price before you place an order.",
+      "Prices update from our suppliers throughout the day. View your personalised rate card and lock a price before you place an order.",
     Art: ChartArt,
   },
   delivery: {
-    title: "Fast delivery",
-    blurb: "Pick a delivery date up to two weeks ahead.",
+    title: "Scheduled delivery",
+    blurb: "Pick a preferred date — subject to availability.",
     detail:
-      "Choose a delivery slot that suits your schedule. Track orders and get ETA updates as we dispatch your fuel.",
+      "Choose a delivery window that suits you. Availability varies by area and supplier, and may change without notice.",
     Art: TruckArt,
   },
   checkout: {
@@ -47,10 +47,10 @@ const FEATURES: Record<
     Art: ShieldCardArt,
   },
   support: {
-    title: "UK support",
-    blurb: "Talk to a real person when you need a hand.",
+    title: "UK-based support",
+    blurb: "Email or live chat when you need a hand.",
     detail:
-      "Our UK team is available on business days for account help, delivery questions and billing support.",
+      "Reach our UK team by email or live chat for account queries, delivery questions and billing help during business hours.",
     Art: HeadsetArt,
   },
 };
@@ -134,7 +134,6 @@ export default function Login() {
     }
   }
 
-  /** Call our API so the magic-link email uses our branded template + consent step */
   async function handleMagicLink() {
     try {
       setLoading(true);
@@ -238,10 +237,52 @@ export default function Login() {
       </header>
 
       <main className="relative flex-1">
-        <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
-          {/* Login card */}
-          <section className="order-1 lg:order-2 lg:col-span-5">
-            <div className="rounded-2xl bg-gray-800 p-6 md:p-7">
+        {/* items-stretch forces equal column heights; each section is flex and inner card flex-1 */}
+        <div className="mx-auto grid max-w-6xl grid-cols-1 items-stretch gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
+          {/* VISUAL Welcome (left) */}
+          <section className="order-2 flex lg:order-1 lg:col-span-7">
+            <div className="flex-1 rounded-2xl bg-gray-800/40 p-6 md:p-7 h-full">
+              <h1 className="text-3xl font-bold tracking-tight">Welcome to FuelFlow</h1>
+              <p className="mt-2 max-w-xl text-white/70">
+                Your hub for live fuel pricing, orders, contracts and invoices — all in one place.
+              </p>
+
+              <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {(
+                  [
+                    ["pricing", FEATURES.pricing],
+                    ["delivery", FEATURES.delivery],
+                    ["checkout", FEATURES.checkout],
+                    ["support", FEATURES.support],
+                  ] as [FeatureKey, (typeof FEATURES)[FeatureKey]][]
+                ).map(([key, f]) => (
+                  <button
+                    key={key}
+                    onClick={() => setOpenFeature(key)}
+                    className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 text-left ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20"
+                  >
+                    {/* Soft glow */}
+                    <span className="pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-yellow-500/10 blur-2xl" />
+                    {/* Illustration */}
+                    <div className="mb-3">
+                      <f.Art className="h-12 w-12 opacity-90 transition group-hover:scale-105" />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="text-lg font-semibold">{f.title}</div>
+                      <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wider group-hover:bg-white/15">
+                        Learn more
+                      </span>
+                    </div>
+                    <div className="mt-2 text-sm text-white/75">{f.blurb}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          {/* Login card (right) */}
+          <section className="order-1 flex lg:order-2 lg:col-span-5">
+            <div className="flex-1 rounded-2xl bg-gray-800 p-6 md:p-7 h-full">
               <div className="mb-5">
                 <h2 className="text-xl font-semibold tracking-tight">Client login</h2>
                 <p className="mt-1 text-sm text-white/70">Use your account email and password.</p>
@@ -384,47 +425,6 @@ export default function Login() {
                 </a>
                 .
               </p>
-            </div>
-          </section>
-
-          {/* VISUAL Welcome */}
-          <section className="order-2 lg:order-1 lg:col-span-7">
-            <div className="rounded-2xl bg-gray-800/40 p-6 md:p-7">
-              <h1 className="text-3xl font-bold tracking-tight">Welcome to FuelFlow</h1>
-              <p className="mt-2 max-w-xl text-white/70">
-                Your hub for live fuel pricing, orders, contracts and invoices — all in one place.
-              </p>
-
-              <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {(
-                  [
-                    ["pricing", FEATURES.pricing],
-                    ["delivery", FEATURES.delivery],
-                    ["checkout", FEATURES.checkout],
-                    ["support", FEATURES.support],
-                  ] as [FeatureKey, (typeof FEATURES)[FeatureKey]][]
-                ).map(([key, f]) => (
-                  <button
-                    key={key}
-                    onClick={() => setOpenFeature(key)}
-                    className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 text-left ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20"
-                  >
-                    {/* Soft glow */}
-                    <span className="pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-yellow-500/10 blur-2xl" />
-                    {/* Illustration */}
-                    <div className="mb-3">
-                      <f.Art className="h-12 w-12 opacity-90 transition group-hover:scale-105" />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="text-lg font-semibold">{f.title}</div>
-                      <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wider group-hover:bg-white/15">
-                        Learn more
-                      </span>
-                    </div>
-                    <div className="mt-2 text-sm text-white/75">{f.blurb}</div>
-                  </button>
-                ))}
-              </div>
             </div>
           </section>
         </div>
