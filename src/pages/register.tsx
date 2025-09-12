@@ -2,7 +2,7 @@
 // src/pages/register.tsx
 "use client";
 
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, type ReactElement } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 import type HCaptchaType from "@hcaptcha/react-hcaptcha";
 import { createClient } from "@supabase/supabase-js";
@@ -54,7 +54,7 @@ export default function Register() {
         return;
       }
       if (!agree) {
-        setMsg({ type: "error", text: "Please accept the Terms and Privacy Policy." });
+        setMsg({ type: "error", text: "Please accept the Terms." });
         return;
       }
       if (!captchaToken) {
@@ -80,7 +80,7 @@ export default function Register() {
         text:
           "Registration successful! Check your email for a verification link, then sign in.",
       });
-      // If you want to auto-route to login after success:
+      // Optional redirect:
       // setTimeout(() => router.push("/login"), 1200);
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
@@ -95,13 +95,13 @@ export default function Register() {
 
   return (
     <div className="relative flex min-h-[100svh] md:min-h-screen flex-col bg-[#0b1220] text-white">
-      {/* Google Font just for this page (distinct look vs login) */}
+      {/* Distinct display font for Register */}
       <style jsx global>{`
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
         .ff-display { font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; }
       `}</style>
 
-      {/* Header (uses the same logo asset as login) */}
+      {/* Header (same logo as login) */}
       <header className="relative">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
           <a href="https://fuelflow.co.uk" className="flex items-center gap-3">
@@ -119,7 +119,7 @@ export default function Register() {
       </header>
 
       <main className="relative flex-1">
-        {/* Background accents to differentiate from login */}
+        {/* Background accents */}
         <div className="pointer-events-none absolute inset-0 -z-10">
           <div
             className="absolute -top-24 -left-16 h-72 w-72 rounded-full blur-3xl opacity-25"
@@ -132,9 +132,9 @@ export default function Register() {
           <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.04)_0%,rgba(255,255,255,0.02)_30%,transparent_30%),linear-gradient(0deg,transparent_0%,transparent_96%,rgba(255,255,255,0.06)_96%)]" />
         </div>
 
-        {/* Flip the grid: form on LEFT, benefits on RIGHT */}
+        {/* Form LEFT, benefits RIGHT */}
         <div className="mx-auto grid max-w-6xl grid-cols-1 items-stretch gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
-          {/* Register card (left) */}
+          {/* Register card */}
           <section className="order-1 flex lg:order-1 lg:col-span-5">
             <div className="flex-1 rounded-2xl bg-white/5 backdrop-blur p-6 md:p-7 ring-1 ring-inset ring-white/10">
               {/* Stepper */}
@@ -221,7 +221,7 @@ export default function Register() {
                 />
               </div>
 
-              {/* Terms */}
+              {/* Terms ONLY (Privacy removed) */}
               <label className="mt-3 flex items-start gap-2 text-xs text-white/80">
                 <input
                   type="checkbox"
@@ -232,10 +232,6 @@ export default function Register() {
                 I agree to the{" "}
                 <a href="/terms" target="_blank" rel="noreferrer" className="text-yellow-300 underline-offset-2 hover:underline">
                   Terms
-                </a>{" "}
-                and{" "}
-                <a href="/privacy" target="_blank" rel="noreferrer" className="text-yellow-300 underline-offset-2 hover:underline">
-                  Privacy Policy
                 </a>
                 .
               </label>
@@ -277,10 +273,9 @@ export default function Register() {
             </div>
           </section>
 
-          {/* Right: bold hero/benefits (very different vibe vs login) */}
+          {/* Right: bold hero/benefits */}
           <section className="order-2 flex lg:order-2 lg:col-span-7">
             <div className="relative flex-1 overflow-hidden rounded-2xl bg-[radial-gradient(1200px_400px_at_80%_-10%,rgba(253,176,34,0.18),transparent),radial-gradient(1000px_500px_at_-10%_110%,rgba(255,226,122,0.14),transparent)] p-6 md:p-8 ring-1 ring-inset ring-white/10">
-              {/* subtle glow */}
               <span className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-yellow-500/15 blur-3xl" />
               <div className="ff-display">
                 <h2 className="text-4xl font-extrabold leading-tight tracking-tight">
@@ -293,31 +288,13 @@ export default function Register() {
                 </p>
               </div>
 
-              {/* three large “reasons to join” tiles */}
               <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <Benefit
-                  title="Clear pricing"
-                  blurb="See today’s rates and lock a price before you order."
-                  Icon={ChartIcon}
-                />
-                <Benefit
-                  title="Secure checkout"
-                  blurb="3-D Secure payments via Stripe; card details never touch our servers."
-                  Icon={ShieldIcon}
-                />
-                <Benefit
-                  title="Flexible delivery"
-                  blurb="Pick a preferred slot — availability may vary by area and supplier."
-                  Icon={TruckIcon}
-                />
-                <Benefit
-                  title="Human support"
-                  blurb="Email or live chat with our UK-based team during business hours."
-                  Icon={HeadsetIcon}
-                />
+                <Benefit title="Clear pricing" blurb="See today’s rates and lock a price before you order." Icon={ChartIcon} />
+                <Benefit title="Secure checkout" blurb="3-D Secure payments via Stripe; card details never touch our servers." Icon={ShieldIcon} />
+                <Benefit title="Flexible delivery" blurb="Pick a preferred slot — availability may vary by area and supplier." Icon={TruckIcon} />
+                <Benefit title="Human support" blurb="Email or live chat with our UK-based team during business hours." Icon={HeadsetIcon} />
               </div>
 
-              {/* little note */}
               <p className="mt-6 text-xs text-white/60">
                 No marketing spam. We’ll email you only about your account and orders.
               </p>
@@ -335,7 +312,7 @@ export default function Register() {
   );
 }
 
-/* ---------- tiny UI helpers & icons (no external libs) ---------- */
+/* ---------- helpers & icons ---------- */
 function StepDot({ active = false }: { active?: boolean }) {
   return (
     <span
@@ -357,7 +334,7 @@ function Benefit({
 }: {
   title: string;
   blurb: string;
-  Icon: (p: { className?: string }) => JSX.Element;
+  Icon: (p: { className?: string }) => ReactElement; // <-- fixed type
 }) {
   return (
     <div className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20">
