@@ -172,7 +172,7 @@ export default function Login() {
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
           <a href="https://fuelflow.co.uk" className="flex items-center gap-3">
             <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-            {/* removed the small 'Secure client access' text */}
+            {/* removed the 'Secure client access' caption as requested */}
           </a>
           <a
             href="https://fuelflow.co.uk"
@@ -187,9 +187,9 @@ export default function Login() {
 
       <main className="relative flex-1">
         <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
-          {/* Focused Login card */}
+          {/* Login card (visual priority) */}
           <section className="order-1 lg:order-2 lg:col-span-5">
-            <div className="rounded-2xl bg-gray-800 p-6 md:p-7 shadow-xl/20">
+            <div className="rounded-2xl bg-gray-800 p-6 md:p-7">
               <div className="mb-5">
                 <h2 className="text-xl font-semibold tracking-tight">Client login</h2>
                 <p className="mt-1 text-sm text-white/70">Use your email and password to access your account.</p>
@@ -335,7 +335,7 @@ export default function Login() {
             </div>
           </section>
 
-          {/* Brand / value props */}
+          {/* Welcome / benefits */}
           <section className="order-2 lg:order-1 lg:col-span-7">
             <div className="rounded-2xl bg-gray-800/40 p-6 md:p-7">
               <h1 className="text-3xl font-bold tracking-tight">Welcome back to FuelFlow</h1>
