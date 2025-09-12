@@ -1,5 +1,6 @@
 // src/pages/login.tsx
 // src/pages/login.tsx
+// src/pages/login.tsx
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
@@ -170,10 +171,10 @@ export default function Login() {
       {/* Header */}
       <header className="relative">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
-          <div className="flex items-center gap-3">
+          <a href="https://fuelflow.co.uk" className="flex items-center gap-3">
             <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-            <span className="hidden sm:block text-sm text-white/70">Secure client access</span>
-          </div>
+            {/* removed the small 'Secure client access' text */}
+          </a>
           <a
             href="https://fuelflow.co.uk"
             target="_blank"
@@ -187,45 +188,26 @@ export default function Login() {
 
       <main className="relative flex-1">
         <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
-          {/* Brand / value props */}
-          <section className="order-2 lg:order-1 lg:col-span-7">
-            <div className="rounded-xl bg-gray-800/40 p-6 md:p-6">
-              <h1 className="text-2xl md:text-3xl font-bold">Welcome back</h1>
-              <p className="mt-2 max-w-xl text-white/70">
-                Sign in to manage your fuel orders, contracts and invoices in one secure place.
-              </p>
-
-              <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <ValueCard title="Transparent pricing" body="Live price cards keep you in control." />
-                <ValueCard title="Fast delivery" body="Choose a date two weeks out—sorted." />
-                <ValueCard title="Secure payments" body="Stripe checkout with 3-D Secure." />
-                <ValueCard title="UK-based support" body="We’re here if you need a hand." />
-              </div>
-            </div>
-          </section>
-
-          {/* Login card */}
+          {/* Focused Login card */}
           <section className="order-1 lg:order-2 lg:col-span-5">
-            <div className="rounded-xl bg-gray-800 p-6 md:p-6">
-              <div className="mb-4 flex items-center gap-2">
-                <img src="/logo-email.png" alt="FuelFlow logo" className="h-7 w-auto" />
-                <div>
-                  <div className="text-lg font-semibold">Client Login</div>
-                  <div className="text-xs text-white/60">Use your account email and password</div>
-                </div>
+            <div className="rounded-2xl bg-gray-800 p-6 md:p-7 shadow-xl/20">
+              <div className="mb-5">
+                <h2 className="text-xl font-semibold tracking-tight">Client login</h2>
+                <p className="mt-1 text-sm text-white/70">Use your email and password to access your account.</p>
               </div>
 
               {/* Email */}
               <label className="block text-sm">
-                <span className="mb-1 block text-white/80">Email</span>
+                <span className="mb-1 block text-white/85">Email</span>
                 <div className="relative">
                   <input
                     type="email"
-                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-10 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30"
+                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-10 text-white placeholder-white/40 outline-none ring-0 focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
                     placeholder="name@company.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     onKeyDown={onEnter}
+                    autoComplete="email"
                   />
                   <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 opacity-70">
                     <MailIcon className="h-4 w-4" />
@@ -236,11 +218,11 @@ export default function Login() {
               {/* Password */}
               <div className="mt-3">
                 <label className="block text-sm">
-                  <span className="mb-1 block text-white/80">Password</span>
+                  <span className="mb-1 block text-white/85">Password</span>
                   <div className="relative">
                     <input
                       type={showPassword ? "text" : "password"}
-                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-10 text-white placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30"
+                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-16 text-white placeholder-white/40 outline-none ring-0 focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
                       placeholder="Your password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -248,6 +230,7 @@ export default function Login() {
                         handleCaps(e);
                         onEnter(e);
                       }}
+                      autoComplete="current-password"
                     />
                     <button
                       type="button"
@@ -295,14 +278,14 @@ export default function Login() {
                 </button>
               </div>
 
-              {/* CTA buttons */}
+              {/* CTAs */}
               <div className="mt-4 grid grid-cols-1 gap-2">
                 <button
                   onClick={handleLogin}
                   disabled={loading}
                   className="rounded-lg bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
                 >
-                  {loading ? "Signing in…" : "Sign In"}
+                  {loading ? "Signing in…" : "Sign in"}
                 </button>
                 <button
                   onClick={handleMagicLink}
@@ -314,11 +297,24 @@ export default function Login() {
                 </button>
               </div>
 
+              {/* Divider + Register */}
+              <div className="my-5 flex items-center gap-3 text-white/40">
+                <span className="h-px w-full bg-white/10" />
+                <span className="text-[11px] uppercase tracking-widest">New to FuelFlow?</span>
+                <span className="h-px w-full bg-white/10" />
+              </div>
+              <a
+                href="https://dashboard.fuelflow.co.uk/register"
+                className="inline-flex w-full items-center justify-center rounded-lg border border-white/15 bg-transparent px-4 py-2 text-sm font-semibold hover:bg-white/5"
+              >
+                Register as a client
+              </a>
+
               {/* Message */}
               {msg && (
                 <div
                   className={[
-                    "mt-3 rounded-lg border p-2 text-sm",
+                    "mt-4 rounded-lg border p-2 text-sm",
                     msg.type === "error"
                       ? "border-rose-400/40 bg-rose-500/10 text-rose-200"
                       : msg.type === "success"
@@ -337,6 +333,23 @@ export default function Login() {
                 </a>
                 .
               </p>
+            </div>
+          </section>
+
+          {/* Brand / value props */}
+          <section className="order-2 lg:order-1 lg:col-span-7">
+            <div className="rounded-2xl bg-gray-800/40 p-6 md:p-7">
+              <h1 className="text-3xl font-bold tracking-tight">Welcome back to FuelFlow</h1>
+              <p className="mt-2 max-w-xl text-white/70">
+                Your hub for live fuel pricing, orders, contracts and invoices — all in one place.
+              </p>
+
+              <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <ValueCard title="Live pricing" body="Know today’s rate before you place an order." />
+                <ValueCard title="Fast delivery" body="Pick an available date up to two weeks ahead." />
+                <ValueCard title="Secure checkout" body="Payments protected with 3-D Secure via Stripe." />
+                <ValueCard title="UK support" body="Talk to a real person when you need a hand." />
+              </div>
             </div>
           </section>
         </div>
@@ -364,11 +377,10 @@ function ValueCard({ title, body }: { title: string; body: string }) {
 
 function MailIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M4 6h16v12H4z" />
-      <path d="M22 6l-10 7L2 6" />
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <rect x="3" y="5" width="18" height="14" rx="2" ry="2" />
+      <path d="M3 7l9 6 9-6" />
     </svg>
   );
 }
-
 
