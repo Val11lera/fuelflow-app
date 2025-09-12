@@ -1,6 +1,5 @@
 // src/pages/login.tsx
 // src/pages/login.tsx
-// src/pages/login.tsx
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
@@ -383,4 +382,5 @@ function MailIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
 
