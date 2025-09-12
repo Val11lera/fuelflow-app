@@ -1,16 +1,17 @@
-@import "tailwindcss";
+/* Tailwind v3 directives */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
+/* keep your variables and custom CSS */
 :root {
   --background: #ffffff;
   --foreground: #171717;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+/* REMOVE the v4-only block:
+@theme inline { ... }
+*/
 
 @media (prefers-color-scheme: dark) {
   :root {
