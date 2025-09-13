@@ -3,140 +3,132 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import PDFDocument from "pdfkit";
 
+type Party = { name: string; address?: string; email?: string };
 type Line = { description: string; qty: number; unitPrice: number };
-type Payload = {
+type InvoicePayload = {
   invoiceNumber: string;
   issuedAt: string; // ISO date
   currency: string; // e.g. "GBP"
-  company: { name: string; address?: string };
-  customer: { id?: string; name: string; email?: string; address?: string };
+  company: Party;
+  customer: Party & { id?: string };
   lines: Line[];
   notes?: string;
-  email?: boolean; // ignored in this minimal example
+  email?: boolean;
 };
 
 export const config = {
-  api: { bodyParser: { sizeLimit: "1mb" } },
+  api: {
+    bodyParser: { sizeLimit: "1mb" }, // we accept JSON body
+  },
 };
 
-function money(v: number, currency: string) {
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(v);
-}
-
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Helpful landing message in the browser
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "GET") {
-    return res
-      .status(200)
-      .send("Invoice API ready. POST JSON to this URL. Example: curl -sS -X POST http://localhost:3000/api/invoices/create -H 'Content-Type: application/json' --data-binary @payload.json -o test-invoice.pdf");
+    // Simple health/preview ping so you can visit /api/invoices/create?preview=1
+    return res.status(200).json({ ok: true, route: "/api/invoices/create" });
   }
 
   if (req.method !== "POST") {
     res.setHeader("Allow", "GET, POST");
-    return res.status(405).json({ error: "Method Not Allowed" });
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // Next already parsed JSON when Content-Type is application/json
-  const data: Payload = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+  const data = req.body as Partial<InvoicePayload>;
 
-  if (!data?.invoiceNumber || !Array.isArray(data?.lines) || !data.lines.length) {
-    return res.status(400).json({ error: "Invalid payload: require invoiceNumber and at least one line." });
+  // Basic validation
+  if (
+    !data ||
+    !data.invoiceNumber ||
+    !data.issuedAt ||
+    !data.currency ||
+    !data.company?.name ||
+    !data.customer?.name ||
+    !Array.isArray(data.lines) ||
+    data.lines.length === 0
+  ) {
+    return res.status(400).json({ error: "Invalid invoice payload" });
   }
 
-  const currency = data.currency || "GBP";
+  // Calculate totals
+  const subtotal = data.lines.reduce(
+    (sum, l) => sum + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0),
+    0
+  );
+  const total = subtotal; // add tax here if you need
 
-  // Set headers before streaming
-  res.status(200);
+  // Prepare PDF response headers
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `inline; filename="invoice-${data.invoiceNumber}.pdf"`);
+  res.setHeader(
+    "Content-Disposition",
+    `inline; filename="${data.invoiceNumber}.pdf"`
+  );
 
-  // Create and stream the PDF
+  // Create and stream PDF
   const doc = new PDFDocument({ size: "A4", margin: 50 });
   doc.pipe(res);
 
-  // Header
+  // ---- Title / header
   doc
-    .fontSize(22)
-    .text(data.company?.name || "FuelFlow", { align: "left" })
-    .moveDown(0.2)
-    .fontSize(10)
-    .fillColor("#555")
-    .text(data.company?.address || "", { align: "left" })
-    .moveDown();
+    .fontSize(20)
+    .text("FuelFlow Invoice", { align: "right" })
+    .moveDown(0.5);
 
-  doc
-    .fillColor("#000")
-    .fontSize(18)
-    .text("INVOICE", { align: "right" })
-    .fontSize(10)
-    .text(`Invoice #: ${data.invoiceNumber}`, { align: "right" })
-    .text(`Date: ${new Date(data.issuedAt || Date.now()).toLocaleDateString("en-GB")}`, { align: "right" })
-    .moveDown();
-
-  // Bill to
   doc
     .fontSize(12)
-    .text("Bill To:", { underline: true })
-    .moveDown(0.2)
-    .fontSize(10)
-    .text(data.customer?.name || "")
-    .text(data.customer?.email || "")
-    .text(data.customer?.address || "")
-    .moveDown();
+    .text(`Invoice #: ${data.invoiceNumber}`, { align: "right" })
+    .text(`Issued: ${new Date(data.issuedAt).toDateString()}`, {
+      align: "right",
+    })
+    .moveDown(1);
+
+  // Company & customer blocks
+  doc
+    .fontSize(12)
+    .text(data.company.name)
+    .text(data.company.address || "")
+    .text(data.company.email || "")
+    .moveDown(1);
+
+  doc.text("Bill To:").text(data.customer.name);
+  if (data.customer.address) doc.text(data.customer.address);
+  if (data.customer.email) doc.text(data.customer.email);
+  doc.moveDown(1);
 
   // Table header
-  const startY = doc.y + 5;
-  doc
-    .fontSize(10)
-    .text("Description", 50, startY)
-    .text("Qty", 340, startY, { width: 50, align: "right" })
-    .text("Unit", 400, startY, { width: 80, align: "right" })
-    .text("Total", 500, startY, { width: 80, align: "right" });
-
-  doc.moveTo(50, startY + 12).lineTo(560, startY + 12).stroke();
-
-  // Lines
-  let y = startY + 18;
-  let subtotal = 0;
-
-  for (const line of data.lines) {
-    const qty = Number(line.qty || 0);
-    const unit = Number(line.unitPrice || 0);
-    const total = qty * unit;
-    subtotal += total;
-
-    doc
-      .fontSize(10)
-      .text(line.description, 50, y, { width: 280 })
-      .text(String(qty), 340, y, { width: 50, align: "right" })
-      .text(money(unit, currency), 400, y, { width: 80, align: "right" })
-      .text(money(total, currency), 500, y, { width: 80, align: "right" });
-
-    y += 16;
-  }
-
-  // Totals
-  y += 10;
-  doc.moveTo(350, y).lineTo(560, y).stroke();
-  y += 6;
-
-  doc
-    .fontSize(10)
-    .text("Subtotal", 400, y, { width: 80, align: "right" })
-    .text(money(subtotal, currency), 500, y, { width: 80, align: "right" });
-
-  // (No VAT calculation here; add as needed)
-
-  y += 16;
   doc
     .fontSize(12)
-    .text("Total", 400, y, { width: 80, align: "right" })
-    .text(money(subtotal, currency), 500, y, { width: 80, align: "right" });
+    .text("Description", 50, doc.y, { continued: true })
+    .text("Qty", 350, doc.y, { width: 50, continued: true, align: "right" })
+    .text("Unit", 410, doc.y, { width: 80, continued: true, align: "right" })
+    .text("Line Total", 500, doc.y, { width: 80, align: "right" });
+  doc.moveTo(50, doc.y + 4).lineTo(550, doc.y + 4).stroke();
+  doc.moveDown(0.5);
 
-  // Notes
+  // Table rows
+  data.lines.forEach((l) => {
+    const lineTotal = (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
+    doc
+      .text(l.description, 50, doc.y, { continued: true })
+      .text(String(l.qty), 350, doc.y, { width: 50, continued: true, align: "right" })
+      .text(lineTotal === 0 ? "0.00" : (Number(l.unitPrice)).toFixed(2), 410, doc.y, {
+        width: 80,
+        continued: true,
+        align: "right",
+      })
+      .text(lineTotal.toFixed(2), 500, doc.y, { width: 80, align: "right" });
+    doc.moveDown(0.3);
+  });
+
+  doc.moveDown(1);
+  doc
+    .fontSize(12)
+    .text(`Subtotal: ${subtotal.toFixed(2)} ${data.currency}`, { align: "right" })
+    .text(`Total: ${total.toFixed(2)} ${data.currency}`, { align: "right" })
+    .moveDown(1);
+
   if (data.notes) {
-    doc.moveDown().fontSize(10).fillColor("#555").text(data.notes, { width: 500 });
+    doc.fontSize(11).text("Notes:").moveDown(0.3).text(data.notes);
   }
 
-  doc.end(); // this flushes the stream to the response
+  doc.end(); // this finishes the PDF and the HTTP response
 }
