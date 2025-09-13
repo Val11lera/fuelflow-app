@@ -1,106 +1,30 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
+// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
+import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
-import PDFDocument from "pdfkit";
 
-export const config = {
-  api: {
-    bodyParser: { sizeLimit: "1mb" },
-  },
-};
-
-type Party = { name: string; address: string; email?: string };
+type Party = { name: string; address?: string; email?: string };
 type Line = { description: string; qty: number; unitPrice: number };
-
 type InvoicePayload = {
   invoiceNumber: string;
-  issuedAt: string; // ISO string
-  currency: string; // e.g. "GBP"
+  issuedAt: string;
+  currency: string;
   company: Party;
-  customer: Party & { id?: string };
+  customer: Party;
   lines: Line[];
   notes?: string;
-  email?: boolean;
+  email?: boolean; // optional flag for later emailing
 };
 
-function formatMoney(v: number, currency: string) {
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(v);
-}
-
-async function writePdf(payload: InvoicePayload, outPath: string) {
-  // ensure directory exists
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
-
-  const doc = new PDFDocument({ size: "A4", margin: 50 });
-  const out = fs.createWriteStream(outPath);
-  doc.pipe(out);
-
-  // Header
-  doc.fontSize(22).text("INVOICE", { align: "right" }).moveDown(0.5);
-  doc.fontSize(11);
-  doc.text(`Invoice #: ${payload.invoiceNumber}`, { align: "right" });
-  doc.text(`Issued: ${new Date(payload.issuedAt).toLocaleString()}`, { align: "right" });
-  doc.moveDown();
-
-  // Parties
-  doc.fontSize(12).text(payload.company.name).text(payload.company.address).moveDown();
-  doc.text("Bill To:").moveDown(0.2);
-  doc.text(payload.customer.name).text(payload.customer.address);
-  if (payload.customer.email) doc.text(payload.customer.email);
-  doc.moveDown();
-
-  // Table header
-  const startX = 50;
-  let y = doc.y + 10;
-  doc.font("Helvetica-Bold");
-  doc.text("Description", startX, y);
-  doc.text("Qty", 350, y, { width: 40, align: "right" });
-  doc.text("Unit", 400, y, { width: 70, align: "right" });
-  doc.text("Line Total", 480, y, { width: 90, align: "right" });
-  doc.font("Helvetica");
-  y += 18;
-  doc.moveTo(startX, y).lineTo(560, y).stroke();
-  y += 8;
-
-  // Lines
-  let subtotal = 0;
-  payload.lines.forEach((l) => {
-    const lineTotal = l.qty * l.unitPrice;
-    subtotal += lineTotal;
-    doc.text(l.description, startX, y, { width: 280 });
-    doc.text(String(l.qty), 350, y, { width: 40, align: "right" });
-    doc.text(formatMoney(l.unitPrice, payload.currency), 400, y, { width: 70, align: "right" });
-    doc.text(formatMoney(lineTotal, payload.currency), 480, y, { width: 90, align: "right" });
-    y += 18;
-  });
-
-  // Totals
-  y += 6;
-  doc.moveTo(400, y).lineTo(560, y).stroke();
-  y += 8;
-  doc.font("Helvetica-Bold")
-    .text("Subtotal", 400, y, { width: 70, align: "right" })
-    .text(formatMoney(subtotal, payload.currency), 480, y, { width: 90, align: "right" });
-  doc.font("Helvetica");
-  y += 22;
-
-  // Notes
-  if (payload.notes) {
-    doc.moveDown().font("Helvetica-Oblique").text(`Notes: ${payload.notes}`);
-  }
-
-  doc.end();
-
-  // Wait until the stream is finished to guarantee the file exists
-  await new Promise<void>((resolve, reject) => {
-    out.on("finish", resolve);
-    out.on("error", reject);
-  });
-}
+export const config = {
+  api: { bodyParser: { sizeLimit: "1mb" } },
+};
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // Health check for GET
   if (req.method === "GET") {
     return res.status(200).json({ ok: true, route: "/api/invoices/create" });
   }
@@ -110,22 +34,96 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).end("Method Not Allowed");
   }
 
-  const payload = req.body as InvoicePayload;
-  if (!payload?.invoiceNumber || !payload?.lines?.length || !payload?.company || !payload?.customer) {
-    return res.status(400).json({ ok: false, error: "Missing required invoice fields" });
+  // Validate payload
+  const payload = req.body as Partial<InvoicePayload>;
+  if (
+    !payload ||
+    !payload.invoiceNumber ||
+    !payload.issuedAt ||
+    !payload.currency ||
+    !payload.company?.name ||
+    !payload.customer?.name ||
+    !Array.isArray(payload.lines) ||
+    payload.lines.length === 0
+  ) {
+    return res.status(400).json({ error: "Invalid invoice payload" });
   }
 
-  const outPath = path.join(process.cwd(), "private", "invoices", `${payload.invoiceNumber}.pdf`);
+  // Where to save on disk
+  const invoicesDir = path.join(process.cwd(), "private", "invoices");
+  fs.mkdirSync(invoicesDir, { recursive: true });
+  const fileName = `${payload.invoiceNumber}.pdf`;
+  const filePath = path.join(invoicesDir, fileName);
 
-  try {
-    await writePdf(payload, outPath);
-    return res.status(201).json({
-      ok: true,
-      savedAs: `/private/invoices/${payload.invoiceNumber}.pdf`,
-      absPath: outPath,
-    });
-  } catch (err: any) {
-    console.error("PDF write failed:", err);
-    return res.status(500).json({ ok: false, error: "Failed to generate PDF" });
+  // Create the PDF
+  const doc = new PDFDocument({ size: "A4", margin: 50 });
+
+  // 1) save to disk
+  const fileStream = fs.createWriteStream(filePath);
+  doc.pipe(fileStream);
+
+  // 2) stream to browser/client
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  doc.pipe(res);
+
+  // ===== Simple invoice layout =====
+  doc.fontSize(20).text("INVOICE", { align: "right" }).moveDown();
+
+  doc.fontSize(12);
+  doc.text(`Invoice #: ${payload.invoiceNumber}`);
+  doc.text(`Date: ${new Date(payload.issuedAt).toLocaleDateString()}`);
+  doc.text(`Currency: ${payload.currency}`).moveDown();
+
+  doc.font("Helvetica-Bold").text(payload.company.name);
+  if (payload.company.address) doc.font("Helvetica").text(payload.company.address);
+  doc.moveDown();
+
+  doc.font("Helvetica-Bold").text("Bill To:");
+  doc.font("Helvetica").text(payload.customer.name);
+  if (payload.customer.address) doc.text(payload.customer.address);
+  doc.moveDown();
+
+  // Table header
+  const headerY = doc.y;
+  doc.font("Helvetica-Bold");
+  doc.text("Description", 50, headerY);
+  doc.text("Qty", 350, headerY);
+  doc.text("Unit Price", 400, headerY, { width: 90, align: "right" });
+  doc.text("Line Total", 500, headerY, { width: 90, align: "right" });
+  doc.moveDown().moveDown();
+
+  // Lines
+  doc.font("Helvetica");
+  let total = 0;
+  payload.lines.forEach((line) => {
+    const lineTotal = (line.qty ?? 0) * (line.unitPrice ?? 0);
+    total += lineTotal;
+
+    const y = doc.y;
+    doc.text(line.description ?? "", 50, y);
+    doc.text(String(line.qty ?? 0), 350, y);
+    doc.text((line.unitPrice ?? 0).toFixed(2), 400, y, { width: 90, align: "right" });
+    doc.text(lineTotal.toFixed(2), 500, y, { width: 90, align: "right" });
+    doc.moveDown();
+  });
+
+  doc.moveDown();
+  doc.font("Helvetica-Bold").text("TOTAL", 400, doc.y, { width: 90, align: "right" });
+  doc.text(total.toFixed(2), 500, doc.y, { width: 90, align: "right" });
+
+  if (payload.notes) {
+    doc.moveDown().font("Helvetica").text(`Notes: ${payload.notes}`);
   }
+
+  // Finalize the PDF streams
+  doc.end();
+
+  // Make sure the file is fully written before finishing (prevents truncation)
+  await new Promise<void>((resolve, reject) => {
+    fileStream.on("finish", resolve);
+    fileStream.on("error", reject);
+  });
+
+  // Do not send JSON here; the PDF stream already went to the response.
 }
