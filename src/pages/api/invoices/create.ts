@@ -1,10 +1,14 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
+// Minimal, working PDF endpoint for POST and a quick GET probe
 import type { NextApiRequest, NextApiResponse } from "next";
 import PDFDocument from "pdfkit";
 
+// allow JSON body up to 1 MB
+export const config = { api: { bodyParser: { sizeLimit: "1mb" } } };
+
 type Party = { name: string; address?: string; email?: string };
-type Line = { description: string; qty: number; unitPrice: number };
+type Line  = { description: string; qty: number; unitPrice: number };
 type InvoicePayload = {
   invoiceNumber: string;
   issuedAt: string;
@@ -16,86 +20,53 @@ type InvoicePayload = {
   email?: boolean;
 };
 
-export const config = { api: { bodyParser: { sizeLimit: "1mb" } } };
-
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "GET") {
+    // sanity check so hitting the URL in a browser returns something
     return res.status(200).json({ ok: true, route: "/api/invoices/create" });
   }
   if (req.method !== "POST") {
-    res.setHeader("Allow", "GET, POST");
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({ error: "Method Not Allowed" });
   }
 
-  const data = req.body as Partial<InvoicePayload>;
-  if (
-    !data ||
-    !data.invoiceNumber ||
-    !data.issuedAt ||
-    !data.currency ||
-    !data.company?.name ||
-    !data.customer?.name ||
-    !Array.isArray(data.lines) ||
-    data.lines.length === 0
-  ) {
-    return res.status(400).json({ error: "Invalid invoice payload" });
-  }
+  const body = req.body as InvoicePayload;
 
-  const subtotal = data.lines.reduce(
-    (sum, l) => sum + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0),
-    0
-  );
-  const total = subtotal;
+  // --- Build a very simple PDF (enough to prove it works) ---
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
 
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader(
-    "Content-Disposition",
-    `inline; filename="${data.invoiceNumber}.pdf"`
-  );
+  // use inline so it opens in browser; curl will still save it to a file
+  res.setHeader("Content-Disposition", 'inline; filename="invoice.pdf"');
 
-  const doc = new PDFDocument({ size: "A4", margin: 50 });
   doc.pipe(res);
 
-  doc.fontSize(20).text("FuelFlow Invoice", { align: "right" }).moveDown(0.5);
-  doc
-    .fontSize(12)
-    .text(`Invoice #: ${data.invoiceNumber}`, { align: "right" })
-    .text(`Issued: ${new Date(data.issuedAt).toDateString()}`, { align: "right" })
-    .moveDown(1);
+  doc.fontSize(18).text("FuelFlow Invoice", { align: "center" }).moveDown();
+  doc.fontSize(12);
+  doc.text(`Invoice: ${body?.invoiceNumber ?? "N/A"}`);
+  doc.text(`Issued:  ${body?.issuedAt ?? "N/A"}`);
+  doc.moveDown();
 
-  doc.fontSize(12).text(data.company.name).text(data.company.address || "").text(data.company.email || "").moveDown(1);
-  doc.text("Bill To:").text(data.customer.name);
-  if (data.customer.address) doc.text(data.customer.address);
-  if (data.customer.email) doc.text(data.customer.email);
-  doc.moveDown(1);
+  doc.text(`Bill To: ${body?.customer?.name ?? ""}`);
+  if (body?.customer?.address) doc.text(body.customer.address);
+  if (body?.customer?.email)   doc.text(body.customer.email);
+  doc.moveDown();
 
-  doc
-    .fontSize(12)
-    .text("Description", 50, doc.y, { continued: true })
-    .text("Qty", 350, doc.y, { width: 50, continued: true, align: "right" })
-    .text("Unit", 410, doc.y, { width: 80, continued: true, align: "right" })
-    .text("Line Total", 500, doc.y, { width: 80, align: "right" });
-  doc.moveTo(50, doc.y + 4).lineTo(550, doc.y + 4).stroke();
-  doc.moveDown(0.5);
-
-  data.lines.forEach((l) => {
-    const lineTotal = (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
-    doc
-      .text(l.description, 50, doc.y, { continued: true })
-      .text(String(l.qty), 350, doc.y, { width: 50, continued: true, align: "right" })
-      .text((Number(l.unitPrice) || 0).toFixed(2), 410, doc.y, { width: 80, continued: true, align: "right" })
-      .text(lineTotal.toFixed(2), 500, doc.y, { width: 80, align: "right" });
-    doc.moveDown(0.3);
+  let total = 0;
+  doc.text("Items:").moveDown(0.5);
+  (body?.lines ?? []).forEach((l, i) => {
+    const lineTotal = (l.qty ?? 0) * (l.unitPrice ?? 0);
+    total += lineTotal;
+    doc.text(
+      `${i + 1}. ${l.description} — qty ${l.qty} × ${l.unitPrice.toFixed(2)} = ${lineTotal.toFixed(2)}`
+    );
   });
+  doc.moveDown();
+  doc.text(`Total: ${total.toFixed(2)} ${body?.currency ?? ""}`, { align: "right" });
 
-  doc.moveDown(1);
-  doc
-    .fontSize(12)
-    .text(`Subtotal: ${subtotal.toFixed(2)} ${data.currency}`, { align: "right" })
-    .text(`Total: ${total.toFixed(2)} ${data.currency}`, { align: "right" })
-    .moveDown(1);
+  if (body?.notes) {
+    doc.moveDown();
+    doc.text(`Notes: ${body.notes}`);
+  }
 
-  if (data.notes) doc.fontSize(11).text("Notes:").moveDown(0.3).text(data.notes);
-
-  doc.end();
+  doc.end(); // IMPORTANT: finishes the PDF stream
 }
