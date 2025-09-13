@@ -1,8 +1,10 @@
 /* Tailwind v3 directives */
+/* Tailwind v3 directives */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* Your base theme */
 :root {
   --background: #ffffff;
   --foreground: #171717;
