@@ -1,129 +1,153 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import PDFDocument from "pdfkit";
 
-type LineItem = { description: string; qty: number; unitPrice: number };
-type InvoicePayload = {
-  invoiceNumber: string;
-  issuedAt: string;
-  currency: string;
-  company: { name: string; address: string };
-  customer: { id: string; name: string; email: string; address?: string };
-  lines: LineItem[];
-  notes?: string;
-  email?: boolean;
-};
+// NOTE: We use require for pdfkit so the module is loaded only on the server.
+const PDFDocument = require("pdfkit");
 
-async function readJson(req: NextApiRequest): Promise<any> {
-  if (req.body && typeof req.body === "object") return req.body;
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  const raw = Buffer.concat(chunks).toString("utf8");
-  return raw ? JSON.parse(raw) : {};
+/** Utility to format currency */
+function money(n: number, currency = "GBP") {
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
 }
 
+type Line = { description: string; qty: number; unitPrice: number };
+type InvoiceBody = {
+  invoiceNumber: string;
+  issuedAt: string; // ISO string
+  currency?: string;
+  company: { name: string; address?: string };
+  customer: { id?: string; name: string; email?: string; address?: string };
+  lines: Line[];
+  notes?: string;
+  email?: boolean; // ignored here (email sending not implemented in this route)
+};
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const isPreview = req.method === "GET" && req.query.preview === "1";
-
-  let data: InvoicePayload;
-  try {
-    if (isPreview) {
-      data = {
-        invoiceNumber: "INV-000123",
-        issuedAt: "2025-09-12T12:00:00.000Z",
-        currency: "GBP",
-        company: { name: "FuelFlow", address: "1 Aviation Way\nLondon\nUK" },
-        customer: {
-          id: "cust_abc123",
-          name: "Jane Pilot",
-          email: "jane@example.com",
-          address: "2 Runway Road\nGlasgow\nUK",
-        },
-        lines: [
-          { description: "Fuel Uplift — A320", qty: 1, unitPrice: 450.25 },
-          { description: "Ramp Service", qty: 1, unitPrice: 75.0 },
-        ],
-        notes: "Thank you for flying with us.",
-        email: false,
-      };
-    } else if (req.method === "POST") {
-      data = (await readJson(req)) as InvoicePayload;
-    } else {
-      res.setHeader("Allow", "POST, GET");
-      return res.status(405).json({ error: "Method not allowed" });
-    }
-  } catch (e: any) {
-    return res.status(400).json({ error: "Invalid JSON body", detail: String(e?.message ?? e) });
+  // Simple GET “preview” so you can see the route exists
+  if (req.method === "GET") {
+    res.status(200).json({
+      ok: true,
+      route: "/api/invoices/create",
+      usage: "POST JSON body to receive a PDF invoice",
+      exampleBodyKeys: [
+        "invoiceNumber",
+        "issuedAt",
+        "currency",
+        "company",
+        "customer",
+        "lines",
+        "notes",
+      ],
+    });
+    return;
   }
 
-  if (!data?.invoiceNumber || !Array.isArray(data?.lines) || data.lines.length === 0) {
-    return res.status(400).json({ error: "Missing invoiceNumber or line items" });
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "GET, POST");
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
-  res.statusCode = 200;
+  // Validate body (very lightly)
+  const body = req.body as InvoiceBody;
+  if (
+    !body ||
+    !body.invoiceNumber ||
+    !body.issuedAt ||
+    !body.company?.name ||
+    !body.customer?.name ||
+    !Array.isArray(body.lines) ||
+    body.lines.length === 0
+  ) {
+    return res.status(400).json({ error: "Missing required invoice fields" });
+  }
+
+  const currency = body.currency || "GBP";
+
+  // Prepare HTTP response as a PDF stream
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `inline; filename="${data.invoiceNumber}.pdf"`);
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${body.invoiceNumber}.pdf"`
+  );
 
+  // Build the PDF
   const doc = new PDFDocument({ size: "A4", margin: 50 });
   doc.pipe(res);
 
   // Header
-  doc.fontSize(18).text(data.company.name).moveDown(0.2);
-  doc.fontSize(10).text(data.company.address).moveDown(1);
-
-  // Invoice meta
+  doc.fontSize(20).text("Invoice", { align: "right" });
+  doc.moveDown(0.2);
   doc
-    .fontSize(14)
-    .text(`Invoice ${data.invoiceNumber}`, { align: "right" })
     .fontSize(10)
-    .text(`Date: ${new Date(data.issuedAt).toLocaleDateString()}`, { align: "right" })
-    .moveDown(1);
+    .text(`Invoice #: ${body.invoiceNumber}`, { align: "right" })
+    .text(`Issued: ${new Date(body.issuedAt).toLocaleString()}`, { align: "right" })
+    .moveDown(1.2);
 
-  // Bill to
-  doc.fontSize(12).text("Bill To:").moveDown(0.2);
-  doc.fontSize(10).text(data.customer.name);
-  if (data.customer.address) doc.text(data.customer.address);
-  doc.moveDown(1);
+  // From / To blocks
+  doc.fontSize(12).text(body.company.name, 50, doc.y);
+  if (body.company.address) doc.fontSize(10).text(body.company.address);
+
+  doc.moveUp(2);
+  const rightX = 330;
+  doc.fontSize(12).text("Bill To:", rightX, doc.y);
+  doc.fontSize(10).text(body.customer.name);
+  if (body.customer.email) doc.text(body.customer.email);
+  if (body.customer.address) doc.text(body.customer.address);
+  doc.moveDown();
 
   // Table header
-  const startX = doc.x;
-  let y = doc.y;
-  doc.fontSize(11).text("Description", startX, y, { width: 300 });
-  doc.text("Qty", startX + 310, y, { width: 40, align: "right" });
-  doc.text("Unit", startX + 360, y, { width: 80, align: "right" });
-  doc.text("Amount", startX + 450, y, { width: 80, align: "right" });
-  y += 16;
-  doc.moveTo(startX, y).lineTo(startX + 530, y).strokeColor("#999").stroke();
-  y += 6;
+  doc.moveDown(0.7);
+  doc.fontSize(11).text("Description", 50, doc.y);
+  doc.text("Qty", 330, doc.y, { width: 60, align: "right" });
+  doc.text("Unit Price", 390, doc.y, { width: 90, align: "right" });
+  doc.text("Line Total", 480, doc.y, { width: 90, align: "right" });
+  doc.moveTo(50, doc.y + 3).lineTo(550, doc.y + 3).stroke();
 
-  // Lines
-  let total = 0;
-  doc.fontSize(10).fillColor("#000");
-  for (const line of data.lines) {
-    const lineTotal = line.qty * line.unitPrice;
-    total += lineTotal;
-    doc.text(line.description, startX, y, { width: 300 });
-    doc.text(String(line.qty), startX + 310, y, { width: 40, align: "right" });
-    doc.text(line.unitPrice.toFixed(2), startX + 360, y, { width: 80, align: "right" });
-    doc.text(lineTotal.toFixed(2), startX + 450, y, { width: 80, align: "right" });
-    y += 18;
-  }
+  // Table lines
+  let subtotal = 0;
+  doc.moveDown(0.5);
+  body.lines.forEach((ln) => {
+    const lineTotal = ln.qty * ln.unitPrice;
+    subtotal += lineTotal;
+
+    doc.fontSize(10).text(ln.description, 50, doc.y);
+    doc.text(String(ln.qty), 330, doc.y, { width: 60, align: "right" });
+    doc.text(money(ln.unitPrice, currency), 390, doc.y, { width: 90, align: "right" });
+    doc.text(money(lineTotal, currency), 480, doc.y, { width: 90, align: "right" });
+    doc.moveDown(0.3);
+  });
 
   // Totals
-  y += 8;
-  doc.moveTo(startX + 360, y).lineTo(startX + 530, y).strokeColor("#999").stroke();
-  y += 8;
-  doc.fontSize(11).text("Total", startX + 360, y, { width: 80, align: "right" });
-  doc.text(`${data.currency} ${total.toFixed(2)}`, startX + 450, y, { width: 80, align: "right" });
-  y += 24;
+  doc.moveDown(0.8);
+  doc.moveTo(350, doc.y).lineTo(550, doc.y).stroke();
+  doc.fontSize(11).text("Subtotal", 390, doc.y + 5, { width: 90, align: "right" });
+  doc.text(money(subtotal, currency), 480, doc.y, { width: 90, align: "right" });
 
-  if (data.notes) {
-    doc.moveDown(1);
-    doc.fontSize(11).text("Notes").moveDown(0.2);
-    doc.fontSize(10).text(data.notes);
+  // (No tax/shipping lines in this simple sample, add as needed)
+
+  // Notes
+  if (body.notes) {
+    doc.moveDown(1.2);
+    doc.fontSize(10).text("Notes:", 50, doc.y);
+    doc.fontSize(10).text(body.notes, 50, doc.y + 2);
   }
 
-  doc.end();
+  // Footer
+  doc.moveDown(1.2);
+  doc.fontSize(9).fillColor("#555").text("Thank you for your business.", 50, doc.y);
+
+  doc.end(); // <-- important to finish the PDF stream
 }
+
+// Let Next parse JSON up to 1mb
+export const config = {
+  api: {
+    bodyParser: { sizeLimit: "1mb" },
+  },
+};
 
