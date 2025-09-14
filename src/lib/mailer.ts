@@ -1,51 +1,45 @@
 // src/lib/mailer.ts
 // src/lib/mailer.ts
+// Uses Resend to send the PDF. No 'contentType' field!
 import { Resend } from 'resend';
 
-if (!process.env.RESEND_API_KEY) {
-  throw new Error('Missing RESEND_API_KEY');
-}
-if (!process.env.MAIL_FROM) {
-  throw new Error('Missing MAIL_FROM');
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const MAIL_FROM = process.env.MAIL_FROM || 'FuelFlow <onboarding@resend.dev>';
+const MAIL_BCC = process.env.MAIL_BCC; // optional
+
+if (!RESEND_API_KEY) {
+  console.warn('RESEND_API_KEY is not set. Emails will be skipped.');
 }
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-
-export type Attachment = {
-  filename: string;
-  base64: string; // base64 string of the PDF
-};
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 export async function sendInvoiceEmail(opts: {
   to: string;
   subject: string;
-  html: string;
-  attachment?: Attachment;
-  bcc?: string;
+  text?: string;
+  html?: string;
+  pdf: Buffer;
+  filename: string;
 }) {
-  const attachments = opts.attachment
-    ? [
-        {
-          filename: opts.attachment.filename,
-          // Resend expects the base64 content in the "content" field
-          content: opts.attachment.base64,
-          // If you want to be explicit, Resend supports "type" (NOT contentType)
-          // type: 'application/pdf',
-        } as const,
-      ]
-    : undefined;
+  if (!resend) return { skipped: true };
 
-  const result = await resend.emails.send({
-    from: process.env.MAIL_FROM!, // must be a verified sender in Resend
+  const resp = await resend.emails.send({
+    from: MAIL_FROM,
     to: opts.to,
-    bcc: opts.bcc,
+    ...(MAIL_BCC ? { bcc: [MAIL_BCC] } : {}),
     subject: opts.subject,
-    html: opts.html,
-    attachments,
+    text: opts.text ?? 'Please find your invoice attached.',
+    html:
+      opts.html ??
+      `<p>Please find your invoice attached.</p><p>Thanks for flying with us.</p>`,
+    attachments: [
+      {
+        // IMPORTANT: for Resend this must be 'content' with Base64.
+        filename: opts.filename,
+        content: opts.pdf.toString('base64'),
+      },
+    ],
   });
 
-  if (result.error) {
-    throw new Error(`Resend error: ${JSON.stringify(result.error)}`);
-  }
-  return result;
+  return resp;
 }
