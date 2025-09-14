@@ -1,143 +1,132 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
+// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import PDFDocument from "pdfkit";
-import { sendInvoiceEmail } from "@/lib/mailer";
+import { sendInvoiceEmail } from "../../../lib/mailer"; // 3x .. from /pages/api/invoices
 
 type Line = { description: string; qty: number; unitPrice: number };
-type Payload = {
+type InvoicePayload = {
   company: { name: string; address?: string };
   customer: { name: string; email?: string; address?: string };
   lines: Line[];
   notes?: string;
-  email?: boolean; // if true, email invoice to customer.email
+  email?: boolean;   // if true, we'll email
+  to?: string;       // optional override for recipient
 };
 
-function bad(res: NextApiResponse, msg: string) {
-  res.status(400).json({ error: msg });
+function renderInvoice(doc: PDFDocument, p: InvoicePayload) {
+  const total = p.lines.reduce((acc, l) => acc + l.qty * l.unitPrice, 0);
+
+  doc.fontSize(22).text("INVOICE", { align: "right" }).moveDown();
+
+  doc.fontSize(12).text(p.company.name);
+  if (p.company.address) doc.text(p.company.address);
+  doc.moveDown();
+
+  doc.fontSize(12).text(`Bill To: ${p.customer.name}`);
+  if (p.customer.address) doc.text(p.customer.address);
+  doc.moveDown();
+
+  doc.moveDown(0.5);
+  doc.fontSize(12).text("Description", 50, doc.y, { continued: true });
+  doc.text("Qty", 300, undefined, { continued: true });
+  doc.text("Unit", 350, undefined, { continued: true });
+  doc.text("Line", 420);
+
+  doc.moveDown(0.5);
+  p.lines.forEach((l) => {
+    doc.text(l.description, 50, doc.y, { continued: true });
+    doc.text(String(l.qty), 300, undefined, { continued: true });
+    doc.text(l.unitPrice.toFixed(2), 350, undefined, { continued: true });
+    doc.text((l.qty * l.unitPrice).toFixed(2), 420);
+  });
+
+  doc.moveDown();
+  doc.text(`Total: ${total.toFixed(2)}`, { align: "right" });
+
+  if (p.notes) {
+    doc.moveDown();
+    doc.text(p.notes);
+  }
 }
 
-function money(n: number) {
-  return new Intl.NumberFormat("en-GB", {
-    style: "currency",
-    currency: "GBP",
-    minimumFractionDigits: 2,
-  }).format(n);
-}
-
-async function makePdf(p: Payload): Promise<{ buffer: Buffer; filename: string }> {
-  const filename = `INV-${new Date().toISOString().slice(0,10).replace(/-/g,"")}.pdf`;
-
-  const doc = new PDFDocument({ margin: 50 });
-  const chunks: Buffer[] = [];
+function makePdfBuffer(p: InvoicePayload): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    doc.on("data", (c: Buffer) => chunks.push(c));
+    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    const chunks: Buffer[] = [];
+
+    doc.on("data", (d) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(d)));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
-    doc.on("end", () => resolve({ buffer: Buffer.concat(chunks), filename }));
 
-    // Header
-    doc.fontSize(20).text(p.company.name, { continued: false });
-    if (p.company.address) doc.fontSize(10).text(p.company.address);
-    doc.moveDown();
-
-    // Bill To
-    doc.fontSize(12).text("Bill To:", { underline: true });
-    doc.text(p.customer.name);
-    if (p.customer.address) doc.fontSize(10).text(p.customer.address);
-    doc.moveDown();
-
-    // Table header
-    doc.fontSize(12).text("Description", 50, doc.y, { continued: true });
-    doc.text("Qty", 350, doc.y, { continued: true });
-    doc.text("Unit", 400, doc.y, { continued: true });
-    doc.text("Line Total", 470, doc.y);
-    doc.moveDown();
-
-    let total = 0;
-    for (const l of p.lines) {
-      const lineTotal = l.qty * l.unitPrice;
-      total += lineTotal;
-      doc.text(l.description, 50, doc.y, { continued: true });
-      doc.text(String(l.qty), 350, doc.y, { continued: true });
-      doc.text(money(l.unitPrice), 400, doc.y, { continued: true });
-      doc.text(money(lineTotal), 470, doc.y);
-    }
-
-    doc.moveDown();
-    doc.fontSize(14).text(`TOTAL: ${money(total)}`, { align: "right" });
-
-    if (p.notes) {
-      doc.moveDown();
-      doc.fontSize(10).text(p.notes);
-    }
-
+    renderInvoice(doc, p);
     doc.end();
   });
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
+    return res.status(200).json({ ok: true, route: "/api/invoices/create" });
   }
 
-  // Accept JSON or already-parsed body
-  const payload: Payload = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+  const p = req.body as InvoicePayload;
 
-  // ---- Minimal validation (this is what returned your earlier 400s)
-  const missing: string[] = [];
-  if (!payload?.company?.name) missing.push("company.name");
-  if (!payload?.customer?.name) missing.push("customer.name");
-  if (!Array.isArray(payload?.lines) || !payload.lines.length) missing.push("lines[]");
-  for (const [i, l] of (payload.lines || []).entries()) {
-    if (typeof l?.qty !== "number") missing.push(`lines[${i}].qty`);
-    if (typeof l?.unitPrice !== "number") missing.push(`lines[${i}].unitPrice`);
-    if (!l?.description) missing.push(`lines[${i}].description`);
+  // --- Basic validation
+  if (
+    !p?.company?.name ||
+    !p?.customer?.name ||
+    !Array.isArray(p?.lines) ||
+    p.lines.length === 0
+  ) {
+    return res.status(400).json({ error: "Missing required fields" });
   }
-  if (missing.length) return bad(res, "Missing required fields: " + missing.join(", "));
 
-  // ---- Create PDF
-  const { buffer, filename } = await makePdf(payload);
-  const base64 = buffer.toString("base64");
+  // Build the PDF
+  const pdfBuffer = await makePdfBuffer(p);
+  const filename = `INV-${Date.now()}.pdf`;
 
-  // ---- Optionally email
+  // If client asked for a PDF file (download stream)
+  if (req.query.format === "pdf") {
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    return res.status(200).send(pdfBuffer);
+  }
+
+  // Otherwise, JSON response; email if requested
   let emailed = false;
   let emailError: string | undefined;
 
-  if (payload.email && payload.customer?.email) {
-    const subject = `Invoice ${filename}`;
-    const html = `<p>Hello ${payload.customer.name},</p>
-                  <p>Please find your invoice attached.</p>
-                  <p>Thanks,<br/>${payload.company.name}</p>`;
-    const sent = await sendInvoiceEmail({
-      to: payload.customer.email,
+  if (p.email) {
+    const to = p.to ?? p.customer.email;
+    const from = process.env.MAIL_FROM;
+    if (!to || !from) {
+      return res
+        .status(400)
+        .json({ error: "Missing email recipient or MAIL_FROM env var" });
+    }
+
+    const base64 = pdfBuffer.toString("base64");
+    const subject = `${p.company.name} Invoice`;
+    const html = `<p>Hi ${p.customer.name},</p><p>Attached is your invoice from ${p.company.name}.</p>`;
+
+    const mail = await sendInvoiceEmail({
+      to,
+      from,
       subject,
       html,
-      filename,
-      pdfBase64: base64,
+      attachment: { filename, base64 },
     });
-    emailed = sent.ok;
-    if (!sent.ok) emailError = sent.error;
+
+    emailed = mail.ok;
+    if (!mail.ok) emailError = mail.error;
   }
 
-  // ---- Decide response format
-  const wantsPdf =
-    req.query.format === "pdf" ||
-    (typeof req.headers.accept === "string" && req.headers.accept.includes("application/pdf"));
-
-  if (wantsPdf) {
-    // Return raw PDF bytes
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-    res.status(200).send(buffer);
-  } else {
-    // Return JSON (safe for piping to jq)
-    res.status(200).json({
-      ok: true,
-      filename,
-      size: buffer.length,
-      emailed,
-      ...(emailError ? { emailError } : {}),
-    });
-  }
+  return res.status(200).json({
+    ok: true,
+    filename,
+    emailed,
+    ...(emailError ? { emailError } : {}),
+  });
 }
+
