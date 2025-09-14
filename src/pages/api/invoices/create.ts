@@ -1,10 +1,11 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
-// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
+
+export const config = { api: { bodyParser: { sizeLimit: "1mb" } } };
 
 type Party = { name: string; address?: string; email?: string };
 type Line = { description: string; qty: number; unitPrice: number };
@@ -13,117 +14,115 @@ type InvoicePayload = {
   issuedAt: string;
   currency: string;
   company: Party;
-  customer: Party;
+  customer: Party & { id?: string };
   lines: Line[];
   notes?: string;
-  email?: boolean; // optional flag for later emailing
+  email?: boolean;
 };
 
-export const config = {
-  api: { bodyParser: { sizeLimit: "1mb" } },
-};
-
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Health check for GET
-  if (req.method === "GET") {
-    return res.status(200).json({ ok: true, route: "/api/invoices/create" });
-  }
-
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "GET, POST");
-    return res.status(405).end("Method Not Allowed");
-  }
-
-  // Validate payload
-  const payload = req.body as Partial<InvoicePayload>;
-  if (
-    !payload ||
-    !payload.invoiceNumber ||
-    !payload.issuedAt ||
-    !payload.currency ||
-    !payload.company?.name ||
-    !payload.customer?.name ||
-    !Array.isArray(payload.lines) ||
-    payload.lines.length === 0
-  ) {
-    return res.status(400).json({ error: "Invalid invoice payload" });
-  }
-
-  // Where to save on disk
-  const invoicesDir = path.join(process.cwd(), "private", "invoices");
-  fs.mkdirSync(invoicesDir, { recursive: true });
-  const fileName = `${payload.invoiceNumber}.pdf`;
-  const filePath = path.join(invoicesDir, fileName);
-
-  // Create the PDF
-  const doc = new PDFDocument({ size: "A4", margin: 50 });
-
-  // 1) save to disk
-  const fileStream = fs.createWriteStream(filePath);
-  doc.pipe(fileStream);
-
-  // 2) stream to browser/client
-  res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
-  doc.pipe(res);
-
-  // ===== Simple invoice layout =====
-  doc.fontSize(20).text("INVOICE", { align: "right" }).moveDown();
-
-  doc.fontSize(12);
-  doc.text(`Invoice #: ${payload.invoiceNumber}`);
-  doc.text(`Date: ${new Date(payload.issuedAt).toLocaleDateString()}`);
-  doc.text(`Currency: ${payload.currency}`).moveDown();
-
-  doc.font("Helvetica-Bold").text(payload.company.name);
-  if (payload.company.address) doc.font("Helvetica").text(payload.company.address);
+function renderInvoice(doc: PDFDocument, p: InvoicePayload) {
+  doc.fontSize(22).text("INVOICE", { align: "right" });
   doc.moveDown();
 
-  doc.font("Helvetica-Bold").text("Bill To:");
-  doc.font("Helvetica").text(payload.customer.name);
-  if (payload.customer.address) doc.text(payload.customer.address);
+  doc.fontSize(12)
+    .text(`Invoice #: ${p.invoiceNumber}`)
+    .text(`Date: ${new Date(p.issuedAt).toLocaleDateString()}`);
+  doc.moveDown();
+
+  doc.fontSize(14).text(p.company.name);
+  if (p.company.address) doc.fontSize(10).text(p.company.address);
+  doc.moveDown();
+
+  doc.fontSize(14).text("Bill To:");
+  doc.fontSize(12).text(p.customer.name);
+  if (p.customer.address) doc.fontSize(10).text(p.customer.address);
   doc.moveDown();
 
   // Table header
-  const headerY = doc.y;
-  doc.font("Helvetica-Bold");
-  doc.text("Description", 50, headerY);
-  doc.text("Qty", 350, headerY);
-  doc.text("Unit Price", 400, headerY, { width: 90, align: "right" });
-  doc.text("Line Total", 500, headerY, { width: 90, align: "right" });
-  doc.moveDown().moveDown();
+  doc.fontSize(12)
+    .text("Description", 50, doc.y, { continued: true })
+    .text("Qty", 350, doc.y, { continued: true })
+    .text("Unit", 400, doc.y, { continued: true })
+    .text("Line", 470);
+  doc.moveTo(50, doc.y + 2).lineTo(560, doc.y + 2).stroke();
 
-  // Lines
-  doc.font("Helvetica");
   let total = 0;
-  payload.lines.forEach((line) => {
-    const lineTotal = (line.qty ?? 0) * (line.unitPrice ?? 0);
+  p.lines.forEach((l) => {
+    const lineTotal = l.qty * l.unitPrice;
     total += lineTotal;
-
-    const y = doc.y;
-    doc.text(line.description ?? "", 50, y);
-    doc.text(String(line.qty ?? 0), 350, y);
-    doc.text((line.unitPrice ?? 0).toFixed(2), 400, y, { width: 90, align: "right" });
-    doc.text(lineTotal.toFixed(2), 500, y, { width: 90, align: "right" });
-    doc.moveDown();
+    doc.text(l.description, 50, doc.y + 8, { continued: true })
+      .text(String(l.qty), 350, doc.y, { continued: true })
+      .text(`${l.unitPrice.toFixed(2)} ${p.currency}`, 400, doc.y, { continued: true })
+      .text(`${lineTotal.toFixed(2)} ${p.currency}`, 470);
   });
 
   doc.moveDown();
-  doc.font("Helvetica-Bold").text("TOTAL", 400, doc.y, { width: 90, align: "right" });
-  doc.text(total.toFixed(2), 500, doc.y, { width: 90, align: "right" });
-
-  if (payload.notes) {
-    doc.moveDown().font("Helvetica").text(`Notes: ${payload.notes}`);
+  if (p.notes) {
+    doc.text("Notes:");
+    doc.fontSize(10).text(p.notes);
+    doc.fontSize(12);
   }
 
-  // Finalize the PDF streams
-  doc.end();
+  doc.moveDown();
+  doc.fontSize(14).text(`Total: ${total.toFixed(2)} ${p.currency}`, { align: "right" });
+}
 
-  // Make sure the file is fully written before finishing (prevents truncation)
-  await new Promise<void>((resolve, reject) => {
-    fileStream.on("finish", resolve);
-    fileStream.on("error", reject);
-  });
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // GET -> simple health/route check
+  if (req.method !== "POST") {
+    return res.status(200).json({ ok: true, route: "/api/invoices/create" });
+  }
 
-  // Do not send JSON here; the PDF stream already went to the response.
+  try {
+    const p = req.body as InvoicePayload;
+
+    if (!p || !p.invoiceNumber || !p.company?.name || !p.customer?.name || !Array.isArray(p.lines)) {
+      return res.status(400).json({ ok: false, error: "Invalid payload" });
+    }
+
+    const doc = new PDFDocument({ size: "A4", margin: 50 });
+
+    // Collect bytes into a buffer
+    const chunks: Buffer[] = [];
+    doc.on("data", (c) => chunks.push(c));
+    doc.on("error", (e) => {
+      console.error("[invoice] pdfkit error", e);
+      if (!res.headersSent) res.status(500).json({ ok: false, error: "PDF error" });
+    });
+
+    doc.on("end", () => {
+      const pdf = Buffer.concat(chunks);
+
+      // Ensure save directory exists
+      const outDir = path.join(process.cwd(), "private", "invoices");
+      fs.mkdirSync(outDir, { recursive: true });
+
+      // Save to disk
+      const outFile = path.join(outDir, `${p.invoiceNumber}.pdf`);
+      try {
+        fs.writeFileSync(outFile, pdf);
+        console.log("[invoice] saved:", outFile);
+      } catch (e) {
+        console.error("[invoice] save failed:", e);
+      }
+
+      // Send PDF to client (inline if ?preview=1)
+      const inline = String(req.query.preview ?? "") === "1";
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `${inline ? "inline" : "attachment"}; filename="${p.invoiceNumber}.pdf"`
+      );
+      res.status(200).send(pdf);
+    });
+
+    // Draw the PDF
+    renderInvoice(doc, p);
+    doc.end();
+  } catch (e: any) {
+    console.error("[invoice] handler error", e);
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: e?.message || "Unknown error" });
+    }
+  }
 }
