@@ -1,5 +1,4 @@
 // src/pages/api/invoices/create.ts
-// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { buildInvoicePdf, type InvoicePayload } from '@/lib/pdf';
 import { sendInvoiceEmail } from '@/lib/mailer';
@@ -13,8 +12,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Next automatically parses JSON when Content-Type is application/json.
-  const payload = (req.body || {}) as InvoicePayload;
+  // ---- Robust JSON decode (handles string body or object body) ----
+  let payload: InvoicePayload | undefined;
+  try {
+    const b: any = req.body;
+    payload = typeof b === 'string' ? (JSON.parse(b) as InvoicePayload) : (b as InvoicePayload);
+  } catch {
+    return res.status(400).json({ error: 'Invalid JSON' });
+  }
+  // ----------------------------------------------------------------
+
   if (!payload?.company?.name || !payload?.customer?.name || !payload?.lines?.length) {
     return res.status(400).json({ error: 'Missing required invoice fields' });
   }
@@ -22,7 +29,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const pdf = await buildInvoicePdf(payload);
   const filename = `INV-${new Date().toISOString().slice(0,10).replace(/-/g,'')}.pdf`;
 
-  // Optionally send email
+  // Optional email
   let emailed = false;
   if (payload.email && payload.customer?.email) {
     try {
@@ -33,12 +40,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         filename,
       });
       emailed = true;
-    } catch (err) {
-      console.error('Email send failed:', err);
+    } catch (e) {
+      console.error('Email send failed:', e);
     }
   }
 
-  // Decide response format
+  // PDF only if explicitly requested
   const wantsPdf =
     (typeof req.headers.accept === 'string' && req.headers.accept.includes('application/pdf')) ||
     req.query.format === 'pdf';
@@ -49,11 +56,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).send(pdf);
   }
 
-  // Default JSON response
-  return res.status(200).json({
-    ok: true,
-    filename,
-    size: pdf.length,
-    emailed,
-  });
+  return res.status(200).json({ ok: true, filename, size: pdf.length, emailed });
 }
