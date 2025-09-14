@@ -1,0 +1,17 @@
+{
+  "invoiceNumber": "INV-000123",
+  "issuedAt": "2025-09-12T12:00:00.000Z",
+  "currency": "GBP",
+  "company": { "name": "FuelFlow", "address": "1 Aviation Way\nLondon\nUK" },
+  "customer": {
+    "name": "Test Customer",
+    "email": "YOUR_EMAIL_HERE@example.com",
+    "address": "2 Runway Road\nGlasgow\nUK"
+  },
+  "lines": [
+    { "description": "Fuel Uplift — A320", "qty": 1, "unitPrice": 450.25 },
+    { "description": "Ramp Service",       "qty": 1, "unitPrice": 75.00 }
+  ],
+  "notes": "Thank you for flying with us.",
+  "email": true
+}
