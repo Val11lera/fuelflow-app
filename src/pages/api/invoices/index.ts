@@ -1,7 +1,4 @@
 // src/pages/api/invoices/index.ts
-// src/pages/api/invoices/index.ts
-// src/pages/api/invoices/index.ts
-// src/pages/api/invoices/index.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
