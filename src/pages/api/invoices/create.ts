@@ -1,177 +1,199 @@
 // src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
+import nodemailer from "nodemailer";
+import fs from "fs";
+import path from "path";
 import PDFDocument from "pdfkit";
-import { Resend } from "resend";
 
-/** ---------- Types (keep simple to avoid TS build issues) ---------- */
-type LineItem = { description: string; qty: number; unitPrice: number };
+type Line = { description: string; qty: number; unitPrice: number };
+type Party = { name: string; email?: string; address?: string };
 type InvoicePayload = {
   invoiceNumber: string;
-  issuedAt: string; // ISO date
-  currency: string; // e.g. "GBP"
-  company: { name: string; address: string };
-  customer: { id: string; name: string; email: string; address: string };
-  lines: LineItem[];
+  issuedAt: string;            // ISO string
+  currency: string;            // e.g. "GBP"
+  company: Party;
+  customer: Party;
+  lines: Line[];
   notes?: string;
-  email?: boolean; // true -> send email
+  email?: boolean;             // if true we will send an email
 };
 
-/** ---------- Small helpers ---------- */
-function safeString(v: unknown, fallback = ""): string {
-  return typeof v === "string" ? v : fallback;
+function formatCurrency(value: number, currency: string) {
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 2,
+  }).format(value);
 }
 
-function calcTotal(lines: LineItem[]): number {
-  return lines.reduce((acc, l) => acc + l.qty * l.unitPrice, 0);
-}
+/** Build a PDF into a Buffer */
+function buildPdf(p: InvoicePayload): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: "A4", margin: 50 });
 
-/** Render the invoice into the provided PDFKit document */
-function renderInvoice(doc: any, p: InvoicePayload) {
-  // Header
-  doc.fontSize(20).text("INVOICE", { align: "right" });
-  doc.moveDown(0.5);
+    const chunks: Buffer[] = [];
+    doc.on("data", (c) => chunks.push(c as Buffer));
+    doc.on("error", reject);
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
 
-  doc
-    .fontSize(12)
-    .text(`Invoice #: ${p.invoiceNumber}`, { align: "right" })
-    .text(`Issued: ${new Date(p.issuedAt).toLocaleDateString()}`, { align: "right" });
-
-  doc.moveDown();
-  doc
-    .fontSize(14)
-    .text(p.company.name)
-    .fontSize(10)
-    .text(p.company.address);
-  doc.moveDown(1);
-
-  // Bill to
-  doc
-    .fontSize(12)
-    .text("Bill To:", { underline: true })
-    .moveDown(0.2)
-    .fontSize(11)
-    .text(p.customer.name)
-    .text(p.customer.address);
-
-  doc.moveDown(1);
-
-  // Table header
-  doc.fontSize(11).text("Description", 50).text("Qty", 350).text("Unit", 400).text("Amount", 470);
-  doc.moveTo(50, doc.y + 2).lineTo(560, doc.y + 2).stroke();
-  doc.moveDown(0.6);
-
-  // Lines
-  p.lines.forEach((l) => {
-    const amount = l.qty * l.unitPrice;
+    // --- header
+    doc.fontSize(22).text("INVOICE", { align: "right" }).moveDown();
     doc
-      .fontSize(10)
-      .text(l.description, 50)
-      .text(l.qty.toString(), 350)
-      .text(l.unitPrice.toFixed(2), 400)
-      .text(amount.toFixed(2), 470);
-    doc.moveDown(0.2);
+      .fontSize(12)
+      .text(p.company.name)
+      .text(p.company.address || "")
+      .moveDown();
+
+    doc
+      .text(`Invoice #: ${p.invoiceNumber}`)
+      .text(`Issued: ${new Date(p.issuedAt).toLocaleDateString()}`)
+      .moveDown();
+
+    // --- bill to
+    doc.fontSize(12).text("Bill To:", { underline: true });
+    doc.text(p.customer.name);
+    if (p.customer.address) doc.text(p.customer.address);
+    if (p.customer.email) doc.text(p.customer.email);
+    doc.moveDown();
+
+    // --- table
+    const tableTop = doc.y;
+    doc.fontSize(12).text("Description", 50, tableTop);
+    doc.text("Qty", 350, tableTop);
+    doc.text("Unit", 400, tableTop, { width: 80, align: "right" });
+    doc.text("Line", 500, tableTop, { width: 80, align: "right" });
+    doc.moveDown();
+
+    let total = 0;
+    p.lines.forEach((l) => {
+      const line = l.qty * l.unitPrice;
+      total += line;
+
+      doc.text(l.description, 50);
+      doc.text(String(l.qty), 350);
+      doc.text(formatCurrency(l.unitPrice, p.currency), 400, undefined, {
+        width: 80,
+        align: "right",
+      });
+      doc.text(formatCurrency(line, p.currency), 500, undefined, {
+        width: 80,
+        align: "right",
+      });
+      doc.moveDown();
+    });
+
+    doc.moveDown();
+    doc.fontSize(13).text(`Total: ${formatCurrency(total, p.currency)}`, {
+      align: "right",
+    });
+
+    if (p.notes) {
+      doc.moveDown().fontSize(11).text(p.notes);
+    }
+
+    doc.end();
   });
+}
 
-  doc.moveDown(0.6);
-  doc.moveTo(50, doc.y + 2).lineTo(560, doc.y + 2).stroke();
+async function sendEmailWithPdf(
+  p: InvoicePayload,
+  pdfBuffer: Buffer
+): Promise<void> {
+  const host = process.env.SMTP_HOST;
+  const port = parseInt(process.env.SMTP_PORT || "587", 10);
+  const secure = String(process.env.SMTP_SECURE) === "true";
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const from = process.env.MAIL_FROM || user;
+  const bcc = process.env.MAIL_BCC || undefined;
 
-  // Total
-  const total = calcTotal(p.lines);
-  doc
-    .fontSize(12)
-    .text("TOTAL", 400, doc.y + 8)
-    .text(`${p.currency} ${total.toFixed(2)}`, 470, doc.y, { continued: false });
-
-  if (p.notes) {
-    doc.moveDown(2);
-    doc.fontSize(10).text("Notes:", { underline: true }).moveDown(0.2).text(p.notes);
+  if (!host || !user || !pass) {
+    throw new Error("SMTP environment variables are missing");
+  }
+  if (!p.customer.email) {
+    throw new Error("Customer email is missing in payload");
   }
 
-  doc.end();
-}
-
-/** Create a PDF Buffer from invoice payload */
-function pdfFromPayload(p: InvoicePayload): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    try {
-      const doc: any = new PDFDocument({ size: "A4", margin: 50 });
-      const chunks: Buffer[] = [];
-      doc.on("data", (c: Buffer) => chunks.push(c));
-      doc.on("end", () => resolve(Buffer.concat(chunks)));
-      renderInvoice(doc, p);
-    } catch (err) {
-      reject(err);
-    }
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass },
   });
-}
 
-/** Email the PDF using Resend (attachments expect Buffer; no contentType) */
-async function sendInvoiceEmail(pdf: Buffer, p: InvoicePayload): Promise<{ id?: string }> {
-  const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.MAIL_FROM;
-
-  if (!apiKey) throw new Error("Missing RESEND_API_KEY");
-  if (!from) throw new Error("Missing MAIL_FROM");
-
-  const resend = new Resend(apiKey);
   const filename = `${p.invoiceNumber}.pdf`;
-  const bcc = process.env.MAIL_BCC;
+  const subject = `Invoice ${p.invoiceNumber}`;
+  const total = p.lines.reduce((acc, l) => acc + l.qty * l.unitPrice, 0);
+  const totalFmt = formatCurrency(total, p.currency);
 
-  const result = await resend.emails.send({
-    from: from!,
-    to: [p.customer.email],
-    ...(bcc ? { bcc: [bcc] } : {}),
-    subject: `Invoice ${p.invoiceNumber}`,
-    text: `Hi ${p.customer.name},
+  await transporter.sendMail({
+    from,
+    to: p.customer.email,
+    bcc,
+    subject,
+    text: `Hello ${p.customer.name},
 
-Please find your invoice attached.
+Please find attached your invoice ${p.invoiceNumber} totaling ${totalFmt}.
 
 Thank you,
-${p.company.name}`,
+${p.company.name}
+    `,
+    html: `<p>Hello ${p.customer.name},</p>
+<p>Please find attached your invoice <strong>${p.invoiceNumber}</strong> totaling <strong>${totalFmt}</strong>.</p>
+<p>Thank you,<br/>${p.company.name}</p>`,
     attachments: [
       {
         filename,
-        content: pdf, // Buffer is correct; do not set contentType
+        content: pdfBuffer,           // Buffer (recommended)
+        contentType: "application/pdf",
       },
     ],
   });
-
-  return { id: (result as any)?.data?.id };
 }
 
-/** ---------- Route handler ---------- */
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).end("Method Not Allowed");
   }
 
   try {
-    const p = req.body as InvoicePayload;
+    const payload = req.body as InvoicePayload;
 
-    // light validation
-    if (!p || !p.invoiceNumber || !p.customer?.email || !Array.isArray(p.lines) || !p.lines.length) {
-      return res.status(400).json({ ok: false, error: "Invalid payload" });
+    // 1) Build PDF
+    const pdfBuffer = await buildPdf(payload);
+
+    // 2) (Dev only) save a local copy to /private/invoices
+    if (process.env.NODE_ENV !== "production") {
+      const outDir = path.join(process.cwd(), "private", "invoices");
+      fs.mkdirSync(outDir, { recursive: true });
+      const outPath = path.join(outDir, `${payload.invoiceNumber}.pdf`);
+      fs.writeFileSync(outPath, pdfBuffer);
     }
 
-    const pdf = await pdfFromPayload(p);
-
-    let emailId: string | undefined;
-    if (p.email) {
-      const sent = await sendInvoiceEmail(pdf, p);
-      emailId = sent.id;
+    // 3) Email if requested
+    let emailed = false;
+    if (payload.email) {
+      await sendEmailWithPdf(payload, pdfBuffer);
+      emailed = true;
     }
 
     return res.status(200).json({
       ok: true,
-      emailed: Boolean(p.email),
-      emailId: emailId ?? null,
-      bytes: pdf.length,
       route: "/api/invoices/create",
+      emailed,
+      saved: process.env.NODE_ENV !== "production",
     });
   } catch (err: any) {
-    console.error(err);
-    return res.status(500).json({ ok: false, error: safeString(err?.message, "Server error") });
+    console.error("Invoice create failed:", err);
+    return res.status(500).json({
+      ok: false,
+      error: "INVOICE_CREATE_FAILED",
+      message: err?.message || "Unknown error",
+    });
   }
 }
 
