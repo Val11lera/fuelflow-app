@@ -1,45 +1,44 @@
 // src/lib/mailer.ts
 // src/lib/mailer.ts
-// Uses Resend to send the PDF. No 'contentType' field!
-import { Resend } from 'resend';
+// src/lib/mailer.ts
+import { Resend } from "resend";
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const MAIL_FROM = process.env.MAIL_FROM || 'FuelFlow <onboarding@resend.dev>';
-const MAIL_BCC = process.env.MAIL_BCC; // optional
+const resendKey = process.env.RESEND_API_KEY || "";
+const fromEmail = process.env.MAIL_FROM || "FuelFlow <onboarding@resend.dev>";
+const bccList = (process.env.MAIL_BCC || "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
 
-if (!RESEND_API_KEY) {
-  console.warn('RESEND_API_KEY is not set. Emails will be skipped.');
-}
+const resend = resendKey ? new Resend(resendKey) : null;
 
-const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
-
-export async function sendInvoiceEmail(opts: {
+export type SendInvoiceArgs = {
   to: string;
   subject: string;
-  text?: string;
-  html?: string;
-  pdf: Buffer;
+  html: string;
   filename: string;
-}) {
-  if (!resend) return { skipped: true };
+  pdfBase64: string; // base64-encoded PDF
+};
 
-  const resp = await resend.emails.send({
-    from: MAIL_FROM,
-    to: opts.to,
-    ...(MAIL_BCC ? { bcc: [MAIL_BCC] } : {}),
-    subject: opts.subject,
-    text: opts.text ?? 'Please find your invoice attached.',
-    html:
-      opts.html ??
-      `<p>Please find your invoice attached.</p><p>Thanks for flying with us.</p>`,
+export async function sendInvoiceEmail(args: SendInvoiceArgs) {
+  if (!resend) {
+    return { ok: false, error: "RESEND_API_KEY missing" as const };
+  }
+
+  const { to, subject, html, filename, pdfBase64 } = args;
+
+  const { error } = await resend.emails.send({
+    from: fromEmail,
+    to,
+    bcc: bccList.length ? bccList : undefined,
+    subject,
+    html,
     attachments: [
-      {
-        // IMPORTANT: for Resend this must be 'content' with Base64.
-        filename: opts.filename,
-        content: opts.pdf.toString('base64'),
-      },
+      // NOTE: Resend attachments expect only `filename` and `content` (base64).
+      { filename, content: pdfBase64 },
     ],
   });
 
-  return resp;
+  if (error) return { ok: false, error: String(error) as const };
+  return { ok: true as const };
 }
