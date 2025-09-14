@@ -2,51 +2,50 @@
 // src/lib/mailer.ts
 import { Resend } from 'resend';
 
-const resend = new Resend(process.env.RESEND_API_KEY!);
+if (!process.env.RESEND_API_KEY) {
+  throw new Error('Missing RESEND_API_KEY');
+}
+if (!process.env.MAIL_FROM) {
+  throw new Error('Missing MAIL_FROM');
+}
 
-type SendArgs = {
-  to: string;
-  subject: string;
-  text: string;
-  pdf: Buffer;
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+export type Attachment = {
   filename: string;
-  bcc?: string | undefined | null;
+  base64: string; // base64 string of the PDF
 };
 
-export async function sendInvoiceMail({
-  to,
-  subject,
-  text,
-  pdf,
-  filename,
-  bcc,
-}: SendArgs) {
-  if (!process.env.RESEND_API_KEY) {
-    throw new Error('RESEND_API_KEY is missing');
-  }
-  if (!process.env.MAIL_FROM) {
-    throw new Error('MAIL_FROM is missing');
-  }
+export async function sendInvoiceEmail(opts: {
+  to: string;
+  subject: string;
+  html: string;
+  attachment?: Attachment;
+  bcc?: string;
+}) {
+  const attachments = opts.attachment
+    ? [
+        {
+          filename: opts.attachment.filename,
+          // Resend expects the base64 content in the "content" field
+          content: opts.attachment.base64,
+          // If you want to be explicit, Resend supports "type" (NOT contentType)
+          // type: 'application/pdf',
+        } as const,
+      ]
+    : undefined;
 
-  // Resend expects base64 for attachments
-  const base64 = pdf.toString('base64');
-
-  const { error } = await resend.emails.send({
-    from: process.env.MAIL_FROM!,
-    to,
-    ...(bcc ? { bcc } : {}),
-    subject,
-    text,
-    attachments: [
-      {
-        filename,
-        content: base64,
-        contentType: 'application/pdf',
-      },
-    ],
+  const result = await resend.emails.send({
+    from: process.env.MAIL_FROM!, // must be a verified sender in Resend
+    to: opts.to,
+    bcc: opts.bcc,
+    subject: opts.subject,
+    html: opts.html,
+    attachments,
   });
 
-  if (error) {
-    throw error;
+  if (result.error) {
+    throw new Error(`Resend error: ${JSON.stringify(result.error)}`);
   }
+  return result;
 }
