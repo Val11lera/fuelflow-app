@@ -4,13 +4,14 @@
   "currency": "GBP",
   "company": { "name": "FuelFlow", "address": "1 Aviation Way\nLondon\nUK" },
   "customer": {
-    "name": "Test Customer",
-    "email": "YOUR_EMAIL_HERE@example.com",
+    "id": "cust_abc123",
+    "name": "Jane Pilot",
+    "email": "jane@example.com",
     "address": "2 Runway Road\nGlasgow\nUK"
   },
   "lines": [
     { "description": "Fuel Uplift — A320", "qty": 1, "unitPrice": 450.25 },
-    { "description": "Ramp Service",       "qty": 1, "unitPrice": 75.00 }
+    { "description": "Ramp Service", "qty": 1, "unitPrice": 75.0 }
   ],
   "notes": "Thank you for flying with us.",
   "email": true
