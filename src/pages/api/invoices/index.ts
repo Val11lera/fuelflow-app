@@ -1,5 +1,6 @@
 // src/pages/api/invoices/index.ts
 // src/pages/api/invoices/index.ts
+// src/pages/api/invoices/index.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -7,5 +8,5 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     res.setHeader("Allow", "GET");
     return res.status(405).end("Method Not Allowed");
   }
-  return res.status(200).json({ ok: true, route: "/api/invoices" });
+  res.status(200).json({ ok: true, route: "/api/invoices" });
 }
