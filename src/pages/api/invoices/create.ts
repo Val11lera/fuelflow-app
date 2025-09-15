@@ -1,67 +1,65 @@
 // src/pages/api/invoices/create.ts
-// src/pages/api/invoices/create.ts
-// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import PDFDocument from "pdfkit";
-import { sendInvoiceEmail } from "../../../lib/mailer"; // 3x .. from /pages/api/invoices
+import { sendInvoiceEmail } from "../../../lib/mailer"; // adjust if you use "@/lib/mailer"
 
 type Line = { description: string; qty: number; unitPrice: number };
 type InvoicePayload = {
   company: { name: string; address?: string };
-  customer: { name: string; email?: string; address?: string };
+  customer: { name: string; email: string; address?: string };
   lines: Line[];
   notes?: string;
-  email?: boolean;   // if true, we'll email
-  to?: string;       // optional override for recipient
+  email?: boolean; // send email if true
+  to?: string;     // optional override recipient(s), comma-separated
+  bcc?: string;    // optional bcc, comma-separated
 };
 
-function renderInvoice(doc: PDFDocument, p: InvoicePayload) {
-  const total = p.lines.reduce((acc, l) => acc + l.qty * l.unitPrice, 0);
+// ✅ Avoid typing `PDFDocument` namespace; use the instance type of the constructor.
+type PDFDoc = InstanceType<typeof PDFDocument>;
 
+function renderInvoice(doc: PDFDoc, p: InvoicePayload) {
   doc.fontSize(22).text("INVOICE", { align: "right" }).moveDown();
 
   doc.fontSize(12).text(p.company.name);
   if (p.company.address) doc.text(p.company.address);
   doc.moveDown();
 
-  doc.fontSize(12).text(`Bill To: ${p.customer.name}`);
+  doc.text(`Bill To: ${p.customer.name}`);
   if (p.customer.address) doc.text(p.customer.address);
   doc.moveDown();
 
-  doc.moveDown(0.5);
-  doc.fontSize(12).text("Description", 50, doc.y, { continued: true });
-  doc.text("Qty", 300, undefined, { continued: true });
-  doc.text("Unit", 350, undefined, { continued: true });
-  doc.text("Line", 420);
+  doc.text("Items:").moveDown(0.5);
 
-  doc.moveDown(0.5);
+  const total = p.lines.reduce((acc, l) => acc + l.qty * l.unitPrice, 0);
+
   p.lines.forEach((l) => {
-    doc.text(l.description, 50, doc.y, { continued: true });
-    doc.text(String(l.qty), 300, undefined, { continued: true });
-    doc.text(l.unitPrice.toFixed(2), 350, undefined, { continued: true });
-    doc.text((l.qty * l.unitPrice).toFixed(2), 420);
+    doc.text(`${l.description} — x${l.qty} @ £${l.unitPrice.toFixed(2)}`);
   });
 
-  doc.moveDown();
-  doc.text(`Total: ${total.toFixed(2)}`, { align: "right" });
+  doc.moveDown().fontSize(14).text(`Total: £${total.toFixed(2)}`, { align: "right" });
 
   if (p.notes) {
-    doc.moveDown();
-    doc.text(p.notes);
+    doc.moveDown().fontSize(10).text(p.notes);
   }
+
+  doc.end();
 }
 
-function makePdfBuffer(p: InvoicePayload): Promise<Buffer> {
+function makePdfBase64(p: InvoicePayload): Promise<{ filename: string; base64: string }> {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    const doc: PDFDoc = new PDFDocument({ size: "A4", margin: 50 });
     const chunks: Buffer[] = [];
 
-    doc.on("data", (d) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(d)));
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("data", (buf: Buffer) => chunks.push(buf));
     doc.on("error", reject);
+    doc.on("end", () => {
+      const buffer = Buffer.concat(chunks);
+      const base64 = buffer.toString("base64");
+      const ts = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
+      resolve({ filename: `INV-${ts}.pdf`, base64 });
+    });
 
     renderInvoice(doc, p);
-    doc.end();
   });
 }
 
@@ -70,63 +68,66 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json({ ok: true, route: "/api/invoices/create" });
   }
 
-  const p = req.body as InvoicePayload;
+  try {
+    const p = req.body as InvoicePayload;
 
-  // --- Basic validation
-  if (
-    !p?.company?.name ||
-    !p?.customer?.name ||
-    !Array.isArray(p?.lines) ||
-    p.lines.length === 0
-  ) {
-    return res.status(400).json({ error: "Missing required fields" });
-  }
-
-  // Build the PDF
-  const pdfBuffer = await makePdfBuffer(p);
-  const filename = `INV-${Date.now()}.pdf`;
-
-  // If client asked for a PDF file (download stream)
-  if (req.query.format === "pdf") {
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-    return res.status(200).send(pdfBuffer);
-  }
-
-  // Otherwise, JSON response; email if requested
-  let emailed = false;
-  let emailError: string | undefined;
-
-  if (p.email) {
-    const to = p.to ?? p.customer.email;
-    const from = process.env.MAIL_FROM;
-    if (!to || !from) {
-      return res
-        .status(400)
-        .json({ error: "Missing email recipient or MAIL_FROM env var" });
+    if (
+      !p?.company?.name ||
+      !p?.customer?.name ||
+      !p?.customer?.email ||
+      !Array.isArray(p?.lines) ||
+      p.lines.length === 0
+    ) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const base64 = pdfBuffer.toString("base64");
-    const subject = `${p.company.name} Invoice`;
-    const html = `<p>Hi ${p.customer.name},</p><p>Attached is your invoice from ${p.company.name}.</p>`;
+    const { filename, base64 } = await makePdfBase64(p);
 
-    const mail = await sendInvoiceEmail({
-      to,
-      from,
-      subject,
-      html,
-      attachment: { filename, base64 },
-    });
+    // If client wants the raw PDF
+    if ((req.query.format as string) === "pdf") {
+      const buffer = Buffer.from(base64, "base64");
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+      return res.status(200).send(buffer);
+    }
 
-    emailed = mail.ok;
-    if (!mail.ok) emailError = mail.error;
+    // Otherwise return JSON and optionally email
+    let emailed = false;
+    let emailId: string | null = null;
+
+    if (p.email) {
+      const to = p.to ?? p.customer.email;
+      const from = process.env.MAIL_FROM;
+      if (!from) return res.status(400).json({ error: "MAIL_FROM env var is missing" });
+
+      const subject = `Invoice ${filename.replace(".pdf", "")}`;
+      const html = `
+        <p>Hello ${p.customer.name},</p>
+        <p>Attached is your invoice <strong>${filename}</strong> from ${p.company.name}.</p>
+        <p>Thank you!</p>
+      `;
+
+      const result = await sendInvoiceEmail({
+        to,
+        from,
+        bcc: p.bcc ?? process.env.MAIL_BCC ?? "",
+        subject,
+        html,
+        pdfFilename: filename,
+        pdfBase64: base64,
+      });
+
+      if (!result.ok) {
+        return res.status(502).json({ error: "Email failed", detail: result.error });
+      }
+
+      emailed = true;
+      emailId = result.id;
+    }
+
+    return res.status(200).json({ ok: true, filename, emailed, emailId });
+  } catch (e: any) {
+    return res.status(500).json({ error: "Server error", detail: String(e?.message ?? e) });
   }
-
-  return res.status(200).json({
-    ok: true,
-    filename,
-    emailed,
-    ...(emailError ? { emailError } : {}),
-  });
 }
 
