@@ -1,42 +1,41 @@
 // src/lib/mailer.ts
-import { Resend } from "resend";
+import { Resend } from 'resend';
 
-export type MailResult =
-  | { ok: true }
-  | { ok: false; error: string };
-
-export async function sendInvoiceEmail(args: {
-  to: string;
-  from: string;
+type SendInvoiceArgs = {
+  to: string;               // single address (you can pass comma-separated if you prefer)
+  from: string;             // e.g. "FuelFlow <onboarding@resend.dev>"
   subject: string;
   html: string;
-  attachment: { filename: string; base64: string };
-}): Promise<MailResult> {
+  pdfFilename: string;
+  pdfBase64: string;        // the PDF as base64
+  bcc?: string;             // optional comma-separated
+};
+
+export async function sendInvoiceEmail(args: SendInvoiceArgs) {
+  const resend = new Resend(process.env.RESEND_API_KEY!);
+
   try {
-    if (!process.env.RESEND_API_KEY) {
-      return { ok: false, error: "RESEND_API_KEY is missing" };
-    }
+    const toList = args.to.split(',').map(s => s.trim());
+    const bccList = args.bcc ? args.bcc.split(',').map(s => s.trim()) : undefined;
 
-    const resend = new Resend(process.env.RESEND_API_KEY);
-
-    const { error } = await resend.emails.send({
+    const result = await resend.emails.send({
+      to: toList,
       from: args.from,
-      to: [args.to],
       subject: args.subject,
       html: args.html,
-      // Resend expects attachments: [{ filename, content }]
+      bcc: bccList,
+      // IMPORTANT: Resend expects attachments as an array, with Buffer|string content.
       attachments: [
         {
-          filename: args.attachment.filename,
-          content: args.attachment.base64,
+          filename: args.pdfFilename,
+          content: Buffer.from(args.pdfBase64, 'base64'),
         },
       ],
     });
 
-    if (error) return { ok: false, error: String(error) };
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: String(e) };
+    return { ok: true as const, id: result?.id ?? null };
+  } catch (error: any) {
+    return { ok: false as const, error: String(error?.message ?? error) };
   }
 }
 
