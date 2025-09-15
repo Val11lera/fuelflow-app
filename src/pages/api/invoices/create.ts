@@ -1,7 +1,11 @@
 // src/pages/api/invoices/create.ts
+// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import PDFDocument from "pdfkit";
-import { sendInvoiceEmail } from "../../../lib/mailer"; // adjust if you use "@/lib/mailer"
+// If you have a TS path alias (baseUrl = "src"), prefer this:
+import { sendInvoiceEmail } from "@/lib/mailer";
+// Otherwise comment the line above and use this relative path instead:
+// import { sendInvoiceEmail } from "../../../lib/mailer";
 
 type Line = { description: string; qty: number; unitPrice: number };
 type InvoicePayload = {
@@ -14,7 +18,7 @@ type InvoicePayload = {
   bcc?: string;    // optional bcc, comma-separated
 };
 
-// ✅ Avoid typing `PDFDocument` namespace; use the instance type of the constructor.
+// ✅ DO NOT write "doc: PDFDocument" (that triggers the namespace type error).
 type PDFDoc = InstanceType<typeof PDFDocument>;
 
 function renderInvoice(doc: PDFDoc, p: InvoicePayload) {
@@ -28,10 +32,9 @@ function renderInvoice(doc: PDFDoc, p: InvoicePayload) {
   if (p.customer.address) doc.text(p.customer.address);
   doc.moveDown();
 
-  doc.text("Items:").moveDown(0.5);
-
   const total = p.lines.reduce((acc, l) => acc + l.qty * l.unitPrice, 0);
 
+  doc.text("Items:").moveDown(0.5);
   p.lines.forEach((l) => {
     doc.text(`${l.description} — x${l.qty} @ £${l.unitPrice.toFixed(2)}`);
   });
@@ -83,7 +86,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const { filename, base64 } = await makePdfBase64(p);
 
-    // If client wants the raw PDF
+    // Serve real PDF if requested
     if ((req.query.format as string) === "pdf") {
       const buffer = Buffer.from(base64, "base64");
       res.setHeader("Content-Type", "application/pdf");
@@ -91,7 +94,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(200).send(buffer);
     }
 
-    // Otherwise return JSON and optionally email
+    // Otherwise JSON; email if asked
     let emailed = false;
     let emailId: string | null = null;
 
@@ -117,12 +120,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         pdfBase64: base64,
       });
 
-      if (!result.ok) {
+      // ✅ works with the MailResult union without type errors
+      if ("error" in result) {
         return res.status(502).json({ error: "Email failed", detail: result.error });
       }
 
       emailed = true;
-      emailId = result.id;
+      emailId = result.id ?? null;
     }
 
     return res.status(200).json({ ok: true, filename, emailed, emailId });
@@ -130,4 +134,3 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: "Server error", detail: String(e?.message ?? e) });
   }
 }
-
