@@ -3,6 +3,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import PDFDocument from "pdfkit";
 import { sendInvoiceEmail } from "@/lib/mailer";
+import { supabase } from "@/lib/supabase";   // <-- add this
 
 type Line = { description: string; qty: number; unitPrice: number };
 type InvoicePayload = {
@@ -10,22 +11,16 @@ type InvoicePayload = {
   customer: { name: string; email: string; address?: string };
   lines: Line[];
   notes?: string;
-  email?: boolean; // send email if true
-  to?: string;     // optional override recipient(s), comma-separated
-  bcc?: string;    // optional bcc, comma-separated
+  email?: boolean;
 };
 
-// Important: do NOT use "PDFDocument" as a *type*.
-type PDFDoc = InstanceType<typeof PDFDocument>;
-
-function renderInvoice(doc: PDFDoc, p: InvoicePayload) {
+function renderInvoice(doc: any, p: InvoicePayload) {
   doc.fontSize(22).text("INVOICE", { align: "right" }).moveDown();
-
   doc.fontSize(12).text(p.company.name);
   if (p.company.address) doc.text(p.company.address);
   doc.moveDown();
 
-  doc.text(`Bill To: ${p.customer.name}`);
+  doc.text(`Bill to: ${p.customer.name}`);
   if (p.customer.address) doc.text(p.customer.address);
   doc.moveDown();
 
@@ -47,7 +42,7 @@ function renderInvoice(doc: PDFDoc, p: InvoicePayload) {
 
 function makePdfBase64(p: InvoicePayload): Promise<{ filename: string; base64: string }> {
   return new Promise((resolve, reject) => {
-    const doc: PDFDoc = new PDFDocument({ size: "A4", margin: 50 });
+    const doc = new PDFDocument({ size: "A4", margin: 48 });
     const chunks: Buffer[] = [];
 
     doc.on("data", (buf: Buffer) => chunks.push(buf));
@@ -59,65 +54,53 @@ function makePdfBase64(p: InvoicePayload): Promise<{ filename: string; base64: s
       resolve({ filename: `INV-${ts}.pdf`, base64 });
     });
 
-    renderInvoice(doc, p);
+    renderInvoice(doc as any, p);
   });
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "POST") {
-    return res.status(200).json({ ok: true, route: "/api/invoices/create" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
     const p = req.body as InvoicePayload;
 
-    if (
-      !p?.company?.name ||
-      !p?.customer?.name ||
-      !p?.customer?.email ||
-      !Array.isArray(p?.lines) ||
-      p.lines.length === 0
-    ) {
+    if (!p?.company?.name || !p?.customer?.name || !p?.customer?.email || !Array.isArray(p?.lines) || p.lines.length === 0) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
     const { filename, base64 } = await makePdfBase64(p);
 
-    // Return a *real* PDF if requested
+    // Serve real PDF when requested
     if ((req.query.format as string) === "pdf") {
+      const buffer = Buffer.from(base64, "base64");
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-      return res.status(200).send(Buffer.from(base64, "base64"));
+      return res.status(200).send(buffer);
     }
 
-    // Otherwise return JSON, and email if requested
+    // Optionally email via Resend
     let emailed = false;
     let emailId: string | null = null;
 
     if (p.email) {
-      const to = p.to ?? p.customer.email;
-      const from = process.env.MAIL_FROM;
-      if (!from) return res.status(400).json({ error: "MAIL_FROM env var is missing" });
-
+      const from = process.env.MAIL_FROM!;
       const subject = `Invoice ${filename.replace(".pdf", "")}`;
       const html = `
         <p>Hello ${p.customer.name},</p>
-        <p>Attached is your invoice <strong>${filename}</strong> from ${p.company.name}.</p>
+        <p>Attached is your invoice <strong>${filename}</strong>.</p>
         <p>Thank you!</p>
       `;
-
       const result = await sendInvoiceEmail({
-        to,
+        to: p.customer.email,
         from,
-        bcc: p.bcc ?? process.env.MAIL_BCC ?? "",
         subject,
         html,
         pdfFilename: filename,
         pdfBase64: base64,
       });
 
-      // Proper union narrowing — avoids "Property 'error' does not exist…" TS error
-      if ("error" in result) {
+      if (!result.ok) {
+        // Return JSON, but include the email failure
         return res.status(502).json({ error: "Email failed", detail: result.error });
       }
 
@@ -125,8 +108,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       emailId = result.id ?? null;
     }
 
+    // ✅ Save to Supabase (always runs, regardless of email)
+    const total = p.lines.reduce((acc, l) => acc + l.qty * l.unitPrice, 0);
+    const { error: dbError } = await supabase.from("invoices").insert({
+      company_name: p.company.name,
+      customer_name: p.customer.name,
+      customer_email: p.customer.email ?? null,
+      total_cents: Math.round(total * 100),
+      pdf_filename: filename,
+      emailed,
+      payload: p
+    });
+
+    if (dbError) {
+      // Don’t fail the request if DB insert hiccups
+      return res.status(200).json({ ok: true, filename, emailed, emailId, dbWarning: dbError.message });
+    }
+
     return res.status(200).json({ ok: true, filename, emailed, emailId });
-  } catch (e: any) {
-    return res.status(500).json({ error: "Server error", detail: String(e?.message ?? e) });
+  } catch (err: any) {
+    return res.status(500).json({ error: "Server error", detail: String(err?.message ?? err) });
   }
 }
