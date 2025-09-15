@@ -1,4 +1,5 @@
 // src/lib/mailer.ts
+// src/lib/mailer.ts
 import { Resend } from "resend";
 
 export type MailOk = { ok: true; id: string | null };
@@ -12,7 +13,7 @@ type SendInvoiceArgs = {
   html: string;
   pdfFilename: string;
   pdfBase64: string;        // base64-encoded PDF
-  bcc?: string;             // optional "x@y.com,z@w.com"
+  bcc?: string;
 };
 
 export async function sendInvoiceEmail(args: SendInvoiceArgs): Promise<MailResult> {
@@ -23,7 +24,7 @@ export async function sendInvoiceEmail(args: SendInvoiceArgs): Promise<MailResul
   try {
     const resend = new Resend(process.env.RESEND_API_KEY);
 
-    const toList = args.to.split(",").map(s => s.trim()).filter(Boolean);
+    const toList  = args.to.split(",").map(s => s.trim()).filter(Boolean);
     const bccList = args.bcc ? args.bcc.split(",").map(s => s.trim()).filter(Boolean) : undefined;
 
     const { data, error } = await resend.emails.send({
@@ -32,7 +33,7 @@ export async function sendInvoiceEmail(args: SendInvoiceArgs): Promise<MailResul
       bcc: bccList,
       subject: args.subject,
       html: args.html,
-      // ✅ Resend attachments: { filename, content } (Buffer or base64 string)
+      // ✅ Resend wants { filename, content } (Buffer or base64 string). No contentType.
       attachments: [
         {
           filename: args.pdfFilename,
