@@ -13,7 +13,7 @@ type SendInvoiceArgs = {
   html: string;
   pdfFilename: string;
   pdfBase64: string;        // base64-encoded PDF
-  bcc?: string;
+  bcc?: string;             // optional "x@y.com,z@w.com"
 };
 
 export async function sendInvoiceEmail(args: SendInvoiceArgs): Promise<MailResult> {
@@ -33,7 +33,7 @@ export async function sendInvoiceEmail(args: SendInvoiceArgs): Promise<MailResul
       bcc: bccList,
       subject: args.subject,
       html: args.html,
-      // ✅ Resend wants { filename, content } (Buffer or base64 string). No contentType.
+      // Resend wants { filename, content } (Buffer or base64 string). No contentType.
       attachments: [
         {
           filename: args.pdfFilename,
