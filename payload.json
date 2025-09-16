@@ -1,6 +1,6 @@
 {
   "company": { "name": "FuelFlow" },
-  "customer": { "name": "Test User", "email": "you@example.com" },
+  "customer": { "name": "Test User", "email": "noreply.fuelflow@gmail.com" },
   "items": [
     { "description": "Diesel 1000L", "quantity": 1, "unitPrice": 1200 },
     { "description": "Delivery", "quantity": 1, "unitPrice": 75 }
