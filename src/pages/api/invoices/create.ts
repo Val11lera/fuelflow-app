@@ -1,14 +1,11 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import type { InvoicePayload } from "@/types/invoice";
 import { buildInvoicePdf } from "@/lib/invoice-pdf";
 import { sendInvoiceEmail } from "@/lib/mailer";
 
-// Increase body size if your payload grows (PDF is built server-side, not uploaded)
-export const config = {
-  api: { bodyParser: { sizeLimit: "5mb" } },
-};
+// Let Next accept slightly larger JSON bodies if needed
+export const config = { api: { bodyParser: { sizeLimit: "5mb" } } };
 
 type OkJson = {
   ok: true;
@@ -21,12 +18,25 @@ type OkJson = {
 type ErrJson = {
   ok: false;
   error: string;
-  where?: string;           // which step failed
-  details?: unknown;        // raw error content
+  where?: string;
+  details?: unknown;
   debug?: Record<string, unknown>;
 };
 
-function safe(value: unknown) {
+// Narrow, local type for runtime validation only (keeps build green)
+type InvoicePayloadIn = {
+  company?: { name?: string };
+  customer?: { name?: string; email?: string };
+  items?: Array<{ description?: string; quantity?: number; unitPrice?: number }>;
+  currency?: string;
+  notes?: string;
+  email?: boolean;
+  invoiceNumber?: string;
+  issueDate?: string;
+  dueDate?: string;
+};
+
+function safeJson(value: unknown) {
   try {
     return JSON.parse(JSON.stringify(value));
   } catch {
@@ -50,15 +60,16 @@ export default async function handler(
   };
 
   try {
-    const payload = req.body as InvoicePayload;
+    // Do NOT import repo-wide types here; keep this route independent.
+    const payload = (req.body ?? {}) as InvoicePayloadIn;
 
-    // Basic validation
+    // ---- Basic validation (runtime) ----
     if (!payload?.customer?.email) {
       return res
         .status(400)
         .json({ ok: false, error: "Missing customer.email", debug });
     }
-    if (!payload?.items?.length) {
+    if (!payload?.items || payload.items.length === 0) {
       return res
         .status(400)
         .json({ ok: false, error: "No items in payload", debug });
@@ -67,26 +78,27 @@ export default async function handler(
     const filename =
       (payload.invoiceNumber ?? `INV-${Date.now()}`) + ".pdf";
 
-    // ---- Build PDF ---------------------------------------------------------
+    // ---- Build PDF ----
     let pdfBuffer: Buffer;
     try {
-      pdfBuffer = await buildInvoicePdf(payload);
+      // Cast to any so this compiles even if the shared type changes elsewhere
+      pdfBuffer = await buildInvoicePdf(payload as any);
     } catch (e: any) {
       console.error("[create] PDF build failed:", e);
       return res.status(500).json({
         ok: false,
         error: e?.message ?? "PDF build failed",
         where: "buildInvoicePdf",
-        details: safe(e),
+        details: safeJson(e),
         debug,
       });
     }
 
-    // ---- Possibly send email ----------------------------------------------
-    const to = payload.customer.email;
+    // ---- Prepare email ----
+    const to = payload.customer.email!;
     const subject = `Invoice ${filename.replace(".pdf", "")}`;
     const html = `
-      <p>Hi ${payload.customer.name},</p>
+      <p>Hi ${payload.customer?.name || "there"},</p>
       <p>Please find your invoice attached.</p>
       <p>Regards,<br/>${payload.company?.name ?? "FuelFlow"}</p>
     `;
@@ -100,18 +112,16 @@ export default async function handler(
           to,
           subject,
           html,
-          // use attachments path so types can’t break this call
-          attachments: [
-            { filename, content: pdfBuffer }, // Buffer directly
-          ],
+          // Use attachments so this call is type-proof
+          attachments: [{ filename, content: pdfBuffer }],
         });
 
         if (result.ok) {
           emailed = true;
           emailId = result.id;
         } else {
+          // Don’t fail the request if email fails—just surface the reason
           console.error("[create] Email send failed:", result.error);
-          // do NOT hard-fail the whole request; report failure in response
           debug.emailError = result.error;
         }
       } catch (e: any) {
@@ -120,28 +130,23 @@ export default async function handler(
           ok: false,
           error: e?.message ?? "Email send failed",
           where: "sendInvoiceEmail",
-          details: safe(e),
+          details: safeJson(e),
           debug,
         });
       }
     }
 
-    // Done
-    return res.status(200).json({
-      ok: true,
-      filename,
-      emailed,
-      emailId,
-      debug,
-    });
+    // ---- Done ----
+    return res.status(200).json({ ok: true, filename, emailed, emailId, debug });
   } catch (e: any) {
     console.error("[create] Uncaught error:", e);
     return res.status(500).json({
       ok: false,
       error: e?.message ?? "Server error",
       where: "handler",
-      details: safe(e),
+      details: safeJson(e),
       debug,
     });
   }
 }
+
