@@ -1,14 +1,10 @@
 {
-  "company": { "name": "FuelFlow", "address": "1 Aviation Way\nLondon\nUK" },
-  "customer": {
-    "name": "Jane Pilot",
-    "email": "fuelflow.queries@gmail.com",   // <— your Resend login email
-    "address": "2 Runway Road\nGlasgow\nUK"
-  },
-  "lines": [
-    { "description": "Fuel Uplift – A320", "qty": 1, "unitPrice": 450.25 },
-    { "description": "Ramp Service", "qty": 1, "unitPrice": 75.0 }
+  "company": { "name": "FuelFlow" },
+  "customer": { "name": "Test User", "email": "you@example.com" },
+  "items": [
+    { "description": "Diesel 1000L", "quantity": 1, "unitPrice": 1200 },
+    { "description": "Delivery", "quantity": 1, "unitPrice": 75 }
   ],
-  "notes": "Thank you for flying with us.",
+  "currency": "GBP",
   "email": true
 }
