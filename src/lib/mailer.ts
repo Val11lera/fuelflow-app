@@ -56,4 +56,3 @@ export async function sendInvoiceEmail(args: SendInvoiceArgs): Promise<string | 
     return null;
   }
 }
-
