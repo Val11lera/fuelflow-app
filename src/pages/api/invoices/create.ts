@@ -1,149 +1,147 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
-import type { NextApiRequest, NextApiResponse } from 'next';
-import PDFDocument from 'pdfkit';
-import { supabase } from '@/lib/supabase';     // if your alias doesn't work, change to '../../../lib/supabase'
-import { sendInvoiceEmail } from '@/lib/mailer'; // if your alias doesn't work, change to '../../../lib/mailer'
+import type { NextApiRequest, NextApiResponse } from "next";
+import type { InvoicePayload } from "@/types/invoice";
+import { buildInvoicePdf } from "@/lib/invoice-pdf";
+import { sendInvoiceEmail } from "@/lib/mailer";
 
-type Line = { description: string; qty: number; unitPrice: number };
-type InvoicePayload = {
-  company: { name: string; address?: string };
-  customer: { name: string; email?: string; address?: string };
-  lines: Line[];
-  notes?: string;
-  email?: boolean;   // if true, send via email
-  to?: string;       // optional override for recipient email
+// Increase body size if your payload grows (PDF is built server-side, not uploaded)
+export const config = {
+  api: { bodyParser: { sizeLimit: "5mb" } },
 };
 
-// --- Render invoice content into a PDFKit document (keep doc typed as any to avoid Vercel TS issues)
-function renderInvoice(doc: any, p: InvoicePayload) {
-  const total = p.lines.reduce((acc, l) => acc + l.qty * l.unitPrice, 0);
+type OkJson = {
+  ok: true;
+  filename: string;
+  emailed: boolean;
+  emailId: string | null;
+  debug?: Record<string, unknown>;
+};
 
-  doc.fontSize(22).text('INVOICE', { align: 'right' }).moveDown();
+type ErrJson = {
+  ok: false;
+  error: string;
+  where?: string;           // which step failed
+  details?: unknown;        // raw error content
+  debug?: Record<string, unknown>;
+};
 
-  doc.fontSize(12).text(p.company.name);
-  if (p.company.address) doc.text(p.company.address);
-  doc.moveDown();
-
-  doc.text(`Bill To: ${p.customer.name}`);
-  if (p.customer.address) doc.text(p.customer.address);
-  doc.moveDown();
-
-  doc.moveDown(0.5);
-  doc.fontSize(12).text('Description', 50, doc.y, { continued: true });
-  doc.text('Qty', 300, undefined, { continued: true });
-  doc.text('Unit', 350, undefined, { continued: true });
-  doc.text('Line', 420);
-
-  doc.moveDown(0.5);
-  p.lines.forEach((l) => {
-    doc.text(l.description, 50, doc.y, { continued: true });
-    doc.text(String(l.qty), 300, undefined, { continued: true });
-    doc.text(l.unitPrice.toFixed(2), 350, undefined, { continued: true });
-    doc.text((l.qty * l.unitPrice).toFixed(2), 420);
-  });
-
-  doc.moveDown();
-  doc.text(`Total: ${total.toFixed(2)}`, { align: 'right' });
-
-  if (p.notes) {
-    doc.moveDown();
-    doc.text(p.notes);
+function safe(value: unknown) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return String(value);
   }
 }
 
-// --- MAKE SURE THIS FUNCTION EXISTS (this is what your error is about)
-function makePdfBuffer(p: InvoicePayload): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    // any-typed PDFDocument keeps build happy on Vercel
-    const doc: any = new (PDFDocument as any)({ size: 'A4', margin: 50 });
-    const chunks: Buffer[] = [];
-
-    doc.on('data', (d: Buffer) => chunks.push(d));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
-
-    renderInvoice(doc, p);
-    doc.end();
-  });
-}
-
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
-    return res.status(200).json({ ok: true, route: '/api/invoices/create' });
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse<OkJson | ErrJson>
+) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ ok: false, error: "Use POST" });
   }
+
+  const debug: Record<string, unknown> = {
+    hasResendKey: Boolean(process.env.RESEND_API_KEY),
+    mailFrom: process.env.MAIL_FROM ?? null,
+    ts: new Date().toISOString(),
+  };
 
   try {
-    const p = req.body as InvoicePayload;
+    const payload = req.body as InvoicePayload;
 
     // Basic validation
-    if (!p?.company?.name || !p?.customer?.name || !Array.isArray(p?.lines) || p.lines.length === 0) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!payload?.customer?.email) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Missing customer.email", debug });
+    }
+    if (!payload?.items?.length) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "No items in payload", debug });
     }
 
-    // Build the PDF
-    const pdfBuffer = await makePdfBuffer(p);
-    const filename = `INV-${new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14)}.pdf`;
+    const filename =
+      (payload.invoiceNumber ?? `INV-${Date.now()}`) + ".pdf";
 
-    // If ?format=pdf, stream the PDF back to the browser
-    if (req.query.format === 'pdf') {
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-      return res.status(200).send(pdfBuffer);
-    }
-
-    // Optional: send the email via Resend
-    let emailed = false;
-    let emailError: string | undefined;
-    if (p.email) {
-      const to = p.to ?? p.customer.email;
-      const from = process.env.MAIL_FROM;
-      if (!to || !from) {
-        return res.status(400).json({ error: 'Missing email recipient or MAIL_FROM env var' });
-      }
-
-      const base64 = pdfBuffer.toString('base64');
-      const subject = `${p.company.name} Invoice`;
-      const html = `<p>Hi ${p.customer.name},</p><p>Attached is your invoice from ${p.company.name}.</p>`;
-
-      const result = await sendInvoiceEmail({
-        to,
-        from,
-        subject,
-        html,
-        pdfFilename: filename,
-        pdfBase64: base64,
+    // ---- Build PDF ---------------------------------------------------------
+    let pdfBuffer: Buffer;
+    try {
+      pdfBuffer = await buildInvoicePdf(payload);
+    } catch (e: any) {
+      console.error("[create] PDF build failed:", e);
+      return res.status(500).json({
+        ok: false,
+        error: e?.message ?? "PDF build failed",
+        where: "buildInvoicePdf",
+        details: safe(e),
+        debug,
       });
-
-      emailed = result.ok;
-      if (!result.ok) emailError = result.error;
     }
 
-    // Always record in Supabase
-    const total = p.lines.reduce((acc, l) => acc + l.qty * l.unitPrice, 0);
-    const { error: dbError } = await supabase.from('invoices').insert({
-      company_name: p.company.name,
-      customer_name: p.customer.name,
-      customer_email: p.customer.email ?? null,
-      total_cents: Math.round(total * 100),
-      pdf_filename: filename,
-      emailed,
-      payload: p,
-    });
+    // ---- Possibly send email ----------------------------------------------
+    const to = payload.customer.email;
+    const subject = `Invoice ${filename.replace(".pdf", "")}`;
+    const html = `
+      <p>Hi ${payload.customer.name},</p>
+      <p>Please find your invoice attached.</p>
+      <p>Regards,<br/>${payload.company?.name ?? "FuelFlow"}</p>
+    `;
 
-    if (dbError) {
-      console.error('Supabase insert error:', dbError);
-      // We still return ok, because the PDF/email succeeded; but log the DB error
+    let emailed = false;
+    let emailId: string | null = null;
+
+    if (payload.email === true) {
+      try {
+        const result = await sendInvoiceEmail({
+          to,
+          subject,
+          html,
+          // use attachments path so types can’t break this call
+          attachments: [
+            { filename, content: pdfBuffer }, // Buffer directly
+          ],
+        });
+
+        if (result.ok) {
+          emailed = true;
+          emailId = result.id;
+        } else {
+          console.error("[create] Email send failed:", result.error);
+          // do NOT hard-fail the whole request; report failure in response
+          debug.emailError = result.error;
+        }
+      } catch (e: any) {
+        console.error("[create] Email send threw:", e);
+        return res.status(500).json({
+          ok: false,
+          error: e?.message ?? "Email send failed",
+          where: "sendInvoiceEmail",
+          details: safe(e),
+          debug,
+        });
+      }
     }
 
+    // Done
     return res.status(200).json({
       ok: true,
       filename,
       emailed,
-      ...(emailError ? { emailError } : {}),
+      emailId,
+      debug,
     });
   } catch (e: any) {
-    console.error(e);
-    return res.status(500).json({ error: 'Server error', detail: String(e?.message ?? e) });
+    console.error("[create] Uncaught error:", e);
+    return res.status(500).json({
+      ok: false,
+      error: e?.message ?? "Server error",
+      where: "handler",
+      details: safe(e),
+      debug,
+    });
   }
 }
