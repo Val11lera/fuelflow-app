@@ -1,13 +1,6 @@
 {
-  "company": {
-    "name": "FuelFlow",
-    "address": "1 Aviation Way\nLondon\nUK"
-  },
-  "customer": {
-    "name": "Jane Pilot",
-    "email": "YOUR_EMAIL@EXAMPLE.COM",
-    "address": "2 Runway Road\nGlasgow\nUK"
-  },
+  "company": { "name": "FuelFlow", "address": "1 Aviation Way\nLondon\nUK" },
+  "customer": { "name": "Jane Pilot", "email": "noreply.fuelflow@gmail.com", "address": "2 Runway Road\nGlasgow\nUK" },
   "lines": [
     { "description": "Fuel Uplift — A320", "qty": 1, "unitPrice": 450.25 },
     { "description": "Ramp Service", "qty": 1, "unitPrice": 75.0 }
