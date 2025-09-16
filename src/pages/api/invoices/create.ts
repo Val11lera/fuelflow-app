@@ -1,153 +1,114 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
-import type { NextApiRequest, NextApiResponse } from "next";
-import { buildInvoicePdf } from "@/lib/invoice-pdf";
-import { sendInvoiceEmail } from "@/lib/mailer";
+import type { NextApiRequest, NextApiResponse } from 'next';
+import { sendInvoiceEmail } from '@/lib/mailer';
+import { buildInvoicePdf } from '@/lib/invoice-pdf'; // your existing PDF generator
 
-export const config = { api: { bodyParser: { sizeLimit: "5mb" } } };
+type Money = number;
 
-type OkJson = {
-  ok: true;
-  filename: string;
-  emailed: boolean;
-  emailId: string | null;
-  debug?: Record<string, unknown>;
+type InvoiceItem = {
+  description: string;
+  quantity: number;
+  unitPrice: Money;
 };
 
-type ErrJson = {
-  ok: false;
-  error: string;
-  where?: string;
-  details?: unknown;
-  debug?: Record<string, unknown>;
+type InvoicePayload = {
+  company: { name: string };
+  customer: { name?: string; email?: string };
+  items: InvoiceItem[];
+  currency?: string;
+  email?: boolean;   // whether we should email the invoice
+  notes?: string;
 };
 
-function safeJson(value: unknown) {
+function parseBody<T>(body: unknown): T | null {
   try {
-    return JSON.parse(JSON.stringify(value));
+    if (typeof body === 'string') return JSON.parse(body) as T;
+    return body as T;
   } catch {
-    return String(value);
+    return null;
   }
 }
 
-// Accept items OR lineItems, and normalize to items
-function pickItems(payload: any): any[] {
-  const a = Array.isArray(payload?.items) ? payload.items : null;
-  const b = Array.isArray(payload?.lineItems) ? payload.lineItems : null;
-  return (a ?? b ?? []).filter(Boolean);
+function invoiceHtml(payload: InvoicePayload, total: number, filename: string) {
+  const currency = payload.currency || 'GBP';
+  const customer = payload.customer?.name || 'Customer';
+  return `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+      <h2 style="margin:0 0 8px">${payload.company?.name || 'FuelFlow'} — Invoice</h2>
+      <p style="margin:0 0 16px">Hello ${customer}, please find your invoice attached.</p>
+      <p style="margin:0">Total: <strong>${currency} ${total.toFixed(2)}</strong></p>
+      <p style="margin:16px 0 0; color:#666; font-size:12px">Attachment: ${filename}</p>
+    </div>
+  `;
 }
 
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse<OkJson | ErrJson>
-) {
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
-    return res.status(405).json({ ok: false, error: "Use POST" });
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
   }
 
-  const debug: Record<string, unknown> = {
-    hasResendKey: Boolean(process.env.RESEND_API_KEY),
-    mailFrom: process.env.MAIL_FROM ?? null,
-    ts: new Date().toISOString(),
-  };
+  const payload = parseBody<InvoicePayload>(req.body);
+  if (!payload) {
+    return res.status(400).json({ ok: false, error: 'Invalid JSON body' });
+  }
 
+  // Validate
+  if (!Array.isArray(payload.items) || payload.items.length === 0) {
+    return res.status(400).json({ ok: false, error: 'No items in payload' });
+  }
+  const to = payload.email ? payload.customer?.email?.trim() : undefined;
+  if (payload.email && !to) {
+    return res.status(400).json({ ok: false, error: 'Missing customer.email' });
+  }
+
+  // Totals
+  const total = payload.items.reduce(
+    (sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0),
+    0
+  );
+
+  // Build PDF
+  let pdfBuffer: Buffer;
+  const filename = `INV-${Date.now()}.pdf`;
   try {
-    const payload = (req.body ?? {}) as any;
-
-    // diagnostics: show top-level keys we received
-    try {
-      debug.receivedKeys = Object.keys(payload || {});
-    } catch {
-      /* ignore */
-    }
-
-    // normalize items
-    const items = pickItems(payload);
-    if (!items || items.length === 0) {
-      return res.status(400).json({
-        ok: false,
-        error: "No items in payload",
-        debug,
-      });
-    }
-
-    // we pass a payload that definitely has .items
-    const normalized = { ...payload, items };
-
-    if (!normalized?.customer?.email) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Missing customer.email", debug });
-    }
-
-    const filename =
-      (normalized.invoiceNumber ?? `INV-${Date.now()}`) + ".pdf";
-
-    // ---- Build PDF ---------------------------------------------------------
-    let pdfBuffer: Buffer;
-    try {
-      pdfBuffer = await buildInvoicePdf(normalized);
-    } catch (e: any) {
-      console.error("[create] PDF build failed:", e);
-      return res.status(500).json({
-        ok: false,
-        error: e?.message ?? "PDF build failed",
-        where: "buildInvoicePdf",
-        details: safeJson(e),
-        debug,
-      });
-    }
-
-    // ---- Email (optional) --------------------------------------------------
-    const to = normalized.customer.email as string;
-    const subject = `Invoice ${filename.replace(".pdf", "")}`;
-    const html = `
-      <p>Hi ${normalized.customer?.name || "there"},</p>
-      <p>Please find your invoice attached.</p>
-      <p>Regards,<br/>${normalized.company?.name ?? "FuelFlow"}</p>
-    `;
-
-    let emailed = false;
-    let emailId: string | null = null;
-
-    if (normalized.email === true) {
-      try {
-        const result = await sendInvoiceEmail({
-          to,
-          subject,
-          html,
-          attachments: [{ filename, content: pdfBuffer }],
-        });
-
-        if (result.ok) {
-          emailed = true;
-          emailId = result.id;
-        } else {
-          console.error("[create] Email send failed:", result.error);
-          debug.emailError = result.error;
-        }
-      } catch (e: any) {
-        console.error("[create] Email send threw:", e);
-        return res.status(500).json({
-          ok: false,
-          error: e?.message ?? "Email send failed",
-          where: "sendInvoiceEmail",
-          details: safeJson(e),
-          debug,
-        });
-      }
-    }
-
-    return res.status(200).json({ ok: true, filename, emailed, emailId, debug });
-  } catch (e: any) {
-    console.error("[create] Uncaught error:", e);
-    return res.status(500).json({
-      ok: false,
-      error: e?.message ?? "Server error",
-      where: "handler",
-      details: safeJson(e),
-      debug,
-    });
+    pdfBuffer = await buildInvoicePdf(payload);
+  } catch (err) {
+    console.error('PDF build failed:', err);
+    return res.status(500).json({ ok: false, error: 'Failed to generate PDF' });
   }
+
+  // Email (optional)
+  let emailed = false;
+  let emailId: string | null = null;
+
+  if (payload.email && to) {
+    const subject = `${payload.company?.name || 'FuelFlow'} — Invoice`;
+    const html = invoiceHtml(payload, total, filename);
+
+    // NOTE: sendInvoiceEmail returns string | null (the email id or null). No .ok checks anywhere.
+    const id = await sendInvoiceEmail({
+      to,
+      subject,
+      html,
+      attachments: [{ filename, content: pdfBuffer }],
+    });
+
+    emailed = !!id;
+    emailId = id;
+  }
+
+  return res.status(200).json({
+    ok: true,
+    filename,
+    total,
+    emailed,
+    emailId,
+    debug: {
+      hasResendKey: !!process.env.RESEND_API_KEY,
+      mailFrom: process.env.MAIL_FROM || null,
+      ts: new Date().toISOString(),
+    },
+  });
 }
