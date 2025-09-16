@@ -1,10 +1,12 @@
 {
   "company": { "name": "FuelFlow" },
-  "customer": { "name": "Test User", "email": "noreply.fuelflow@gmail.com" },
+  "customer": { "name": "Test User", "email": "fuelflow.queries@gmail.com" },
+  "invoiceNumber": "INV-2025-0001",
   "items": [
     { "description": "Diesel 1000L", "quantity": 1, "unitPrice": 1200 },
     { "description": "Delivery", "quantity": 1, "unitPrice": 75 }
   ],
   "currency": "GBP",
-  "email": true
+  "email": true,
+  "notes": "Thank you for your business."
 }
