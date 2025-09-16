@@ -2,70 +2,58 @@
 // src/lib/mailer.ts
 import { Resend } from 'resend';
 
-const resend = new Resend(process.env.RESEND_API_KEY!);
-
-// A single attachment (what Resend expects)
-export type MailAttachment = {
+export type Attachment = {
   filename: string;
-  content: Buffer; // Buffer works best with Resend
+  // Buffer is fine in Node; base64 string is fine too.
+  content: Buffer | string;
 };
 
 export type SendInvoiceArgs = {
-  to: string;                // recipient
+  to: string;
   subject: string;
   html: string;
-
-  // OPTION A: let the caller pass attachments directly
-  attachments?: MailAttachment[];
-
-  // OPTION B: or pass a single PDF by filename+base64
+  /**
+   * Preferred: pass a Buffer directly (local server / Node).
+   */
+  attachments?: Attachment[];
+  /**
+   * Alternative: if you only have base64 (e.g., from edge/runtime),
+   * supply both name and base64 and we'll build the attachment for you.
+   */
   pdfFilename?: string;
-  pdfBase64?: string;
-
-  // optional headers
-  replyTo?: string;
-  bcc?: string | string[];
+  pdfBase64?: string; // base64-encoded PDF
 };
 
-/**
- * Sends an email via Resend. Supports both:
- *  - args.attachments (array of {filename, content})
- *  - args.pdfFilename + args.pdfBase64 (we convert to an attachment)
- */
-export async function sendInvoiceEmail(args: SendInvoiceArgs) {
-  const from = process.env.MAIL_FROM;
-  if (!from) {
-    throw new Error('MAIL_FROM is not set. Set it to something like "FuelFlow <invoices@mail.fuelflow.co.uk>".');
+const resend = new Resend(process.env.RESEND_API_KEY ?? '');
+
+export async function sendInvoiceEmail(args: SendInvoiceArgs): Promise<string | null> {
+  const from = process.env.MAIL_FROM ?? 'FuelFlow <onboarding@resend.dev>';
+
+  // Normalize attachments
+  let attachments: Attachment[] | undefined = args.attachments;
+  if (!attachments && args.pdfFilename && args.pdfBase64) {
+    attachments = [{ filename: args.pdfFilename, content: args.pdfBase64 }];
   }
 
-  const finalAttachments: MailAttachment[] = [];
-
-  // If caller passed attachments, keep them
-  if (args.attachments?.length) {
-    finalAttachments.push(...args.attachments);
-  }
-
-  // Or build a single attachment from base64
-  if (args.pdfFilename && args.pdfBase64) {
-    finalAttachments.push({
-      filename: args.pdfFilename,
-      content: Buffer.from(args.pdfBase64, 'base64'),
+  try {
+    const { data, error } = await resend.emails.send({
+      from,
+      to: args.to,
+      subject: args.subject,
+      html: args.html,
+      // Resend accepts Buffer or base64 string content
+      attachments: attachments as any,
     });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return null;
+    }
+
+    return data?.id ?? null;
+  } catch (err) {
+    console.error('sendInvoiceEmail threw:', err);
+    return null;
   }
-
-  const { data, error } = await resend.emails.send({
-    from,
-    to: Array.isArray(args.to) ? args.to : [args.to],
-    subject: args.subject,
-    html: args.html,
-    reply_to: args.replyTo || process.env.MAIL_REPLY_TO || undefined,
-    bcc: args.bcc,
-    attachments: finalAttachments.length ? finalAttachments : undefined,
-  });
-
-  if (error) {
-    throw new Error(`Resend error: ${error.message}`);
-  }
-
-  return data?.id ?? null;
 }
+
