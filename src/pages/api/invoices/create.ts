@@ -4,7 +4,6 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { buildInvoicePdf } from "@/lib/invoice-pdf";
 import { sendInvoiceEmail } from "@/lib/mailer";
 
-// Let Next accept slightly larger JSON bodies if needed
 export const config = { api: { bodyParser: { sizeLimit: "5mb" } } };
 
 type OkJson = {
@@ -23,25 +22,19 @@ type ErrJson = {
   debug?: Record<string, unknown>;
 };
 
-// Narrow, local type for runtime validation only (keeps build green)
-type InvoicePayloadIn = {
-  company?: { name?: string };
-  customer?: { name?: string; email?: string };
-  items?: Array<{ description?: string; quantity?: number; unitPrice?: number }>;
-  currency?: string;
-  notes?: string;
-  email?: boolean;
-  invoiceNumber?: string;
-  issueDate?: string;
-  dueDate?: string;
-};
-
 function safeJson(value: unknown) {
   try {
     return JSON.parse(JSON.stringify(value));
   } catch {
     return String(value);
   }
+}
+
+// Accept items OR lineItems, and normalize to items
+function pickItems(payload: any): any[] {
+  const a = Array.isArray(payload?.items) ? payload.items : null;
+  const b = Array.isArray(payload?.lineItems) ? payload.lineItems : null;
+  return (a ?? b ?? []).filter(Boolean);
 }
 
 export default async function handler(
@@ -60,29 +53,41 @@ export default async function handler(
   };
 
   try {
-    // Do NOT import repo-wide types here; keep this route independent.
-    const payload = (req.body ?? {}) as InvoicePayloadIn;
+    const payload = (req.body ?? {}) as any;
 
-    // ---- Basic validation (runtime) ----
-    if (!payload?.customer?.email) {
+    // diagnostics: show top-level keys we received
+    try {
+      debug.receivedKeys = Object.keys(payload || {});
+    } catch {
+      /* ignore */
+    }
+
+    // normalize items
+    const items = pickItems(payload);
+    if (!items || items.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "No items in payload",
+        debug,
+      });
+    }
+
+    // we pass a payload that definitely has .items
+    const normalized = { ...payload, items };
+
+    if (!normalized?.customer?.email) {
       return res
         .status(400)
         .json({ ok: false, error: "Missing customer.email", debug });
     }
-    if (!payload?.items || payload.items.length === 0) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "No items in payload", debug });
-    }
 
     const filename =
-      (payload.invoiceNumber ?? `INV-${Date.now()}`) + ".pdf";
+      (normalized.invoiceNumber ?? `INV-${Date.now()}`) + ".pdf";
 
-    // ---- Build PDF ----
+    // ---- Build PDF ---------------------------------------------------------
     let pdfBuffer: Buffer;
     try {
-      // Cast to any so this compiles even if the shared type changes elsewhere
-      pdfBuffer = await buildInvoicePdf(payload as any);
+      pdfBuffer = await buildInvoicePdf(normalized);
     } catch (e: any) {
       console.error("[create] PDF build failed:", e);
       return res.status(500).json({
@@ -94,25 +99,24 @@ export default async function handler(
       });
     }
 
-    // ---- Prepare email ----
-    const to = payload.customer.email!;
+    // ---- Email (optional) --------------------------------------------------
+    const to = normalized.customer.email as string;
     const subject = `Invoice ${filename.replace(".pdf", "")}`;
     const html = `
-      <p>Hi ${payload.customer?.name || "there"},</p>
+      <p>Hi ${normalized.customer?.name || "there"},</p>
       <p>Please find your invoice attached.</p>
-      <p>Regards,<br/>${payload.company?.name ?? "FuelFlow"}</p>
+      <p>Regards,<br/>${normalized.company?.name ?? "FuelFlow"}</p>
     `;
 
     let emailed = false;
     let emailId: string | null = null;
 
-    if (payload.email === true) {
+    if (normalized.email === true) {
       try {
         const result = await sendInvoiceEmail({
           to,
           subject,
           html,
-          // Use attachments so this call is type-proof
           attachments: [{ filename, content: pdfBuffer }],
         });
 
@@ -120,7 +124,6 @@ export default async function handler(
           emailed = true;
           emailId = result.id;
         } else {
-          // Don’t fail the request if email fails—just surface the reason
           console.error("[create] Email send failed:", result.error);
           debug.emailError = result.error;
         }
@@ -136,7 +139,6 @@ export default async function handler(
       }
     }
 
-    // ---- Done ----
     return res.status(200).json({ ok: true, filename, emailed, emailId, debug });
   } catch (e: any) {
     console.error("[create] Uncaught error:", e);
@@ -149,4 +151,3 @@ export default async function handler(
     });
   }
 }
-
