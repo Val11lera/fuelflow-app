@@ -1,43 +1,57 @@
 // src/lib/mailer.ts
 // src/lib/mailer.ts
-import { Resend } from 'resend';
+import nodemailer from "nodemailer";
 
 export type MailOk = { ok: true; id: string | null };
 export type MailErr = { ok: false; error: string };
 export type MailResult = MailOk | MailErr;
 
-export async function sendInvoiceEmail(args: {
+export type SendInvoiceArgs = {
   to: string;
-  from: string;
   subject: string;
   html: string;
-  pdfFilename: string;
-  pdfBase64: string;  // base64 of the PDF
-}): Promise<MailResult> {
+  text?: string;
+  attachments?: Array<{ filename: string; content: Buffer }>;
+  bcc?: string | undefined;
+};
+
+function required(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env var: ${name}`);
+  return v;
+}
+
+export async function sendInvoiceEmail(args: SendInvoiceArgs): Promise<MailResult> {
   try {
-    const apiKey = process.env.RESEND_API_KEY;
-    if (!apiKey) return { ok: false, error: 'RESEND_API_KEY is missing' };
+    const host = process.env.SMTP_HOST || "smtp.gmail.com";
+    const port = Number(process.env.SMTP_PORT || "465");
+    const secure = String(process.env.SMTP_SECURE || "true") === "true";
+    const user = required("SMTP_USER");
+    const pass = required("SMTP_PASS");
 
-    const resend = new Resend(apiKey);
+    const from = process.env.MAIL_FROM || user;
+    const bcc = args.bcc ?? process.env.MAIL_BCC;
 
-    const { data, error } = await resend.emails.send({
-      from: args.from,
-      to: [args.to],
-      subject: args.subject,
-      html: args.html,
-      attachments: [
-        {
-          filename: args.pdfFilename,
-          // Resend expects a Buffer for content, not contentType
-          content: Buffer.from(args.pdfBase64, 'base64'),
-        },
-      ],
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: { user, pass },
     });
 
-    if (error) return { ok: false, error: error.message ?? String(error) };
-    return { ok: true, id: data?.id ?? null };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message ?? e) };
+    const info = await transporter.sendMail({
+      from,
+      to: args.to,
+      bcc,
+      subject: args.subject,
+      text: args.text ?? "Please see the attached invoice.",
+      html: args.html,
+      attachments: args.attachments,
+    });
+
+    return { ok: true, id: info.messageId ?? null };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
   }
 }
 
