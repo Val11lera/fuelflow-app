@@ -15,15 +15,6 @@ export type InvoicePayload = {
   notes?: string;
 };
 
-// Require a shared secret (optional but recommended)
-const expected = process.env.INVOICE_SECRET;
-if (expected) {
-  const got = req.headers["Val"];
-  if (got !== expected) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
-  }
-}
-
 export const config = {
   api: { bodyParser: { sizeLimit: "2mb" } },
 };
