@@ -29,7 +29,7 @@ export async function sendInvoiceEmail(
       to: args.to,
       subject: args.subject,
       html: args.html,
-      attachments: args.attachments?.map(a => ({
+      attachments: args.attachments?.map((a) => ({
         filename: a.filename,
         content: a.content, // Buffer
       })),
