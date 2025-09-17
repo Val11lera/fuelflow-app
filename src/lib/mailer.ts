@@ -1,5 +1,4 @@
 // src/lib/mailer.ts
-// src/lib/mailer.ts
 import { Resend } from "resend";
 
 export type SendInvoiceArgs = {
@@ -30,10 +29,9 @@ export async function sendInvoiceEmail(
       to: args.to,
       subject: args.subject,
       html: args.html,
-      // Resend accepts Buffer for attachments
       attachments: args.attachments?.map(a => ({
         filename: a.filename,
-        content: a.content,
+        content: a.content, // Buffer
       })),
       bcc: args.bcc,
     });
