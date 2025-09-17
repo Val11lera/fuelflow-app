@@ -1,10 +1,9 @@
 // src/pages/api/invoices/create.ts
-// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { buildInvoicePdf } from "@/lib/invoice-pdf";
 import { sendInvoiceEmail } from "@/lib/mailer";
 
-// -------- Types you can import elsewhere --------
+// ---------- Types ----------
 export type InvoiceItem = {
   description: string;
   quantity: number;
@@ -20,20 +19,17 @@ export type InvoicePayload = {
   notes?: string;
 };
 
-// Result your PDF builder should return
-type BuildResult = {
-  pdfBuffer: Buffer;          // Node Buffer of PDF bytes
-  filename: string;           // e.g. "INV-2025-0001.pdf"
-  total: number;              // numeric total (e.g. 1275)
-};
+// What the PDF builder returns right now
+type PdfLike = Buffer | Uint8Array | ArrayBuffer;
 
+// ---------- Handler ----------
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ ok: false, error: "Method Not Allowed" });
   }
 
-  // Optional: shared-secret to protect the endpoint
+  // Optional shared secret to protect the endpoint
   const expected = process.env.INVOICE_SECRET;
   if (expected) {
     const got = req.headers["x-invoice-secret"];
@@ -45,7 +41,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const payload = req.body as InvoicePayload;
 
-    // ---- Basic validation (adjust as needed)
+    // Basic validation
     if (!payload?.company?.name) {
       return res.status(400).json({ ok: false, error: "Missing company.name" });
     }
@@ -59,16 +55,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ ok: false, error: "Missing currency" });
     }
 
-    const { pdfBuffer, filename, total } = (await buildInvoicePdf(
-      payload
-    )) as BuildResult;
+    // 1) Build the PDF (returns Buffer/Uint8Array/ArrayBuffer)
+    const pdfLike: PdfLike = await buildInvoicePdf(payload);
+    const pdfBuffer = toNodeBuffer(pdfLike);
+
+    // 2) Compute totals and filename here
+    const total = calcTotal(payload);
+    const filename = makeFilename(payload);
+
+    // 3) Email? (default ON if a customer email exists)
+    const shouldEmail = payload.email ?? Boolean(payload.customer.email);
 
     let emailed = false;
     let emailId: string | null = null;
-
-    // Decide whether to email: if payload.email is explicitly set, use it;
-    // otherwise email if a customer email exists.
-    const shouldEmail = payload.email ?? Boolean(payload.customer.email);
 
     if (shouldEmail && payload.customer.email) {
       const to = payload.customer.email;
@@ -80,7 +79,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         ${payload.notes ? `<p>${escapeHtml(payload.notes)}</p>` : ""}
       `;
 
-      // sendInvoiceEmail returns the provider's email id (or null on failure)
+      // sendInvoiceEmail should return an id (string) or null
       const id = await sendInvoiceEmail({
         to,
         subject,
@@ -109,15 +108,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 }
 
-// -------- helpers --------
+// ---------- Helpers ----------
+function calcTotal(payload: InvoicePayload) {
+  return payload.items.reduce(
+    (sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0),
+    0
+  );
+}
+
+function makeFilename(payload: InvoicePayload) {
+  // If you pass an invoice number in payload, prefer it here.
+  // Fallback: timestamped filename.
+  const stamp = new Date().toISOString().replace(/[:T\-\.Z]/g, "").slice(0, 14);
+  return `INV-${stamp}.pdf`;
+}
+
+function toNodeBuffer(data: PdfLike): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof Uint8Array) return Buffer.from(data);
+  // ArrayBuffer
+  return Buffer.from(new Uint8Array(data));
+}
+
 function formatMoney(amount: number, currency: string) {
   try {
-    return new Intl.NumberFormat("en-GB", {
-      style: "currency",
-      currency,
-    }).format(amount);
+    return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(
+      amount
+    );
   } catch {
-    // fallback
     return `${currency} ${amount.toFixed(2)}`;
   }
 }
