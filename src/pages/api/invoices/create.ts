@@ -22,7 +22,7 @@ if (expected) {
   if (got !== expected) {
     return res.status(401).json({ ok: false, error: "Unauthorized" });
   }
-};
+}
 
 export const config = {
   api: { bodyParser: { sizeLimit: "2mb" } },
