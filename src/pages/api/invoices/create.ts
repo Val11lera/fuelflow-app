@@ -1,114 +1,91 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
-import type { NextApiRequest, NextApiResponse } from 'next';
-import { sendInvoiceEmail } from '@/lib/mailer';
-import { buildInvoicePdf } from '@/lib/invoice-pdf'; // your existing PDF generator
+import type { NextApiRequest, NextApiResponse } from "next";
+import { sendInvoiceEmail } from "@/lib/mailer";
+import { buildInvoicePdf } from "@/lib/invoice-pdf";
 
-type Money = number;
-
-type InvoiceItem = {
-  description: string;
-  quantity: number;
-  unitPrice: Money;
-};
-
-type InvoicePayload = {
+// Adjust to your real payload shape; this matches your payload.json screenshots
+export type InvoicePayload = {
   company: { name: string };
-  customer: { name?: string; email?: string };
-  items: InvoiceItem[];
-  currency?: string;
-  email?: boolean;   // whether we should email the invoice
+  customer: { name: string; email?: string };
+  items: { description: string; quantity: number; unitPrice: number }[];
+  currency: "GBP" | "USD" | "EUR" | string;
+  /** If present/true, send the email; if false we only build the PDF */
+  email?: boolean;
+  /** Optional notes you had in examples */
   notes?: string;
 };
 
-function parseBody<T>(body: unknown): T | null {
+export const config = {
+  api: { bodyParser: { sizeLimit: "2mb" } },
+};
+
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ ok: false, error: "Method Not Allowed" });
+  }
+
   try {
-    if (typeof body === 'string') return JSON.parse(body) as T;
-    return body as T;
-  } catch {
-    return null;
-  }
-}
+    const payload = req.body as InvoicePayload;
 
-function invoiceHtml(payload: InvoicePayload, total: number, filename: string) {
-  const currency = payload.currency || 'GBP';
-  const customer = payload.customer?.name || 'Customer';
-  return `
-    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
-      <h2 style="margin:0 0 8px">${payload.company?.name || 'FuelFlow'} — Invoice</h2>
-      <p style="margin:0 0 16px">Hello ${customer}, please find your invoice attached.</p>
-      <p style="margin:0">Total: <strong>${currency} ${total.toFixed(2)}</strong></p>
-      <p style="margin:16px 0 0; color:#666; font-size:12px">Attachment: ${filename}</p>
-    </div>
-  `;
-}
+    // ---- Basic validation ---------------------------------------------------
+    if (!payload?.company?.name) {
+      return res.status(400).json({ ok: false, error: "Missing company.name" });
+    }
+    if (!payload?.customer?.name) {
+      return res.status(400).json({ ok: false, error: "Missing customer.name" });
+    }
+    if (!payload?.items?.length) {
+      return res.status(400).json({ ok: false, error: "No items in payload" });
+    }
+    if (!payload.currency) {
+      return res.status(400).json({ ok: false, error: "Missing currency" });
+    }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
-  }
+    // ---- 1) Build the PDF ---------------------------------------------------
+    // Your existing builder should return a Buffer + filename + total
+    const { pdfBuffer, filename, total } = await buildInvoicePdf(payload);
 
-  const payload = parseBody<InvoicePayload>(req.body);
-  if (!payload) {
-    return res.status(400).json({ ok: false, error: 'Invalid JSON body' });
-  }
+    // ---- 2) Email (default ON unless payload.email === false) --------------
+    let emailed = false;
+    let emailId: string | null = null;
 
-  // Validate
-  if (!Array.isArray(payload.items) || payload.items.length === 0) {
-    return res.status(400).json({ ok: false, error: 'No items in payload' });
-  }
-  const to = payload.email ? payload.customer?.email?.trim() : undefined;
-  if (payload.email && !to) {
-    return res.status(400).json({ ok: false, error: 'Missing customer.email' });
-  }
+    const shouldEmail = payload.email !== false;
+    const maybeEmail = payload.customer?.email?.trim();
 
-  // Totals
-  const total = payload.items.reduce(
-    (sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0),
-    0
-  );
+    if (shouldEmail && maybeEmail) {
+      const recipients = [maybeEmail]; // 👈 ARRAY — fixes the TS error
 
-  // Build PDF
-  let pdfBuffer: Buffer;
-  const filename = `INV-${Date.now()}.pdf`;
-  try {
-    pdfBuffer = await buildInvoicePdf(payload);
-  } catch (err) {
-    console.error('PDF build failed:', err);
-    return res.status(500).json({ ok: false, error: 'Failed to generate PDF' });
-  }
+      const subject = "FuelFlow — Invoice";
+      const html = `
+        <p>Hello ${payload.customer.name}, please find your invoice attached.</p>
+        <p><strong>Total:</strong> ${payload.currency} ${total}</p>
+      `;
 
-  // Email (optional)
-  let emailed = false;
-  let emailId: string | null = null;
+      emailId = await sendInvoiceEmail({
+        to: recipients,
+        subject,
+        html,
+        attachments: [{ filename, content: pdfBuffer }],
+      });
 
-  if (payload.email && to) {
-    const subject = `${payload.company?.name || 'FuelFlow'} — Invoice`;
-    const html = invoiceHtml(payload, total, filename);
+      emailed = !!emailId;
+    }
 
-    // NOTE: sendInvoiceEmail returns string | null (the email id or null). No .ok checks anywhere.
-    const id = await sendInvoiceEmail({
-      to,
-      subject,
-      html,
-      attachments: [{ filename, content: pdfBuffer }],
+    // ---- Respond ------------------------------------------------------------
+    return res.status(200).json({
+      ok: true,
+      filename,
+      total,
+      emailed,
+      emailId,
     });
-
-    emailed = !!id;
-    emailId = id;
+  } catch (err) {
+    console.error("[api/invoices/create] error:", err);
+    return res.status(500).json({ ok: false, error: "Internal Server Error" });
   }
-
-  return res.status(200).json({
-    ok: true,
-    filename,
-    total,
-    emailed,
-    emailId,
-    debug: {
-      hasResendKey: !!process.env.RESEND_API_KEY,
-      mailFrom: process.env.MAIL_FROM || null,
-      ts: new Date().toISOString(),
-    },
-  });
 }
