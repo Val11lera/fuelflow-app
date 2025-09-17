@@ -1,19 +1,12 @@
 // src/lib/mailer.ts
 // src/lib/mailer.ts
-// src/lib/mailer.ts
-// src/lib/mailer.ts
 import { Resend } from "resend";
-
-export type Attachment = {
-  filename: string;
-  content: Buffer; // raw PDF Buffer
-};
 
 export type SendInvoiceArgs = {
   to: string | string[];
   subject: string;
   html: string;
-  attachments?: Attachment[];
+  attachments?: Array<{ filename: string; content: Buffer }>;
   bcc?: string | string[];
 };
 
@@ -21,30 +14,38 @@ export async function sendInvoiceEmail(
   args: SendInvoiceArgs
 ): Promise<{ id: string | null }> {
   const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.MAIL_FROM;
+  if (!apiKey) {
+    console.warn("RESEND_API_KEY not set; skipping email send.");
+    return { id: null };
+  }
 
-  if (!apiKey) throw new Error("Missing RESEND_API_KEY");
-  if (!from) throw new Error("Missing MAIL_FROM");
+  const from =
+    process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
 
   const resend = new Resend(apiKey);
 
-  // Convert Buffer attachments to { filename, content: base64 }
-  const attachments =
-    args.attachments?.map((a) => ({
-      filename: a.filename,
-      content: a.content.toString("base64"),
-    })) ?? [];
+  try {
+    const { data, error } = await resend.emails.send({
+      from,
+      to: args.to,
+      subject: args.subject,
+      html: args.html,
+      // Resend accepts Buffer for attachments
+      attachments: args.attachments?.map(a => ({
+        filename: a.filename,
+        content: a.content,
+      })),
+      bcc: args.bcc,
+    });
 
-  const result = await resend.emails.send({
-    from,
-    to: Array.isArray(args.to) ? args.to : [args.to],
-    subject: args.subject,
-    html: args.html,
-    attachments,
-    // only set bcc if provided (Resend types don’t love unknown props)
-    ...(args.bcc ? { bcc: Array.isArray(args.bcc) ? args.bcc : [args.bcc] } : {}),
-  });
+    if (error) {
+      console.error("Resend error:", error);
+      return { id: null };
+    }
 
-  // Always normalize to { id: string | null }
-  return { id: result?.data?.id ?? null };
+    return { id: data?.id ?? null };
+  } catch (e) {
+    console.error("sendInvoiceEmail failed:", e);
+    return { id: null };
+  }
 }
