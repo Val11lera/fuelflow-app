@@ -1,45 +1,52 @@
+// src/lib/mailer.ts
+"use server";
+
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY as string);
-const MAIL_FROM =
-  process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
+const RESEND_API_KEY = process.env.RESEND_API_KEY!;
+const MAIL_FROM = process.env.MAIL_FROM!; // e.g. "FuelFlow <invoices@mail.fuelflow.co.uk>"
 
-export type SendInvoiceArgs = {
-  to: string | string[];               // 👈 accept single or many
-  subject: string;
-  html: string;
-  attachments?: { filename: string; content: Buffer }[];
+if (!RESEND_API_KEY) throw new Error("Missing RESEND_API_KEY");
+if (!MAIL_FROM) throw new Error("Missing MAIL_FROM");
+
+const resend = new Resend(RESEND_API_KEY);
+
+// ---- Public types ----
+export type Attachment = {
+  filename: string;
+  content: Buffer;
 };
 
-function asArray<T>(v: T | T[]): T[] {
-  return Array.isArray(v) ? v : [v];
-}
+export type SendInvoiceArgs = {
+  to: string[];                 // list of recipients
+  subject: string;
+  html: string;
+  attachments?: Attachment[];   // optional
+  bcc?: string | string[];      // <-- add bcc support
+};
 
-// Returns message id (or null) – never throws
-export async function sendInvoiceEmail(args: SendInvoiceArgs): Promise<string | null> {
-  try {
-    const attachments = args.attachments?.map((a) => ({
+// Return either the id string (Resend message id) or a small object with id
+export async function sendInvoiceEmail(args: SendInvoiceArgs): Promise<{ id: string }> {
+  const result = await resend.emails.send({
+    from: MAIL_FROM,
+    to: args.to,
+    subject: args.subject,
+    html: args.html,
+    // Resend accepts Buffer for attachments' content
+    attachments: args.attachments?.map(a => ({
       filename: a.filename,
-      // Resend accepts base64 content in Node; convert Buffer → base64
-      content: a.content.toString("base64"),
-    }));
+      content: a.content,
+    })),
+    bcc: args.bcc
+      ? Array.isArray(args.bcc) ? args.bcc : [args.bcc]
+      : undefined,
+  });
 
-    const { data, error } = await resend.emails.send({
-      from: MAIL_FROM,
-      to: asArray(args.to),            // 👈 normalize to string[]
-      subject: args.subject,
-      html: args.html,
-      attachments,
-    });
+  // Normalize a return shape with .id
+  if (result?.data?.id) return { id: result.data.id };
 
-    if (error) {
-      console.error("Resend error:", error);
-      return null;
-    }
-    return data?.id ?? null;
-  } catch (e) {
-    console.error("sendInvoiceEmail error:", e);
-    return null;
-  }
+  // If API returned an error, make it obvious
+  const msg = result?.error?.message ?? "Failed to send email";
+  throw new Error(msg);
 }
 
