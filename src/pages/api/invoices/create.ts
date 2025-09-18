@@ -1,5 +1,5 @@
 // src/pages/api/invoices/create.ts
-// src/pages/api/invoices/create.ts
+// pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { sendInvoiceEmail } from "@/lib/mailer";
 import { buildInvoicePdf, type InvoicePayload } from "@/lib/invoice-pdf";
@@ -27,6 +27,8 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse<Ok | Err | any>
 ) {
+  console.log(`[INVOICE v7] ${req.method} /api/invoices/create`);
+
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res
@@ -34,7 +36,6 @@ export default async function handler(
       .json({ ok: false, error: "Method Not Allowed", version: VERSION });
   }
 
-  // Local body echo helper
   if (process.env.NODE_ENV !== "production" && req.query.debug === "body") {
     return res.status(200).json({
       version: VERSION,
@@ -44,7 +45,6 @@ export default async function handler(
     });
   }
 
-  // Optional shared-secret protection
   const expected = process.env.INVOICE_SECRET;
   if (expected && req.headers["x-invoice-secret"] !== expected) {
     return res
@@ -55,10 +55,8 @@ export default async function handler(
   try {
     const payload = req.body as InvoicePayload;
 
-    // 1) Build PDF
     const { pdfBuffer, filename, total } = await buildInvoicePdf(payload);
 
-    // 2) Email (default ON unless payload.email === false)
     const shouldEmail = payload.email !== false;
     let emailed = false;
     let emailId: string | null = null;
@@ -75,9 +73,10 @@ export default async function handler(
         subject,
         html,
         attachments: [{ filename, content: pdfBuffer }],
-        bcc: process.env.MAIL_BCC, // optional
+        bcc: process.env.MAIL_BCC,
       });
 
+      console.log(`[INVOICE v7] resend id=`, id);
       if (id) {
         emailed = true;
         emailId = id;
@@ -101,7 +100,7 @@ export default async function handler(
       },
     });
   } catch (err: any) {
-    console.error("create invoice error:", err);
+    console.error("[INVOICE v7] error:", err);
     return res.status(400).json({
       ok: false,
       error: err?.message ?? "Failed to create invoice",
