@@ -1,12 +1,10 @@
 {
   "company": { "name": "FuelFlow" },
-  "customer": { "name": "Test User", "email": "fuelflow.queries@gmail.com" },
-  "invoiceNumber": "INV-2025-0001",
+  "customer": { "name": "Ada Lovelace", "email": "fuelflow.queries@gmail.com" },
   "items": [
-    { "description": "Diesel 1000L", "quantity": 1, "unitPrice": 1200 },
-    { "description": "Delivery", "quantity": 1, "unitPrice": 75 }
+    { "description": "Fuel delivery — Premium", "quantity": 2, "unitPrice": 199.5 },
+    { "description": "Service fee", "quantity": 1, "unitPrice": 25 }
   ],
   "currency": "GBP",
-  "email": true,
-  "notes": "Thank you for your business."
+  "notes": "Thanks for your business!"
 }
