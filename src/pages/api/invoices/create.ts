@@ -3,47 +3,51 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { buildInvoicePdf, type InvoicePayload } from "@/lib/invoice-pdf";
 import { sendInvoiceEmail } from "@/lib/mailer";
 
+const VERSION = "create.v6"; // ← visible in responses so we can verify this file is live
+
 type Ok = {
   ok: true;
   filename: string;
   total: number;
   emailed: boolean;
   emailId: string | null;
+  version: string;
 };
-type Err = { ok: false; error: string };
-type ResBody = Ok | Err;
+type Err = { ok: false; error: string; version: string };
+type ResBody = Ok | Err | any;
 
 export default async function handler(
   req: NextApiRequest,
-  res: NextApiResponse<ResBody | any>
+  res: NextApiResponse<ResBody>
 ) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
-    return res.status(405).json({ ok: false, error: "Method Not Allowed" });
+    return res.status(405).json({ ok: false, error: "Method Not Allowed", version: VERSION });
   }
 
-  // 🔎 Debug helper: view exactly what the server received
+  // DEV helper: echo the parsed body so we can see exactly what the server received
   if (process.env.NODE_ENV !== "production" && req.query.debug === "body") {
     return res.status(200).json({
+      version: VERSION,
       received: req.body,
       keys: req.body ? Object.keys(req.body) : [],
-      note: "This endpoint will render the parsed JSON body. Remove when done.",
+      note: "Parsed JSON body from Next.js",
     });
   }
 
   // Optional shared secret
   const expected = process.env.INVOICE_SECRET;
   if (expected && req.headers["x-invoice-secret"] !== expected) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
+    return res.status(401).json({ ok: false, error: "Unauthorized", version: VERSION });
   }
 
   try {
     const payload = req.body as InvoicePayload;
 
-    // 1) Build the PDF (throws if items missing/empty)
+    // Build the PDF (this throws a clear message if items are missing/empty)
     const { pdfBuffer, filename, total } = await buildInvoicePdf(payload);
 
-    // 2) Email? (default ON unless payload.email === false)
+    // Email (default ON unless payload.email === false)
     const shouldEmail = payload.email !== false;
     let emailed = false;
     let emailId: string | null = null;
@@ -66,11 +70,18 @@ export default async function handler(
       }
     }
 
-    return res.status(200).json({ ok: true, filename, total, emailed, emailId });
+    return res.status(200).json({
+      ok: true,
+      filename,
+      total,
+      emailed,
+      emailId,
+      version: VERSION,
+    });
   } catch (err: any) {
     console.error("invoice create error:", err);
-    return res
-      .status(400) // use 400 for validation errors thrown by buildInvoicePdf
-      .json({ ok: false, error: err?.message ?? "Failed to create invoice" });
+    // Validation errors (like no items) should return 400 with the thrown message
+    return res.status(400).json({ ok: false, error: err?.message ?? "Failed to create invoice", version: VERSION });
   }
 }
+
