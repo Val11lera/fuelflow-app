@@ -1,6 +1,5 @@
 // src/pages/api/invoices/create.ts
-mkdir -p src/pages/api/invoices
-cat > src/pages/api/invoices/create.ts <<'TS'
+// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { buildInvoicePdf, type InvoicePayload } from "@/lib/invoice-pdf";
 import { sendInvoiceEmail } from "@/lib/mailer";
@@ -30,9 +29,12 @@ export default async function handler(
 ) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
-    return res.status(405).json({ ok: false, error: "Method Not Allowed", version: VERSION });
+    return res
+      .status(405)
+      .json({ ok: false, error: "Method Not Allowed", version: VERSION });
   }
 
+  // Optional body echo for debugging (local only)
   if (process.env.NODE_ENV !== "production" && req.query.debug === "body") {
     return res.status(200).json({
       version: VERSION,
@@ -42,22 +44,30 @@ export default async function handler(
     });
   }
 
+  // Optional shared-secret protection
   const expected = process.env.INVOICE_SECRET;
   if (expected && req.headers["x-invoice-secret"] !== expected) {
-    return res.status(401).json({ ok: false, error: "Unauthorized", version: VERSION });
+    return res
+      .status(401)
+      .json({ ok: false, error: "Unauthorized", version: VERSION });
   }
 
   try {
     const payload = req.body as InvoicePayload;
 
+    // 1) Build PDF
     const { pdfBuffer, filename, total } = await buildInvoicePdf(payload);
 
+    // 2) Email (default ON unless payload.email === false)
     const shouldEmail = payload.email !== false;
     let emailed = false;
     let emailId: string | null = null;
 
     if (shouldEmail && payload.customer?.email) {
-      const subject = `FuelFlow — Invoice ${filename.replace(/\.pdf$/i, "")} · Total ${payload.currency} ${total.toFixed(2)}`;
+      const subject = `FuelFlow — Invoice ${filename.replace(
+        /\.pdf$/i,
+        ""
+      )} · Total ${payload.currency} ${total.toFixed(2)}`;
       const html = `<p>Hello ${payload.customer.name}, please find your invoice attached.</p>`;
 
       const { id } = await sendInvoiceEmail({
@@ -65,10 +75,13 @@ export default async function handler(
         subject,
         html,
         attachments: [{ filename, content: pdfBuffer }],
-        bcc: process.env.MAIL_BCC,
+        bcc: process.env.MAIL_BCC, // optional
       });
 
-      if (id) { emailed = true; emailId = id; }
+      if (id) {
+        emailed = true;
+        emailId = id;
+      }
     }
 
     return res.status(200).json({
@@ -80,7 +93,8 @@ export default async function handler(
       version: VERSION,
       debug: {
         hasResendKey: Boolean(process.env.RESEND_API_KEY),
-        mailFrom: process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>",
+        mailFrom:
+          process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>",
         pdfSize: pdfBuffer.length,
         shouldEmail,
         ts: new Date().toISOString(),
@@ -88,6 +102,10 @@ export default async function handler(
     });
   } catch (err: any) {
     console.error("invoice create error:", err);
-    return res.status(400).json({ ok: false, error: err?.message ?? "Failed to create invoice", version: VERSION });
+    return res.status(400).json({
+      ok: false,
+      error: err?.message ?? "Failed to create invoice",
+      version: VERSION,
+    });
   }
 }
