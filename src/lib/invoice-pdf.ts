@@ -2,66 +2,66 @@
 // src/lib/invoice-pdf.ts
 import PDFDocument from "pdfkit";
 
+export type InvoiceItem = {
+  description: string;
+  quantity: number;
+  unitPrice: number;
+};
+
 export type InvoicePayload = {
   company: { name: string };
   customer: { name: string; email?: string };
-  items: Array<{ description: string; quantity: number; unitPrice: number }>;
-  currency: string;    // e.g. "GBP"
-  email?: boolean;     // if false, skip sending email
+  items: InvoiceItem[];
+  currency: string;
+  email?: boolean; // optional flag (defaults true if customer.email exists)
   notes?: string;
 };
 
-export async function buildInvoicePdf(
-  payload: InvoicePayload
-): Promise<{ pdfBuffer: Buffer; filename: string; total: number }> {
-  // compute total
-  const total = payload.items.reduce(
-    (sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0),
-    0
-  );
-
-  const filename = `INV-${new Date()
-    .toISOString()
-    .replace(/[:T\-\.Z]/g, "")
-    .slice(0, 14)}.pdf`;
-
+export async function buildInvoicePdf(payload: InvoicePayload): Promise<Buffer> {
   const doc = new PDFDocument({ size: "A4", margin: 50 });
 
+  // Buffer collector
   const chunks: Buffer[] = [];
+  doc.on("data", (c: Buffer) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
   const done = new Promise<Buffer>((resolve, reject) => {
-    doc.on("data", (c: Buffer) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
   });
 
-  // Very simple layout
-  doc.fontSize(18).text(payload.company.name);
+  // Simple layout
+  doc.fontSize(18).text(payload.company.name, { underline: true });
   doc.moveDown();
-  doc.fontSize(12).text(`Bill To: ${payload.customer.name}`);
+  doc.fontSize(12).text(`Bill to: ${payload.customer.name}`);
   if (payload.customer.email) doc.text(`Email: ${payload.customer.email}`);
   doc.moveDown();
 
-  doc.text("Items:");
+  doc.text("Items");
   doc.moveDown(0.5);
 
+  let total = 0;
   payload.items.forEach((it) => {
-    doc.text(
-      `${it.description} — qty ${it.quantity} @ ${payload.currency} ${it.unitPrice.toFixed(
-        2
-      )}`
-    );
+    const line = `${it.description} — ${it.quantity} × ${fmtMoney(it.unitPrice, payload.currency)}`;
+    const lineTotal = (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0);
+    total += lineTotal;
+    doc.text(`${line} = ${fmtMoney(lineTotal, payload.currency)}`);
   });
 
   doc.moveDown();
-  doc.text(`Total: ${payload.currency} ${total.toFixed(2)}`, { underline: true });
+  doc.text(`Total: ${fmtMoney(total, payload.currency)}`, { bold: true });
 
   if (payload.notes) {
     doc.moveDown();
-    doc.text(`Notes: ${payload.notes}`);
+    doc.text(payload.notes);
   }
 
   doc.end();
-  const pdfBuffer = await done;
+  return done;
+}
 
-  return { pdfBuffer, filename, total };
+function fmtMoney(amount: number, currency: string) {
+  try {
+    return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(amount);
+  } catch {
+    return `${currency} ${amount.toFixed(2)}`;
+  }
 }
