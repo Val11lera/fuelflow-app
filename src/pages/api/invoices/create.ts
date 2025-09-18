@@ -74,4 +74,3 @@ export default async function handler(
       .json({ ok: false, error: err?.message ?? "Failed to create invoice" });
   }
 }
-
