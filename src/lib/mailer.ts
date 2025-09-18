@@ -47,4 +47,3 @@ export async function sendInvoiceEmail(
     return { id: null };
   }
 }
-
