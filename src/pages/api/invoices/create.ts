@@ -3,7 +3,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { buildInvoicePdf, type InvoicePayload } from "@/lib/invoice-pdf";
 import { sendInvoiceEmail } from "@/lib/mailer";
 
-const VERSION = "create.v6"; // ← visible in responses so we can verify this file is live
+const VERSION = "create.v7"; // ← we’ll look for this in responses
 
 type Ok = {
   ok: true;
@@ -12,20 +12,26 @@ type Ok = {
   emailed: boolean;
   emailId: string | null;
   version: string;
+  debug: {
+    hasResendKey: boolean;
+    mailFrom: string;
+    pdfSize: number;
+    shouldEmail: boolean;
+    ts: string;
+  };
 };
 type Err = { ok: false; error: string; version: string };
-type ResBody = Ok | Err | any;
 
 export default async function handler(
   req: NextApiRequest,
-  res: NextApiResponse<ResBody>
+  res: NextApiResponse<Ok | Err | any>
 ) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ ok: false, error: "Method Not Allowed", version: VERSION });
   }
 
-  // DEV helper: echo the parsed body so we can see exactly what the server received
+  // Dev helper to echo parsed body
   if (process.env.NODE_ENV !== "production" && req.query.debug === "body") {
     return res.status(200).json({
       version: VERSION,
@@ -35,7 +41,7 @@ export default async function handler(
     });
   }
 
-  // Optional shared secret
+  // Optional shared-secret
   const expected = process.env.INVOICE_SECRET;
   if (expected && req.headers["x-invoice-secret"] !== expected) {
     return res.status(401).json({ ok: false, error: "Unauthorized", version: VERSION });
@@ -44,10 +50,10 @@ export default async function handler(
   try {
     const payload = req.body as InvoicePayload;
 
-    // Build the PDF (this throws a clear message if items are missing/empty)
+    // Build the PDF (throws if missing/empty items)
     const { pdfBuffer, filename, total } = await buildInvoicePdf(payload);
 
-    // Email (default ON unless payload.email === false)
+    // Email unless explicitly disabled
     const shouldEmail = payload.email !== false;
     let emailed = false;
     let emailId: string | null = null;
@@ -56,37 +62,37 @@ export default async function handler(
       const subject = `FuelFlow — Invoice ${filename.replace(/\.pdf$/i, "")} · Total ${payload.currency} ${total.toFixed(2)}`;
       const html = `<p>Hello ${payload.customer.name}, please find your invoice attached.</p>`;
 
-      const sendResult = await sendInvoiceEmail({
+      const { id } = await sendInvoiceEmail({
         to: payload.customer.email,
         subject,
         html,
         attachments: [{ filename, content: pdfBuffer }],
-        bcc: process.env.MAIL_BCC, // optional
+        bcc: process.env.MAIL_BCC,
       });
 
-      if (sendResult.id) {
+      if (id) {
         emailed = true;
-        emailId = sendResult.id;
+        emailId = id;
       }
     }
 
-return res.status(200).json({
-  ok: true,
-  filename,
-  total,
-  emailed,
-  emailId,
-  debug: {
-    hasResendKey: Boolean(process.env.RESEND_API_KEY),
-    mailFrom: process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>",
-    pdfSize: pdfBuffer.length,     // 👈 add this
-    shouldEmail,                   // 👈 and this
-    ts: new Date().toISOString(),
-  },
-});
+    return res.status(200).json({
+      ok: true,
+      filename,
+      total,
+      emailed,
+      emailId,
+      version: VERSION,
+      debug: {
+        hasResendKey: Boolean(process.env.RESEND_API_KEY),
+        mailFrom: process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>",
+        pdfSize: (pdfBuffer?.length ?? 0),
+        shouldEmail,
+        ts: new Date().toISOString(),
+      },
+    });
   } catch (err: any) {
     console.error("invoice create error:", err);
-    // Validation errors (like no items) should return 400 with the thrown message
     return res.status(400).json({ ok: false, error: err?.message ?? "Failed to create invoice", version: VERSION });
   }
 }
