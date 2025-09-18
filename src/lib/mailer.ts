@@ -17,7 +17,6 @@ export async function sendInvoiceEmail(
     console.warn("RESEND_API_KEY not set; skipping email send.");
     return { id: null };
   }
-
   const from = process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
   const resend = new Resend(apiKey);
 
@@ -31,9 +30,7 @@ export async function sendInvoiceEmail(
 
     if (process.env.NODE_ENV !== "production") {
       const sizes = args.attachments?.map((a) => a.content.length) ?? [];
-      console.log(
-        `[mailer] sending with attachments=${mapped.length}, base64=${useBase64}, sizes=${sizes.join(",")}`
-      );
+      console.log(`[mailer] attachments=${mapped.length}, base64=${useBase64}, sizes=${sizes.join(",")}`);
     }
 
     return await resend.emails.send({
@@ -47,12 +44,12 @@ export async function sendInvoiceEmail(
   };
 
   try {
-    let { data, error } = await attempt(false); // try Buffer
+    let { data, error } = await attempt(false); // Buffer first
     if (error) {
       console.error("[mailer] Resend error (buffer attempt):", error);
-      const res2 = await attempt(true);        // fallback to base64
-      data = res2.data;
-      error = res2.error;
+      const r2 = await attempt(true);           // base64 fallback
+      data = r2.data;
+      error = r2.error;
       if (error) {
         console.error("[mailer] Resend error (base64 attempt):", error);
         return { id: null };
@@ -64,3 +61,4 @@ export async function sendInvoiceEmail(
     return { id: null };
   }
 }
+
