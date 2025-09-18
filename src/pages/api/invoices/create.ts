@@ -1,4 +1,6 @@
 // src/pages/api/invoices/create.ts
+mkdir -p src/pages/api/invoices
+cat > src/pages/api/invoices/create.ts <<'TS'
 import type { NextApiRequest, NextApiResponse } from "next";
 import { buildInvoicePdf, type InvoicePayload } from "@/lib/invoice-pdf";
 import { sendInvoiceEmail } from "@/lib/mailer";
@@ -89,5 +91,4 @@ export default async function handler(
     return res.status(400).json({ ok: false, error: err?.message ?? "Failed to create invoice", version: VERSION });
   }
 }
-
-
+TS
