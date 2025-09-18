@@ -14,47 +14,54 @@ export type InvoicePayload = {
 export async function buildInvoicePdf(
   payload: InvoicePayload
 ): Promise<{ pdfBuffer: Buffer; filename: string; total: number }> {
-  if (!payload.items || payload.items.length === 0) {
-    throw new Error("At least one line item is required");
-  }
+  // compute total
+  const total = payload.items.reduce(
+    (sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0),
+    0
+  );
+
+  const filename = `INV-${new Date()
+    .toISOString()
+    .replace(/[:T\-\.Z]/g, "")
+    .slice(0, 14)}.pdf`;
 
   const doc = new PDFDocument({ size: "A4", margin: 50 });
 
-  doc.fontSize(20).text(payload.company.name).moveDown();
-  doc.fontSize(12).text(`Bill to: ${payload.customer.name}`);
+  const chunks: Buffer[] = [];
+  const done = new Promise<Buffer>((resolve, reject) => {
+    doc.on("data", (c: Buffer) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+  });
+
+  // Very simple layout
+  doc.fontSize(18).text(payload.company.name);
+  doc.moveDown();
+  doc.fontSize(12).text(`Bill To: ${payload.customer.name}`);
   if (payload.customer.email) doc.text(`Email: ${payload.customer.email}`);
   doc.moveDown();
 
-  let total = 0;
-  doc.text("Items:").moveDown(0.5);
+  doc.text("Items:");
+  doc.moveDown(0.5);
+
   payload.items.forEach((it) => {
-    const line = (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0);
-    total += line;
     doc.text(
       `${it.description} — qty ${it.quantity} @ ${payload.currency} ${it.unitPrice.toFixed(
         2
-      )} = ${payload.currency} ${line.toFixed(2)}`
+      )}`
     );
   });
 
   doc.moveDown();
-  if (payload.notes) doc.text("Notes:").moveDown(0.25).text(payload.notes);
+  doc.text(`Total: ${payload.currency} ${total.toFixed(2)}`, { underline: true });
 
-  doc
-    .moveDown()
-    .fontSize(14)
-    .text(`Total: ${payload.currency} ${total.toFixed(2)}`, { align: "right" });
+  if (payload.notes) {
+    doc.moveDown();
+    doc.text(`Notes: ${payload.notes}`);
+  }
 
-  const pdfBuffer: Buffer = await new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    doc.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
-    doc.on("error", reject);
-    doc.end();
-  });
+  doc.end();
+  const pdfBuffer = await done;
 
-  const stamp = new Date().toISOString().replace(/[:T\-\.Z]/g, "").slice(0, 14);
-  const filename = `INV-${stamp}.pdf`;
   return { pdfBuffer, filename, total };
 }
-
