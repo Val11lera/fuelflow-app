@@ -70,14 +70,20 @@ export default async function handler(
       }
     }
 
-    return res.status(200).json({
-      ok: true,
-      filename,
-      total,
-      emailed,
-      emailId,
-      version: VERSION,
-    });
+return res.status(200).json({
+  ok: true,
+  filename,
+  total,
+  emailed,
+  emailId,
+  debug: {
+    hasResendKey: Boolean(process.env.RESEND_API_KEY),
+    mailFrom: process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>",
+    pdfSize: pdfBuffer.length,     // 👈 add this
+    shouldEmail,                   // 👈 and this
+    ts: new Date().toISOString(),
+  },
+});
   } catch (err: any) {
     console.error("invoice create error:", err);
     // Validation errors (like no items) should return 400 with the thrown message
