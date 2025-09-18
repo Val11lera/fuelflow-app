@@ -6,8 +6,8 @@ export type InvoicePayload = {
   company: { name: string };
   customer: { name: string; email?: string };
   items: Array<{ description: string; quantity: number; unitPrice: number }>;
-  currency: string; // e.g. "GBP"
-  email?: boolean;  // if false, skip sending email
+  currency: string;    // e.g. "GBP"
+  email?: boolean;     // if false, skip sending email
   notes?: string;
 };
 
@@ -28,18 +28,20 @@ export async function buildInvoicePdf(
   let total = 0;
   doc.text("Items:").moveDown(0.5);
   payload.items.forEach((it) => {
-    const lt = (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0);
-    total += lt;
+    const line = (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0);
+    total += line;
     doc.text(
       `${it.description} — qty ${it.quantity} @ ${payload.currency} ${it.unitPrice.toFixed(
         2
-      )} = ${payload.currency} ${lt.toFixed(2)}`
+      )} = ${payload.currency} ${line.toFixed(2)}`
     );
   });
 
   doc.moveDown();
   if (payload.notes) doc.text("Notes:").moveDown(0.25).text(payload.notes);
-  doc.moveDown()
+
+  doc
+    .moveDown()
     .fontSize(14)
     .text(`Total: ${payload.currency} ${total.toFixed(2)}`, { align: "right" });
 
@@ -55,3 +57,4 @@ export async function buildInvoicePdf(
   const filename = `INV-${stamp}.pdf`;
   return { pdfBuffer, filename, total };
 }
+
