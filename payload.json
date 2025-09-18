@@ -2,7 +2,7 @@
   "company": { "name": "FuelFlow" },
   "customer": { "name": "Ada Lovelace", "email": "fuelflow.queries@gmail.com" },
   "items": [
-    { "description": "Fuel delivery — Premium", "quantity": 2, "unitPrice": 199.5 },
+    { "description": "Fuel delivery — Premium", "quantity": 2, "unitPrice": 199.50 },
     { "description": "Service fee", "quantity": 1, "unitPrice": 25 }
   ],
   "currency": "GBP",
