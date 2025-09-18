@@ -1,106 +1,117 @@
 // src/lib/invoice-pdf.ts
-// src/lib/invoice-pdf.ts
 import PDFDocument from "pdfkit";
 
-// The builder is intentionally liberal about input to avoid runtime crashes.
-// It accepts payload.items OR payload.lineItems. It validates at runtime.
-type AnyItem = {
-  description?: string;
-  quantity?: number;
-  unitPrice?: number;
+export type InvoicePayload = {
+  company: { name: string };
+  customer: { name: string; email?: string };
+  items: Array<{ description: string; quantity: number; unitPrice: number }>;
+  currency: string;    // e.g. "GBP"
+  email?: boolean;     // if false, skip sending email
+  notes?: string;
 };
 
-function money(n: number, currency = "GBP") {
-  const sign = currency === "GBP" ? "£" : currency + " ";
-  return `${sign}${n.toFixed(2)}`;
+function money(n: number) {
+  return Number.isFinite(n) ? Number(n.toFixed(2)) : 0;
 }
 
-function pickItems(payload: any): AnyItem[] {
-  const raw =
-    (Array.isArray(payload?.items) && payload.items) ||
-    (Array.isArray(payload?.lineItems) && payload.lineItems) ||
-    [];
-  return raw.filter(Boolean);
+function nowSlug() {
+  const d = new Date();
+  const pad = (x: number) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
-export function buildInvoicePdf(payload: any): Promise<Buffer> {
+function docToBuffer(doc: PDFDocument): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    try {
-      const items = pickItems(payload);
-      if (!Array.isArray(items) || items.length === 0) {
-        return reject(new Error("No items array found on payload"));
-      }
-
-      const company = payload?.company ?? {};
-      const customer = payload?.customer ?? {};
-      const currency = payload?.currency ?? "GBP";
-      const invoiceNo =
-        payload?.invoiceNumber ?? `INV-${new Date().getTime()}`;
-      const issue =
-        payload?.issueDate ?? new Date().toISOString().slice(0, 10);
-
-      const doc = new PDFDocument({ size: "A4", margin: 50 });
-      const buffers: Buffer[] = [];
-      doc.on("data", (d) => buffers.push(d as Buffer));
-      doc.on("end", () => resolve(Buffer.concat(buffers)));
-
-      // Header (seller)
-      doc.fontSize(20).text(company?.name ?? "FuelFlow", { align: "left" });
-      doc.moveDown(0.5);
-
-      // Invoice meta
-      doc.fontSize(18).text("INVOICE", { align: "right" });
-      doc.fontSize(10).text(`Invoice #: ${invoiceNo}`, { align: "right" });
-      doc.text(`Issue date: ${issue}`, { align: "right" });
-
-      // Customer
-      doc.moveDown();
-      doc.fontSize(12).text("Bill To:");
-      doc.fontSize(10).text(customer?.name ?? "Customer");
-
-      // Table header
-      doc.moveDown();
-      doc.fontSize(12).text("Description", 50, doc.y, { continued: true });
-      doc.text("Qty", 350, undefined, { continued: true });
-      doc.text("Unit", 400, undefined, { continued: true });
-      doc.text("Total", 470);
-      doc.moveTo(50, doc.y + 3).lineTo(550, doc.y + 3).stroke();
-
-      // Rows
-      let subtotal = 0;
-      for (const it of items) {
-        const qty = Number(it?.quantity ?? 0);
-        const unit = Number(it?.unitPrice ?? 0);
-        const desc = String(it?.description ?? "").trim() || "Item";
-        const line = qty * unit;
-        subtotal += line;
-
-        doc
-          .fontSize(10)
-          .text(desc, 50, doc.y + 6, { continued: true });
-        doc.text(String(qty), 350, undefined, { continued: true });
-        doc.text(money(unit, currency), 400, undefined, { continued: true });
-        doc.text(money(line, currency), 470);
-      }
-
-      // Totals
-      doc.moveDown();
-      doc.fontSize(12).text(`Subtotal: ${money(subtotal, currency)}`, {
-        align: "right",
-      });
-      const total = subtotal; // extend with tax/VAT if needed
-      doc.fontSize(14).text(`Total: ${money(total, currency)}`, {
-        align: "right",
-      });
-
-      if (payload?.notes) {
-        doc.moveDown();
-        doc.fontSize(10).text(String(payload.notes));
-      }
-
-      doc.end();
-    } catch (e) {
-      reject(e);
-    }
+    const chunks: Buffer[] = [];
+    doc.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    doc.on("error", reject);
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.end();
   });
+}
+
+export async function buildInvoicePdf(
+  payload: InvoicePayload
+): Promise<{ pdfBuffer: Buffer; filename: string; total: number }> {
+  if (!payload?.company?.name) throw new Error("Missing company name");
+  if (!payload?.customer?.name) throw new Error("Missing customer name");
+  if (!Array.isArray(payload?.items) || payload.items.length === 0) {
+    throw new Error("At least one line item is required");
+  }
+  if (!payload.currency) throw new Error("Missing currency");
+
+  const lines = payload.items.map((i) => ({
+    ...i,
+    lineTotal: money(i.quantity * i.unitPrice),
+  }));
+  const total = money(lines.reduce((sum, i) => sum + i.lineTotal, 0));
+  const filename = `invoice-${nowSlug()}.pdf`;
+  const currency = payload.currency.toUpperCase();
+
+  const doc = new PDFDocument({
+    size: "A4",
+    margins: { top: 56, bottom: 56, left: 56, right: 56 },
+    info: { Title: `Invoice ${filename}`, Author: payload.company.name },
+  });
+
+  // Header
+  doc.fontSize(20).text(payload.company.name).moveDown(0.25);
+  doc.fontSize(12).fillColor("#444")
+    .text("Invoice", { align: "right" })
+    .text(new Date().toLocaleDateString(), { align: "right" })
+    .moveDown();
+
+  // Bill to
+  doc.fillColor("#000").fontSize(12)
+    .text("Bill To:", { underline: true })
+    .moveDown(0.2)
+    .text(payload.customer.name)
+    .text(payload.customer.email ?? "", { lineBreak: true })
+    .moveDown();
+
+  // Table headers
+  const startY = doc.y + 10;
+  const col = { desc: 56, qty: 340, unit: 400, line: 480 };
+  doc.moveTo(56, startY - 8).lineTo(539, startY - 8).strokeColor("#ddd").stroke();
+  doc.font("Helvetica-Bold").fillColor("#000")
+    .text("Description", col.desc, startY)
+    .text("Qty", col.qty, startY, { width: 40, align: "right" })
+    .text("Unit", col.unit, startY, { width: 60, align: "right" })
+    .text("Line Total", col.line, startY, { width: 80, align: "right" });
+  doc.font("Helvetica")
+    .moveTo(56, startY + 16).lineTo(539, startY + 16).strokeColor("#ddd").stroke();
+
+  // Rows
+  let y = startY + 26;
+  for (const row of lines) {
+    doc
+      .text(row.description, col.desc, y, { width: 270 })
+      .text(String(row.quantity), col.qty, y, { width: 40, align: "right" })
+      .text(`${currency} ${money(row.unitPrice).toFixed(2)}`, col.unit, y, { width: 60, align: "right" })
+      .text(`${currency} ${row.lineTotal.toFixed(2)}`, col.line, y, { width: 80, align: "right" });
+    y += 20;
+    if (y > 720) { doc.addPage(); y = 80; }
+  }
+
+  // Divider + Total
+  doc.moveTo(56, y + 6).lineTo(539, y + 6).strokeColor("#ddd").stroke();
+  doc.font("Helvetica-Bold")
+    .text("Total:", 400, y + 16, { width: 60, align: "right" })
+    .text(`${currency} ${total.toFixed(2)}`, 480, y + 16, { width: 80, align: "right" });
+
+  // Notes
+  if (payload.notes) {
+    doc.font("Helvetica").fillColor("#444").moveDown(2)
+      .text("Notes", { underline: true })
+      .moveDown(0.3)
+      .fillColor("#000")
+      .text(payload.notes);
+  }
+
+  // Footer
+  doc.fontSize(9).fillColor("#777")
+    .text(`${payload.company.name} — generated by FuelFlow`, 56, 780, { align: "center", width: 483 });
+
+  const pdfBuffer = await docToBuffer(doc);
+  return { pdfBuffer, filename, total };
 }
