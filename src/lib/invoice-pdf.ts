@@ -1,105 +1,69 @@
 // src/lib/invoice-pdf.ts
-// src/lib/invoice-pdf.ts
 import PDFDocument from "pdfkit";
+import type { InvoicePayload } from "./invoice-types";
 
-// ---------- Types ----------
-export type InvoiceItem = {
-  description: string;
-  quantity: number;
-  unitPrice: number;
-};
-
-export type InvoicePayload = {
-  company: { name: string };
-  customer: { name: string; email?: string };
-  items: InvoiceItem[];
-  currency: string;   // e.g. "GBP"
-  notes?: string;
-};
-
-// ---------- Helpers ----------
-function money(n: number, currency: string) {
+function fmtMoney(n: number, currency: string) {
   try {
-    return new Intl.NumberFormat("en-GB", {
-      style: "currency",
-      currency,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(n);
+    return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(n);
   } catch {
-    return `${currency} ${n.toFixed(2)}`;
+    return `${currency} ${Number(n || 0).toFixed(2)}`;
   }
 }
 
-function totalOf(items: InvoiceItem[]) {
-  return items.reduce(
-    (sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0),
-    0
-  );
-}
-
-// Convert a PDFKit document stream into a single Buffer
-function docToBuffer(doc: any): Promise<Buffer> {
+function docToBuffer(doc: PDFDocument): Promise<Buffer> {
   return new Promise<Buffer>((resolve, reject) => {
     const chunks: Buffer[] = [];
-    doc.on("data", (c: Buffer | Uint8Array) =>
-      chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c))
-    );
+    doc.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
-    doc.end();
   });
 }
 
-// ---------- Builder ----------
 export async function buildInvoicePdf(payload: InvoicePayload): Promise<Buffer> {
   const doc = new PDFDocument({ size: "A4", margin: 50 });
 
   // Header
-  doc.font("Helvetica-Bold").fontSize(18).text(payload.company.name);
-  doc.moveDown();
-  doc.font("Helvetica").fontSize(12).text(`Bill To: ${payload.customer.name}`);
+  doc.font("Helvetica-Bold").fontSize(20).text(payload.company.name);
+  doc.moveDown(0.25);
+  doc.font("Helvetica").fontSize(12).text(`Invoice for ${payload.customer.name}`);
+
   doc.moveDown();
 
-  // Items table header
+  // Table header
   doc.font("Helvetica-Bold");
-  doc.text("Description", { continued: true });
-  doc.text("Qty", 300, doc.y, { width: 50, align: "right", continued: true });
-  doc.text("Unit", 360, doc.y, { width: 80, align: "right", continued: true });
-  doc.text("Line", 445, doc.y, { width: 100, align: "right" });
+  doc.text("Description", 50, doc.y, { continued: true });
+  doc.text("Qty", 300, doc.y, { continued: true });
+  doc.text("Unit", 350, doc.y, { continued: true });
+  doc.text("Line", 420, doc.y);
   doc.moveDown(0.5);
+  doc.font("Helvetica");
 
   // Items
-  doc.font("Helvetica");
-  payload.items.forEach((it) => {
+  let total = 0;
+  for (const it of payload.items) {
     const qty = Number(it.quantity) || 0;
-    const unit = Number(it.unitPrice) || 0;
-    const line = qty * unit;
+    const price = Number(it.unitPrice) || 0;
+    const line = qty * price;
+    total += line;
 
-    doc.text(it.description, { continued: true });
-    doc.text(String(qty), 300, doc.y, { width: 50, align: "right", continued: true });
-    doc.text(money(unit, payload.currency), 360, doc.y, { width: 80, align: "right", continued: true });
-    doc.text(money(line, payload.currency), 445, doc.y, { width: 100, align: "right" });
-  });
+    doc.text(it.description, 50, doc.y, { continued: true });
+    doc.text(String(qty), 300, doc.y, { continued: true });
+    doc.text(fmtMoney(price, payload.currency), 350, doc.y, { continued: true });
+    doc.text(fmtMoney(line, payload.currency), 420, doc.y);
+    doc.moveDown(0.2);
+  }
 
   doc.moveDown();
 
-  // Total (switch font to bold instead of using { bold: true })
-  const total = totalOf(payload.items);
-  doc.font("Helvetica-Bold");
-  doc.text(`Total: ${money(total, payload.currency)}`, 445, doc.y, {
-    width: 100,
-    align: "right",
-  });
+  // Total (make it bold by switching font, not a 'bold' option)
+  doc.font("Helvetica-Bold").text(`Total: ${fmtMoney(total, payload.currency)}`);
   doc.font("Helvetica");
 
-  // Notes
   if (payload.notes) {
     doc.moveDown();
-    doc.font("Helvetica-Oblique").text(payload.notes);
-    doc.font("Helvetica");
+    doc.text(payload.notes);
   }
 
+  doc.end();
   return docToBuffer(doc);
 }
-
