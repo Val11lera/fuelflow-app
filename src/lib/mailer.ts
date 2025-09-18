@@ -24,46 +24,37 @@ export async function sendInvoiceEmail(
 
   const resend = new Resend(apiKey);
 
-  // We’ll try Buffer first, then a base64 fallback (some setups prefer base64)
-  const attempt = async (useBase64: boolean) => {
-    const mapped =
-      args.attachments?.map((a) =>
-        useBase64
-          ? ({ filename: a.filename, content: a.content.toString("base64") } as any)
-          : { filename: a.filename, content: a.content }
-      ) ?? [];
+  try {
+    // Always send Base64 + contentType to avoid attachment ambiguity.
+    const attachments =
+      args.attachments?.map((a) => ({
+        filename: a.filename,
+        content: a.content.toString("base64"),
+        contentType: "application/pdf",
+      })) ?? [];
 
     if (process.env.NODE_ENV !== "production") {
-      const sizes = args.attachments?.map((a) => a.content.length) ?? [];
       console.log(
-        `[mailer] attachments=${mapped.length}, base64=${useBase64}, sizes=${sizes.join(
-          ","
-        )}`
+        `[mailer] attachments=${attachments.length}, base64=true, sizes=${args.attachments
+          ?.map((x) => x.content.length)
+          .join(",")}`
       );
     }
 
-    return await resend.emails.send({
+    const { data, error } = await resend.emails.send({
       from,
       to: args.to,
       subject: args.subject,
       html: args.html,
-      attachments: mapped,
+      attachments: attachments as any,
       bcc: args.bcc,
     });
-  };
 
-  try {
-    let { data, error } = await attempt(false); // Buffer
     if (error) {
-      console.error("[mailer] Resend error (buffer attempt):", error);
-      const r2 = await attempt(true); // base64 fallback
-      data = r2.data;
-      error = r2.error;
-      if (error) {
-        console.error("[mailer] Resend error (base64 attempt):", error);
-        return { id: null };
-      }
+      console.error("[mailer] Resend error:", error);
+      return { id: null };
     }
+
     return { id: data?.id ?? null };
   } catch (e) {
     console.error("sendInvoiceEmail failed:", e);
