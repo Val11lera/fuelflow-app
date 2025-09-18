@@ -1,5 +1,4 @@
 // src/lib/mailer.ts
-// src/lib/mailer.ts
 import { Resend } from "resend";
 
 export type SendInvoiceArgs = {
@@ -19,35 +18,21 @@ export async function sendInvoiceEmail(
     return { id: null };
   }
 
-  const from =
-    process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
-
+  const from = process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
   const resend = new Resend(apiKey);
 
   const attempt = async (useBase64: boolean) => {
     const mapped =
       args.attachments?.map((a) =>
         useBase64
-          ? // base64 string variant (cast to any to satisfy SDK types if needed)
-            ({
-              filename: a.filename,
-              content: a.content.toString("base64"),
-              // contentType is optional; Resend infers from filename
-              // contentType: "application/pdf",
-            } as any)
-          : {
-              filename: a.filename,
-              content: a.content, // Buffer
-            }
+          ? ({ filename: a.filename, content: a.content.toString("base64") } as any)
+          : { filename: a.filename, content: a.content }
       ) ?? [];
 
-    // Helpful logs in dev
     if (process.env.NODE_ENV !== "production") {
       const sizes = args.attachments?.map((a) => a.content.length) ?? [];
       console.log(
-        `[mailer] sending with attachments=${mapped.length}, base64=${useBase64}, sizes=${sizes.join(
-          ","
-        )}`
+        `[mailer] sending with attachments=${mapped.length}, base64=${useBase64}, sizes=${sizes.join(",")}`
       );
     }
 
@@ -62,19 +47,16 @@ export async function sendInvoiceEmail(
   };
 
   try {
-    // 1) First try with Buffer (preferred)
-    let { data, error } = await attempt(false);
+    let { data, error } = await attempt(false); // try Buffer
     if (error) {
       console.error("[mailer] Resend error (buffer attempt):", error);
-      // 2) Fallback: try base64 for attachments
-      const res2 = await attempt(true);
+      const res2 = await attempt(true);        // fallback to base64
       data = res2.data;
       error = res2.error;
       if (error) {
         console.error("[mailer] Resend error (base64 attempt):", error);
         return { id: null };
       }
-      return { id: data?.id ?? null };
     }
     return { id: data?.id ?? null };
   } catch (e) {
@@ -82,4 +64,3 @@ export async function sendInvoiceEmail(
     return { id: null };
   }
 }
-
