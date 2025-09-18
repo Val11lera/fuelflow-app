@@ -25,39 +25,27 @@ export async function sendInvoiceEmail(
   const resend = new Resend(apiKey);
 
   try {
-    // Always send Base64 + contentType to avoid attachment ambiguity.
-    const attachments =
-      args.attachments?.map((a) => ({
-        filename: a.filename,
-        content: a.content.toString("base64"),
-        contentType: "application/pdf",
-      })) ?? [];
-
-    if (process.env.NODE_ENV !== "production") {
-      console.log(
-        `[mailer] attachments=${attachments.length}, base64=true, sizes=${args.attachments
-          ?.map((x) => x.content.length)
-          .join(",")}`
-      );
-    }
-
     const { data, error } = await resend.emails.send({
       from,
       to: args.to,
       subject: args.subject,
       html: args.html,
-      attachments: attachments as any,
+      attachments: args.attachments?.map(a => ({
+        filename: a.filename,
+        content: a.content, // Buffer is supported by Resend SDK
+      })),
       bcc: args.bcc,
     });
 
     if (error) {
-      console.error("[mailer] Resend error:", error);
+      // This will show up in your dev server logs
+      console.error("Resend error:", error);
       return { id: null };
     }
-
     return { id: data?.id ?? null };
   } catch (e) {
     console.error("sendInvoiceEmail failed:", e);
     return { id: null };
   }
 }
+
