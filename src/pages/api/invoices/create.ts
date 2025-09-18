@@ -1,8 +1,8 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { buildInvoicePdf, type InvoicePayload } from "@/lib/invoice-pdf";
 import { sendInvoiceEmail } from "@/lib/mailer";
+import { buildInvoicePdf, type InvoicePayload } from "@/lib/invoice-pdf";
 
 const VERSION = "create.v7";
 
@@ -34,7 +34,7 @@ export default async function handler(
       .json({ ok: false, error: "Method Not Allowed", version: VERSION });
   }
 
-  // Optional body echo for debugging (local only)
+  // Local body echo helper
   if (process.env.NODE_ENV !== "production" && req.query.debug === "body") {
     return res.status(200).json({
       version: VERSION,
@@ -101,7 +101,7 @@ export default async function handler(
       },
     });
   } catch (err: any) {
-    console.error("invoice create error:", err);
+    console.error("create invoice error:", err);
     return res.status(400).json({
       ok: false,
       error: err?.message ?? "Failed to create invoice",
