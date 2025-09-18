@@ -4,9 +4,11 @@ import { Resend } from "resend";
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const apiKey = process.env.RESEND_API_KEY || "";
   const from = process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
-  const to = (req.query.to as string) || "you@yourdomain.com";
+  const to = (req.query.to as string) || "fuelflow.queries@gmail.com";
 
-  if (!apiKey) return res.status(400).json({ ok: false, error: "RESEND_API_KEY missing" });
+  if (!apiKey) {
+    return res.status(400).json({ ok: false, error: "RESEND_API_KEY missing" });
+  }
 
   try {
     const resend = new Resend(apiKey);
@@ -19,8 +21,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     return res.status(200).json({
       ok: !error,
-      data,       // contains { id } on success
-      error,      // shows the exact reason on failure
+      data,   // contains { id } on success
+      error,  // shows the exact reason on failure
       debug: { from, hasKey: Boolean(apiKey) }
     });
   } catch (e: any) {
