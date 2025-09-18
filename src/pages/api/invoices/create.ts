@@ -3,7 +3,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { buildInvoicePdf, type InvoicePayload } from "@/lib/invoice-pdf";
 import { sendInvoiceEmail } from "@/lib/mailer";
 
-const VERSION = "create.v7"; // ← we’ll look for this in responses
+const VERSION = "create.v7";
 
 type Ok = {
   ok: true;
@@ -31,7 +31,6 @@ export default async function handler(
     return res.status(405).json({ ok: false, error: "Method Not Allowed", version: VERSION });
   }
 
-  // Dev helper to echo parsed body
   if (process.env.NODE_ENV !== "production" && req.query.debug === "body") {
     return res.status(200).json({
       version: VERSION,
@@ -41,7 +40,6 @@ export default async function handler(
     });
   }
 
-  // Optional shared-secret
   const expected = process.env.INVOICE_SECRET;
   if (expected && req.headers["x-invoice-secret"] !== expected) {
     return res.status(401).json({ ok: false, error: "Unauthorized", version: VERSION });
@@ -50,10 +48,8 @@ export default async function handler(
   try {
     const payload = req.body as InvoicePayload;
 
-    // Build the PDF (throws if missing/empty items)
     const { pdfBuffer, filename, total } = await buildInvoicePdf(payload);
 
-    // Email unless explicitly disabled
     const shouldEmail = payload.email !== false;
     let emailed = false;
     let emailId: string | null = null;
@@ -70,10 +66,7 @@ export default async function handler(
         bcc: process.env.MAIL_BCC,
       });
 
-      if (id) {
-        emailed = true;
-        emailId = id;
-      }
+      if (id) { emailed = true; emailId = id; }
     }
 
     return res.status(200).json({
@@ -86,7 +79,7 @@ export default async function handler(
       debug: {
         hasResendKey: Boolean(process.env.RESEND_API_KEY),
         mailFrom: process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>",
-        pdfSize: (pdfBuffer?.length ?? 0),
+        pdfSize: pdfBuffer.length,
         shouldEmail,
         ts: new Date().toISOString(),
       },
@@ -96,4 +89,5 @@ export default async function handler(
     return res.status(400).json({ ok: false, error: err?.message ?? "Failed to create invoice", version: VERSION });
   }
 }
+
 
