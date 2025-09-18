@@ -9,11 +9,9 @@ export type SendInvoiceArgs = {
   bcc?: string | string[];
 };
 
-type SendEmailResult = { id: string | null };
-
 export async function sendInvoiceEmail(
   args: SendInvoiceArgs
-): Promise<SendEmailResult> {
+): Promise<{ id: string | null }> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     console.warn("RESEND_API_KEY not set; skipping email send.");
@@ -33,7 +31,7 @@ export async function sendInvoiceEmail(
       html: args.html,
       attachments: args.attachments?.map((a) => ({
         filename: a.filename,
-        content: a.content, // Buffer is supported by Resend SDK
+        content: a.content, // Buffer
       })),
       bcc: args.bcc,
     });
