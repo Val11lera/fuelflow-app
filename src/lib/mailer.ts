@@ -1,4 +1,5 @@
 // src/lib/mailer.ts
+// src/lib/mailer.ts
 import { Resend } from "resend";
 
 export type SendInvoiceArgs = {
@@ -17,9 +18,13 @@ export async function sendInvoiceEmail(
     console.warn("RESEND_API_KEY not set; skipping email send.");
     return { id: null };
   }
-  const from = process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
+
+  const from =
+    process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
+
   const resend = new Resend(apiKey);
 
+  // We’ll try Buffer first, then a base64 fallback (some setups prefer base64)
   const attempt = async (useBase64: boolean) => {
     const mapped =
       args.attachments?.map((a) =>
@@ -30,7 +35,11 @@ export async function sendInvoiceEmail(
 
     if (process.env.NODE_ENV !== "production") {
       const sizes = args.attachments?.map((a) => a.content.length) ?? [];
-      console.log(`[mailer] attachments=${mapped.length}, base64=${useBase64}, sizes=${sizes.join(",")}`);
+      console.log(
+        `[mailer] attachments=${mapped.length}, base64=${useBase64}, sizes=${sizes.join(
+          ","
+        )}`
+      );
     }
 
     return await resend.emails.send({
@@ -44,10 +53,10 @@ export async function sendInvoiceEmail(
   };
 
   try {
-    let { data, error } = await attempt(false); // Buffer first
+    let { data, error } = await attempt(false); // Buffer
     if (error) {
       console.error("[mailer] Resend error (buffer attempt):", error);
-      const r2 = await attempt(true);           // base64 fallback
+      const r2 = await attempt(true); // base64 fallback
       data = r2.data;
       error = r2.error;
       if (error) {
@@ -61,4 +70,3 @@ export async function sendInvoiceEmail(
     return { id: null };
   }
 }
-
