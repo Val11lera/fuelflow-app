@@ -1,96 +1,77 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { buildInvoicePdf } from "@/lib/invoice-pdf";
-import { sendInvoiceEmail } from "@/lib/mailer";
-import type { InvoicePayload } from "@/lib/invoice-types";
+import { buildInvoicePdf, type InvoicePayload } from "@/lib/invoice-pdf";
+import { sendInvoiceEmail } from "@/lib/mailer"; // if you use "@/lib/email", change this import
 
-type PdfLike = Buffer | Uint8Array | ArrayBuffer;
+type Ok = {
+  ok: true;
+  filename: string;
+  total: number;
+  emailed: boolean;
+  emailId: string | null;
+  debug?: any;
+};
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+type Fail = { ok: false; error: string };
+
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse<Ok | Fail>
+) {
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
-    return res.status(405).json({ ok: false, error: "Method Not Allowed" });
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
-  // Optional shared-secret
-  const expected = process.env.INVOICE_SECRET;
-  if (expected) {
-    const got = req.headers["x-invoice-secret"];
-    if (got !== expected) return res.status(401).json({ ok: false, error: "Unauthorized" });
+  // Simple secret check (set INVOICE_SECRET in your env)
+  const secretHeader = Array.isArray(req.headers["x-invoice-secret"])
+    ? req.headers["x-invoice-secret"][0]
+    : req.headers["x-invoice-secret"];
+
+  if (!process.env.INVOICE_SECRET || secretHeader !== process.env.INVOICE_SECRET) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
   }
+
+  // The payload your builder expects
+  const payload = req.body as InvoicePayload;
 
   try {
-    const payload = req.body as InvoicePayload;
+    // 1) Build the PDF
+    const built = await buildInvoicePdf(payload);
+    const pdfBuffer = built.pdfBuffer;
+    const filename = built.filename;
+    const total = built.total;
 
-    // Basic validation
-    if (!payload?.company?.name)   return res.status(400).json({ ok: false, error: "Missing company.name" });
-    if (!payload?.customer?.name)  return res.status(400).json({ ok: false, error: "Missing customer.name" });
-    if (!Array.isArray(payload.items) || payload.items.length === 0)
-      return res.status(400).json({ ok: false, error: "At least one line item is required" });
-    if (!payload.currency)         return res.status(400).json({ ok: false, error: "Missing currency" });
-
-    // Build PDF
-    const pdfLike: PdfLike = await buildInvoicePdf(payload);
-    const pdfBuffer = toNodeBuffer(pdfLike);
-
-    // Totals + filename
-    const total = calcTotal(payload);
-    const filename = makeFilename();
-
-    // Email? (default ON if customer has an email)
-    const shouldEmail = payload.email ?? Boolean(payload.customer.email);
-
+    // 2) Optionally email it
     let emailed = false;
     let emailId: string | null = null;
 
-    if (shouldEmail && payload.customer.email) {
-      const subject = `${process.env.COMPANY_NAME ?? payload.company.name} — Invoice`;
-      const html = `
-        <p>Hello ${escapeHtml(payload.customer.name)},</p>
-        <p>Please find your invoice attached.</p>
-        <p>Total: <strong>${formatMoney(total, payload.currency)}</strong></p>
-        ${payload.notes ? `<p>${escapeHtml(payload.notes)}</p>` : ""}
-      `;
-
-      const { id } = await sendInvoiceEmail({
+    if (payload.email && payload.customer?.email) {
+      const html = `<p>Please find your invoice attached.</p>`;
+      const result = await sendInvoiceEmail({
         to: payload.customer.email,
-        subject,
+        subject: "Your invoice",
         html,
         attachments: [{ filename, content: pdfBuffer }],
+        bcc: process.env.INVOICE_BCC || undefined,
       });
 
-      if (id) { emailed = true; emailId = id; }
+      emailed = !result.error;
+      emailId = result.id ?? null;
     }
 
-    return res.status(200).json({ ok: true, filename, total, emailed, emailId });
+    // 3) Respond
+    return res.status(200).json({
+      ok: true,
+      filename,
+      total,
+      emailed,
+      emailId,
+      debug: req.query.debug
+        ? { hasResendKey: !!process.env.RESEND_API_KEY }
+        : undefined,
+    });
   } catch (e: any) {
-    console.error("invoice create error:", e);
-    return res.status(500).json({ ok: false, error: e?.message ?? "Failed to create invoice" });
+    return res.status(500).json({ ok: false, error: e?.message ?? String(e) });
   }
-}
-
-// ---------- helpers ----------
-function calcTotal(p: InvoicePayload) {
-  return p.items.reduce((sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0), 0);
-}
-
-function makeFilename() {
-  const stamp = new Date().toISOString().replace(/[:T\-\.Z]/g, "").slice(0, 14);
-  return `INV-${stamp}.pdf`;
-}
-
-function toNodeBuffer(data: PdfLike): Buffer {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof Uint8Array) return Buffer.from(data);
-  return Buffer.from(new Uint8Array(data));
-}
-
-function formatMoney(n: number, currency: string) {
-  try { return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(n); }
-  catch { return `${currency} ${n.toFixed(2)}`; }
-}
-
-function escapeHtml(s: string) {
-  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" } as any)[c]);
 }
