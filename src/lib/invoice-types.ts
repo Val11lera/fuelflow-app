@@ -15,21 +15,14 @@ export type InvoiceItem = {
 };
 
 export type InvoicePayload = {
-  /**
-   * Optional, but supported — this is the cause of your error if the
-   * file you compile against doesn’t include it.
-   */
+  /** Optional – supported by the builder */
   company?: Party;
-
   customer: Party;
   items: InvoiceItem[];
+  /** e.g. "GBP" | "USD" | "EUR" */
   currency: string;
   notes?: string;
-
-  /**
-   * Whether to email the generated invoice (handled by your mailer).
-   * Not required by the PDF builder, harmless to pass through.
-   */
+  /** If true, the caller may choose to email the PDF */
   email?: boolean;
 };
 
