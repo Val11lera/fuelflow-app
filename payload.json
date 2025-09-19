@@ -1,10 +1,13 @@
 {
-  "company": { "name": "FuelFlow" },
-  "customer": { "name": "Ada Lovelace", "email": "fuelflow.queries@gmail.com" },
-  "items": [
-    { "description": "Fuel delivery — Premium", "quantity": 2, "unitPrice": 199.50 },
-    { "description": "Service fee", "quantity": 1, "unitPrice": 25 }
-  ],
-  "currency": "GBP",
-  "notes": "Thanks for your business!"
+  "order": {
+    "id": "INV-1758215073509",
+    "customer": { "name": "Jane Smith", "email": "fuelflow.queries@gmail.com" },
+    "items": [
+      { "description": "Fuel delivery", "quantity": 1, "unitPrice": 399 },
+      { "description": "Service fee", "quantity": 1, "unitPrice": 25 }
+    ],
+    "currency": "GBP",
+    "notes": "Thanks for your business!"
+  },
+  "options": { "email": true, "bcc?": null }
 }
