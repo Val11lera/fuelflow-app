@@ -1,17 +1,16 @@
 // src/pages/api/stripe/checkout/create.ts
-// src/pages/api/stripe/checkout/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-/** Works on Vercel & locally */
+/** Absolute base URL (Vercel & local) */
 function getBaseUrl(req: NextApiRequest) {
   const env = process.env.SITE_URL && process.env.SITE_URL.trim();
   if (env) return env.replace(/\/+$/, "");
   const proto =
     (req.headers["x-forwarded-proto"] as string) ||
     (req.headers["x-forwarded-protocol"] as string) ||
-    "https";
+    "http";
   const host =
     (req.headers["x-forwarded-host"] as string) ||
     (req.headers["host"] as string) ||
@@ -23,10 +22,8 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 
-const SUPABASE_URL =
-  process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
 const supabase = createClient(
-  SUPABASE_URL as string,
+  process.env.SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
@@ -40,7 +37,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const {
       fuel,               // "petrol" | "diesel"
       litres,             // number
-      deliveryDate,       // ISO date string
+      deliveryDate,       // ISO string
       full_name,
       email,
       address_line1,
@@ -54,15 +51,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "Missing/invalid fuel or litres" });
     }
 
-    // 1) price lookup
+    // 1) Resolve live unit price (GBP/L)
     let unitPriceGBP: number | null = null;
+
     const p1 = await supabase
       .from("latest_prices")
       .select("fuel,total_price")
       .eq("fuel", fuel)
       .maybeSingle();
 
-    if (p1.data?.total_price != null) {
+    if (!p1.error && p1.data?.total_price != null) {
       unitPriceGBP = Number(p1.data.total_price);
     } else {
       const p2 = await supabase
@@ -70,28 +68,31 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         .select("fuel,total_price")
         .eq("fuel", fuel)
         .maybeSingle();
-      if (p2.data?.total_price != null) unitPriceGBP = Number(p2.data.total_price);
+      if (!p2.error && p2.data?.total_price != null) {
+        unitPriceGBP = Number(p2.data.total_price);
+      }
     }
 
     if (unitPriceGBP == null) {
       return res.status(500).json({ error: "Price lookup failed" });
     }
 
+    // Convert to pence for Stripe
     const unit_price_pence = Math.round(unitPriceGBP * 100);
     const total_pence = unit_price_pence * litresNum;
     const amountGBP = total_pence / 100;
 
-    // 2) insert pending order
+    // 2) Create "pending" order in DB (legacy columns kept)
     const { data: order, error: insErr } = await supabase
       .from("orders")
       .insert({
         user_email: typeof email === "string" ? email.toLowerCase() : null,
-        product: fuel, // legacy column
+        product: fuel,
         fuel,
         litres: litresNum,
         unit_price_pence,
         total_pence,
-        amount: amountGBP, // legacy column
+        amount: amountGBP,
         status: "pending",
         delivery_date: deliveryDate ?? null,
         name: typeof full_name === "string" ? full_name : null,
@@ -109,19 +110,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // 3) create Checkout Session
+    // 3) Stripe Checkout (store order_id in metadata)
     const base = getBaseUrl(req);
+
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       customer_email: typeof email === "string" ? email : undefined,
-      // We charge total as one line; invoice will rebuild detail from metadata
       line_items: [
         {
           price_data: {
             currency: "gbp",
             product_data: {
               name: `Fuel order — ${fuel}`,
-              description: `${litresNum} L @ £${(unit_price_pence / 100).toFixed(2)}/L`,
+              description: `${litresNum.toLocaleString()} L @ £${(unit_price_pence / 100).toFixed(
+                2
+              )}/L`,
             },
             unit_amount: total_pence,
           },
@@ -137,8 +140,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         unit_price_pence: String(unit_price_pence),
         total_pence: String(total_pence),
         delivery_date: deliveryDate ? String(deliveryDate) : "",
-        full_name: typeof full_name === "string" ? full_name : "",
         email: typeof email === "string" ? email : "",
+        full_name: typeof full_name === "string" ? full_name : "",
         address_line1: typeof address_line1 === "string" ? address_line1 : "",
         address_line2: typeof address_line2 === "string" ? address_line2 : "",
         city: typeof city === "string" ? city : "",
@@ -154,6 +157,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           email: typeof email === "string" ? email : "",
         },
       },
+      // Optional:
+      customer_creation: "if_required",
     });
 
     return res.status(200).json({ url: session.url });
