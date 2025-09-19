@@ -1,6 +1,5 @@
 // src/lib/invoice-types.ts
 // src/lib/invoice-types.ts
-
 export type Party = {
   name: string;
   email?: string;
@@ -23,12 +22,12 @@ export type InvoicePayload = {
 
   items: InvoiceItem[];
 
-  /** ISO currency code, e.g. "GBP" */
+  /** ISO code, e.g. "GBP" */
   currency: string;
 
   notes?: string;
 
-  /** Ask the API to email the PDF (requires RESEND_API_KEY). */
+  /** If true and email + RESEND_API_KEY present, we send the PDF. */
   email?: boolean;
 };
 
