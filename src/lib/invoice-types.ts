@@ -15,16 +15,20 @@ export type InvoiceItem = {
 };
 
 export type InvoicePayload = {
-  /** Seller (your company). Optional. */
+  /** Seller (your business). Optional. */
   company?: Party;
+
   /** Buyer (your customer). */
   customer: Party;
+
   items: InvoiceItem[];
-  /** ISO currency, e.g. "GBP" */
+
+  /** ISO currency code, e.g. "GBP" */
   currency: string;
+
   notes?: string;
 
-  /** Ask API to email the PDF (requires RESEND_API_KEY). */
+  /** Ask the API to email the PDF (requires RESEND_API_KEY). */
   email?: boolean;
 };
 
