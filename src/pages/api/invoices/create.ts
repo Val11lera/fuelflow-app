@@ -1,80 +1,97 @@
 // src/pages/api/invoices/create.ts
-// src/pages/api/invoices/create.ts
-import type { NextApiRequest, NextApiResponse } from "next";
-import { createInvoice } from "@/lib/invoice.service";
+// src/lib/invoice.service.ts
+"use server";
+
+import { buildInvoicePdf } from "@/lib/invoice-pdf";
 import type { InvoicePayload } from "@/lib/invoice-types";
+import { sendInvoiceEmail } from "@/lib/email";
+
+/** Options when creating an invoice */
+export type CreateInvoiceOptions = {
+  /** when true, attempt to email the generated PDF */
+  email?: boolean;
+  /** optional BCC */
+  bcc?: string | null;
+};
+
+/** Successful result */
+type CreateInvoiceOk = {
+  ok: true;
+  filename: string;
+  total: number;
+  emailed: boolean;
+  emailId: string | null;
+};
+
+/** Error result */
+type CreateInvoiceErr = {
+  ok: false;
+  error: string;
+};
+
+export type CreateInvoiceResult = CreateInvoiceOk | CreateInvoiceErr;
 
 /**
- * Simple header-based guard. Put your long random secret in .env.local:
- *   INVOICE_SECRET=replace_with_a_long_random_string
- * And pass it as:  -H "x-invoice-secret: replace_with_a_long_random_string"
+ * createInvoice: builds the PDF from a payload and (optionally) emails it.
+ * - Relies on buildInvoicePdf(payload) -> { pdfBuffer, filename, total }
+ * - If options.email is true and mail is configured, sends via sendInvoiceEmail
  */
-function checkSecret(req: NextApiRequest): boolean {
-  const expected = process.env.INVOICE_SECRET || "";
-  const got = (req.headers["x-invoice-secret"] || req.headers["X-Invoice-Secret"]) as string | undefined;
-  return Boolean(expected) && got === expected;
-}
+export async function createInvoice(args: {
+  order: InvoicePayload;
+  options?: CreateInvoiceOptions;
+}): Promise<CreateInvoiceResult> {
+  const { order, options } = args;
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Only POST
-  if (req.method !== "POST") {
-    return res.status(404).json({ ok: false, error: "Not Found" });
-  }
-
-  // Secret check
-  if (!checkSecret(req)) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
-  }
-
-  // Allow `?debug=1` to echo extra info
-  const debug = req.query.debug === "1";
-
-  // Parse payload
-  let payload: InvoicePayload;
+  // 1) Build the PDF
+  let pdfLike: { pdfBuffer: Buffer; filename: string; total: number };
   try {
-    payload = req.body as InvoicePayload;
-  } catch {
-    return res.status(400).json({ ok: false, error: "Invalid JSON body" });
-  }
-
-  try {
-    // create + (optionally) email the invoice
-    const result = await createInvoice({
-      order: payload,
-      options: {
-        // if your payload has the optional email? flag, we pass it along
-        email?: payload.email ? true : false,
-      } as any,
-    });
-
-    if (!result.ok) {
-      return res.status(500).json({ ok: false, error: result.error || "Unknown error" });
-    }
-
-    const resp = {
-      ok: true,
-      filename: result.filename,
-      total: result.total,
-      emailed: result.emailed,
-      emailId: result.emailId ?? null,
-      ...(debug
-        ? {
-            debug: {
-              hasResendKey: Boolean(process.env.RESEND_API_KEY),
-              mailFrom: process.env.INVOICE_FROM_EMAIL || null,
-              ts: new Date().toISOString(),
-            },
-          }
-        : null),
-    };
-
-    return res.status(200).json(resp);
+    pdfLike = await buildInvoicePdf(order);
   } catch (err: any) {
-    if (debug) {
-      console.error("create error", err);
-    }
-    return res.status(500).json({ ok: false, error: err?.message || "Server error" });
+    return { ok: false, error: err?.message || "Failed to build invoice PDF" };
   }
+
+  let emailed = false;
+  let emailId: string | null = null;
+
+  // 2) Optionally email
+  const shouldEmail = Boolean(options?.email);
+  const hasResend = Boolean(process.env.RESEND_API_KEY);
+  const fromEmail = process.env.INVOICE_FROM_EMAIL;
+
+  if (shouldEmail && hasResend && fromEmail && order.customer?.email) {
+    try {
+      const subject = `Invoice ${pdfLike.filename}`;
+      const html =
+        `<p>Hi ${order.customer.name || ""},</p>` +
+        `<p>Please find your invoice (<strong>${pdfLike.filename}</strong>) attached.</p>` +
+        `<p>Regards,<br/>FuelFlow</p>`;
+
+      const mailResult = await sendInvoiceEmail({
+        to: order.customer.email,
+        subject,
+        html,
+        pdfBuffer: pdfLike.pdfBuffer,
+        filename: pdfLike.filename,
+      });
+
+      emailed = true;
+      // your sendInvoiceEmail can return an id (if not, leave null)
+      // @ts-ignore – tolerate implementations that don’t return id
+      emailId = mailResult?.id ?? null;
+    } catch {
+      // Don’t fail the whole request if email send fails; just report not emailed
+      emailed = false;
+      emailId = null;
+    }
+  }
+
+  return {
+    ok: true,
+    filename: pdfLike.filename,
+    total: pdfLike.total,
+    emailed,
+    emailId,
+  };
 }
 
 
