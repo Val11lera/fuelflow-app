@@ -1,4 +1,3 @@
-// Shared invoice types used by API, services and PDF builder
 // src/lib/invoice-types.ts
 
 export type Party = {
