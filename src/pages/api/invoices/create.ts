@@ -1,59 +1,80 @@
 // src/pages/api/invoices/create.ts
+// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { buildInvoicePdf } from "@/lib/invoice-pdf";
-import { sendInvoiceEmail } from "@/lib/email";
+import { createInvoice } from "@/lib/invoice.service";
+import type { InvoicePayload } from "@/lib/invoice-types";
 
-function okSecret(req: NextApiRequest) {
-  const expected = process.env.INVOICE_SECRET;
-  const got = req.headers["x-invoice-secret"];
-  return !!expected && (got === expected || (Array.isArray(got) && got[0] === expected));
+/**
+ * Simple header-based guard. Put your long random secret in .env.local:
+ *   INVOICE_SECRET=replace_with_a_long_random_string
+ * And pass it as:  -H "x-invoice-secret: replace_with_a_long_random_string"
+ */
+function checkSecret(req: NextApiRequest): boolean {
+  const expected = process.env.INVOICE_SECRET || "";
+  const got = (req.headers["x-invoice-secret"] || req.headers["X-Invoice-Secret"]) as string | undefined;
+  return Boolean(expected) && got === expected;
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // Only POST
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
-    return res.status(405).json({ ok: false, error: "Method Not Allowed" });
+    return res.status(404).json({ ok: false, error: "Not Found" });
   }
-  if (!okSecret(req)) return res.status(401).json({ ok: false, error: "Unauthorized" });
+
+  // Secret check
+  if (!checkSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+
+  // Allow `?debug=1` to echo extra info
+  const debug = req.query.debug === "1";
+
+  // Parse payload
+  let payload: InvoicePayload;
+  try {
+    payload = req.body as InvoicePayload;
+  } catch {
+    return res.status(400).json({ ok: false, error: "Invalid JSON body" });
+  }
 
   try {
-    const payload = req.body; // { customer, items, currency, notes?, email? }
+    // create + (optionally) email the invoice
+    const result = await createInvoice({
+      order: payload,
+      options: {
+        // if your payload has the optional email? flag, we pass it along
+        email?: payload.email ? true : false,
+      } as any,
+    });
 
-    const built = await buildInvoicePdf(payload); // { pdfBuffer, filename, total }
-
-    let emailed = false;
-    let emailId: string | null = null;
-
-    if (payload?.email) {
-      await sendInvoiceEmail({
-        to: payload.customer.email,
-        subject: "Your invoice",
-        html: "<p>Please find your invoice attached.</p>",
-        pdfBuffer: built.pdfBuffer,
-        filename: built.filename,
-      });
-      emailed = true;
+    if (!result.ok) {
+      return res.status(500).json({ ok: false, error: result.error || "Unknown error" });
     }
 
-    const debug = req.query.debug
-      ? {
-          hasResendKey: Boolean(process.env.RESEND_API_KEY),
-          mailFrom: process.env.INVOICE_FROM_EMAIL || process.env.MAIL_FROM || null,
-        }
-      : undefined;
-
-    res.status(200).json({
+    const resp = {
       ok: true,
-      filename: built.filename,
-      total: built.total,
-      emailed,
-      emailId,
-      debug,
-      ts: new Date().toISOString(),
-    });
-  } catch (e: any) {
-    console.error(e);
-    res.status(500).json({ ok: false, error: e?.message || "Internal error" });
+      filename: result.filename,
+      total: result.total,
+      emailed: result.emailed,
+      emailId: result.emailId ?? null,
+      ...(debug
+        ? {
+            debug: {
+              hasResendKey: Boolean(process.env.RESEND_API_KEY),
+              mailFrom: process.env.INVOICE_FROM_EMAIL || null,
+              ts: new Date().toISOString(),
+            },
+          }
+        : null),
+    };
+
+    return res.status(200).json(resp);
+  } catch (err: any) {
+    if (debug) {
+      console.error("create error", err);
+    }
+    return res.status(500).json({ ok: false, error: err?.message || "Server error" });
   }
 }
+
 
