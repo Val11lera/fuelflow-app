@@ -1,5 +1,6 @@
 // src/lib/invoice-types.ts
 // src/lib/invoice-types.ts
+
 export type Party = {
   name: string;
   email?: string;
@@ -14,20 +15,21 @@ export type InvoiceItem = {
 };
 
 export type InvoicePayload = {
-  /** Seller (your business). Optional. */
+  /**
+   * Optional, but supported — this is the cause of your error if the
+   * file you compile against doesn’t include it.
+   */
   company?: Party;
 
-  /** Buyer (your customer). */
   customer: Party;
-
   items: InvoiceItem[];
-
-  /** ISO code, e.g. "GBP" */
   currency: string;
-
   notes?: string;
 
-  /** If true and email + RESEND_API_KEY present, we send the PDF. */
+  /**
+   * Whether to email the generated invoice (handled by your mailer).
+   * Not required by the PDF builder, harmless to pass through.
+   */
   email?: boolean;
 };
 
