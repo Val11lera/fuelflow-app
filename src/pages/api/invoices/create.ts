@@ -1,77 +1,68 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { buildInvoicePdf, type InvoicePayload } from "@/lib/invoice-pdf";
-import { sendInvoiceEmail } from "@/lib/mailer"; // if you use "@/lib/email", change this import
+import { buildInvoicePdf } from "@/lib/invoice-pdf";
+import { sendInvoiceEmail } from "@/lib/email";
 
-type Ok = {
-  ok: true;
-  filename: string;
-  total: number;
-  emailed: boolean;
-  emailId: string | null;
-  debug?: any;
-};
+// Simple helper to read the shared secret from header
+function checkSecret(req: NextApiRequest): boolean {
+  const provided = req.headers["x-invoice-secret"];
+  const expected = process.env.INVOICE_SECRET;
+  return !!expected && (provided === expected || (Array.isArray(provided) && provided[0] === expected));
+}
 
-type Fail = { ok: false; error: string };
-
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse<Ok | Fail>
-) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
-    return res.status(405).json({ ok: false, error: "Method not allowed" });
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ ok: false, error: "Method Not Allowed" });
   }
 
-  // Simple secret check (set INVOICE_SECRET in your env)
-  const secretHeader = Array.isArray(req.headers["x-invoice-secret"])
-    ? req.headers["x-invoice-secret"][0]
-    : req.headers["x-invoice-secret"];
-
-  if (!process.env.INVOICE_SECRET || secretHeader !== process.env.INVOICE_SECRET) {
+  if (!checkSecret(req)) {
     return res.status(401).json({ ok: false, error: "Unauthorized" });
   }
 
-  // The payload your builder expects
-  const payload = req.body as InvoicePayload;
-
   try {
-    // 1) Build the PDF
-    const built = await buildInvoicePdf(payload);
-    const pdfBuffer = built.pdfBuffer;
-    const filename = built.filename;
-    const total = built.total;
+    // the payload shape matches what your PDF builder expects
+    const payload = req.body; // { customer, items, currency, notes?, email? }
 
-    // 2) Optionally email it
+    // 1) Build the PDF
+    const built = await buildInvoicePdf(payload); // { pdfBuffer, filename, total }
+
+    // 2) Email (optional)
     let emailed = false;
     let emailId: string | null = null;
 
-    if (payload.email && payload.customer?.email) {
-      const html = `<p>Please find your invoice attached.</p>`;
-      const result = await sendInvoiceEmail({
+    if (payload?.email) {
+      // send to the customer in the payload
+      await sendInvoiceEmail({
         to: payload.customer.email,
         subject: "Your invoice",
-        html,
-        attachments: [{ filename, content: pdfBuffer }],
-        bcc: process.env.INVOICE_BCC || undefined,
+        html: "<p>Please find your invoice attached.</p>",
+        pdfBuffer: built.pdfBuffer,
+        filename: built.filename,
       });
-
-      emailed = !result.error;
-      emailId = result.id ?? null;
+      emailed = true;
     }
 
-    // 3) Respond
+    // 3) Respond (include small debug if ?debug=1)
+    const debug: Record<string, unknown> | undefined = req.query.debug
+      ? {
+          hasResendKey: Boolean(process.env.RESEND_API_KEY),
+          mailFrom: process.env.INVOICE_FROM_EMAIL || process.env.MAIL_FROM || null,
+        }
+      : undefined;
+
     return res.status(200).json({
       ok: true,
-      filename,
-      total,
+      filename: built.filename,
+      total: built.total,
       emailed,
       emailId,
-      debug: req.query.debug
-        ? { hasResendKey: !!process.env.RESEND_API_KEY }
-        : undefined,
+      debug,
+      ts: new Date().toISOString(),
     });
-  } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e?.message ?? String(e) });
+  } catch (err: any) {
+    console.error("create invoice failed:", err);
+    return res.status(500).json({ ok: false, error: err?.message || "Internal error" });
   }
 }
