@@ -1,97 +1,53 @@
 // src/pages/api/invoices/create.ts
-// src/lib/invoice.service.ts
-"use server";
-
-import { buildInvoicePdf } from "@/lib/invoice-pdf";
+// src/pages/api/invoices/create.ts
+import type { NextApiRequest, NextApiResponse } from "next";
+import { createInvoice } from "@/lib/invoice.service";
 import type { InvoicePayload } from "@/lib/invoice-types";
-import { sendInvoiceEmail } from "@/lib/email";
 
-/** Options when creating an invoice */
-export type CreateInvoiceOptions = {
-  /** when true, attempt to email the generated PDF */
-  email?: boolean;
-  /** optional BCC */
-  bcc?: string | null;
-};
+const VERSION = "create.v1";
 
-/** Successful result */
-type CreateInvoiceOk = {
-  ok: true;
-  filename: string;
-  total: number;
-  emailed: boolean;
-  emailId: string | null;
-};
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // Only POST
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
 
-/** Error result */
-type CreateInvoiceErr = {
-  ok: false;
-  error: string;
-};
+  // Auth via header
+  const expected = process.env.INVOICE_SECRET || "replace_with_a_long_random_string";
+  const provided = req.headers["x-invoice-secret"];
+  if (provided !== expected) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
 
-export type CreateInvoiceResult = CreateInvoiceOk | CreateInvoiceErr;
-
-/**
- * createInvoice: builds the PDF from a payload and (optionally) emails it.
- * - Relies on buildInvoicePdf(payload) -> { pdfBuffer, filename, total }
- * - If options.email is true and mail is configured, sends via sendInvoiceEmail
- */
-export async function createInvoice(args: {
-  order: InvoicePayload;
-  options?: CreateInvoiceOptions;
-}): Promise<CreateInvoiceResult> {
-  const { order, options } = args;
-
-  // 1) Build the PDF
-  let pdfLike: { pdfBuffer: Buffer; filename: string; total: number };
+  // Parse body
+  let payload: InvoicePayload;
   try {
-    pdfLike = await buildInvoicePdf(order);
-  } catch (err: any) {
-    return { ok: false, error: err?.message || "Failed to build invoice PDF" };
+    payload = req.body as InvoicePayload;
+  } catch {
+    return res.status(400).json({ ok: false, error: "Invalid JSON body" });
   }
 
-  let emailed = false;
-  let emailId: string | null = null;
+  // Optional email flag can be included in payload (harmless for the PDF builder)
+  const shouldEmail = (payload as any).email === true;
 
-  // 2) Optionally email
-  const shouldEmail = Boolean(options?.email);
-  const hasResend = Boolean(process.env.RESEND_API_KEY);
-  const fromEmail = process.env.INVOICE_FROM_EMAIL;
+  // Build (+ optional email)
+  const result = await createInvoice({
+    order: payload,
+    options: { email: shouldEmail },
+  });
 
-  if (shouldEmail && hasResend && fromEmail && order.customer?.email) {
-    try {
-      const subject = `Invoice ${pdfLike.filename}`;
-      const html =
-        `<p>Hi ${order.customer.name || ""},</p>` +
-        `<p>Please find your invoice (<strong>${pdfLike.filename}</strong>) attached.</p>` +
-        `<p>Regards,<br/>FuelFlow</p>`;
+  // Optional debug info
+  const debug = req.query.debug
+    ? {
+        v: VERSION,
+        hasResendKey: Boolean(process.env.RESEND_API_KEY),
+        mailFrom: process.env.INVOICE_FROM_EMAIL ?? null,
+      }
+    : undefined;
 
-      const mailResult = await sendInvoiceEmail({
-        to: order.customer.email,
-        subject,
-        html,
-        pdfBuffer: pdfLike.pdfBuffer,
-        filename: pdfLike.filename,
-      });
-
-      emailed = true;
-      // your sendInvoiceEmail can return an id (if not, leave null)
-      // @ts-ignore – tolerate implementations that don’t return id
-      emailId = mailResult?.id ?? null;
-    } catch {
-      // Don’t fail the whole request if email send fails; just report not emailed
-      emailed = false;
-      emailId = null;
-    }
-  }
-
-  return {
-    ok: true,
-    filename: pdfLike.filename,
-    total: pdfLike.total,
-    emailed,
-    emailId,
-  };
+  // Done
+  return res.status(200).json({ ...result, debug });
 }
 
 
