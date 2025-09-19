@@ -1,6 +1,16 @@
 // src/lib/invoice-pdf.ts
 // src/lib/invoice-pdf.ts
+// Minimal PDF builder using pdfkit that accepts an optional `company` field.
+
 import PDFDocument from "pdfkit";
+
+// Reusable types for the PDF builder
+export type Party = {
+  name: string;
+  email?: string;
+  address1?: string;
+  address2?: string;
+};
 
 export type InvoiceItem = {
   description: string;
@@ -9,11 +19,13 @@ export type InvoiceItem = {
 };
 
 export type InvoicePayload = {
-  customer: { name: string; email?: string };
+  // 👇 this is the important addition (it was missing before)
+  company?: Party;            // optional — safe for old/new callers
+  customer: Party;
   items: InvoiceItem[];
-  currency: string; // e.g. "GBP"
+  currency: string;           // e.g. "GBP" | "USD" | "EUR"
   notes?: string;
-  /** Optional flag: when true the /api will attempt to email the PDF */
+  /** Optional flag: when true your API may choose to email the PDF */
   email?: boolean;
 };
 
@@ -22,78 +34,83 @@ type PdfDoc = InstanceType<typeof PDFDocument>;
 function docToBuffer(doc: PdfDoc): Promise<Buffer> {
   return new Promise<Buffer>((resolve, reject) => {
     const chunks: Buffer[] = [];
-    doc.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    doc.on("data", (c: Buffer) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
-    doc.end();
   });
 }
 
 function money(n: number, ccy: string) {
-  // basic formatting; adapt as needed
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
-    currency: ccy || "GBP",
+    currency: ccy,
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(n);
 }
 
-export async function buildInvoicePdf(payload: InvoicePayload): Promise<{
+export type BuiltInvoice = {
   pdfBuffer: Buffer;
   filename: string;
   total: number;
-}> {
-  if (!payload.items?.length) {
-    throw new Error("At least one line item is required");
-  }
+};
 
-  const total = payload.items.reduce(
-    (sum, it) => sum + it.quantity * it.unitPrice,
-    0
-  );
-
-  // Basic file name: INV_<timestamp>.pdf
-  const id = `INV-${Date.now()}`;
-  const filename = `${id}.pdf`;
-
-  const doc = new PDFDocument({ size: "A4", margin: 50 });
+/**
+ * Build an invoice PDF and return its Buffer + a suggested filename + total.
+ */
+export async function buildInvoicePdf(p: InvoicePayload): Promise<BuiltInvoice> {
+  const doc = new PDFDocument({ size: "A4", margin: 50 }) as PdfDoc;
+  const done = docToBuffer(doc);
 
   // Header
-  doc.font("Helvetica-Bold").fontSize(20).text("Invoice", { align: "left" });
-  doc.moveDown();
-  doc.font("Helvetica").fontSize(12).text(`Invoice No: ${id}`);
-  doc.text(`Customer: ${payload.customer?.name ?? ""}`);
-  if (payload.customer?.email) doc.text(`Email: ${payload.customer.email}`);
-  doc.moveDown();
+  doc.fontSize(22).text("INVOICE", { align: "right" }).moveDown();
 
-  // Items table (super simple)
-  doc.font("Helvetica-Bold").text("Description", 50, doc.y);
-  doc.text("Qty", 350, undefined);
-  doc.text("Unit", 400, undefined);
-  doc.text("Amount", 470, undefined);
-  doc.moveDown();
-
-  doc.font("Helvetica");
-  payload.items.forEach((it) => {
-    const amount = it.quantity * it.unitPrice;
-    doc.text(it.description, 50, doc.y);
-    doc.text(String(it.quantity), 350, undefined);
-    doc.text(money(it.unitPrice, payload.currency), 400, undefined);
-    doc.text(money(amount, payload.currency), 470, undefined);
+  // From / To (use company if provided)
+  if (p.company) {
+    doc.fontSize(12).text(p.company.name);
+    if (p.company.address1) doc.text(p.company.address1);
+    if (p.company.address2) doc.text(p.company.address2);
+    if (p.company.email) doc.text(p.company.email);
     doc.moveDown(0.5);
-  });
-
-  doc.moveDown();
-  doc.font("Helvetica-Bold").text(`Total: ${money(total, payload.currency)}`);
-  doc.font("Helvetica");
-
-  if (payload.notes) {
-    doc.moveDown();
-    doc.text(payload.notes);
   }
 
-  // Stream to buffer and return
-  const pdfBuffer = await docToBuffer(doc);
+  doc.fontSize(12).text("Bill To:").moveDown(0.2);
+  doc.text(p.customer.name);
+  if (p.customer.address1) doc.text(p.customer.address1);
+  if (p.customer.address2) doc.text(p.customer.address2);
+  if (p.customer.email) doc.text(p.customer.email);
+  doc.moveDown();
+
+  // Table-ish header
+  doc.text("Description".padEnd(40), { continued: true })
+     .text("Qty".padStart(4), { continued: true })
+     .text("Unit".padStart(8), { continued: true })
+     .text("Amount".padStart(12));
+  doc.moveDown(0.2);
+
+  let total = 0;
+  for (const line of p.items) {
+    const amount = line.quantity * line.unitPrice;
+    total += amount;
+    doc.text(
+      `${line.description.padEnd(40)} ${String(line.quantity).padStart(4)} ${line.unitPrice
+        .toFixed(2)
+        .padStart(8)} ${amount.toFixed(2).padStart(12)}`
+    );
+  }
+
+  doc.moveDown();
+  doc.fontSize(12).text(`Total: ${money(total, p.currency)}`, { align: "right" });
+
+  if (p.notes) {
+    doc.moveDown().fontSize(10).text(p.notes);
+  }
+
+  doc.end();
+
+  const pdfBuffer = await done;
+  // Simple filename — adjust as needed
+  const filename = `INV-${Date.now()}.pdf`;
   return { pdfBuffer, filename, total };
 }
+
