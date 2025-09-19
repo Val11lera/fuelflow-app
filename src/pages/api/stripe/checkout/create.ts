@@ -1,11 +1,10 @@
 // src/pages/api/stripe/checkout/create.ts
 // src/pages/api/stripe/checkout/create.ts
-// src/pages/api/stripe/checkout/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-/** Absolute base URL that works on Vercel & locally */
+/** Works on Vercel & locally */
 function getBaseUrl(req: NextApiRequest) {
   const env = process.env.SITE_URL && process.env.SITE_URL.trim();
   if (env) return env.replace(/\/+$/, "");
@@ -24,8 +23,10 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 
+const SUPABASE_URL =
+  process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
 const supabase = createClient(
-  process.env.SUPABASE_URL as string,
+  SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
@@ -39,7 +40,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const {
       fuel,               // "petrol" | "diesel"
       litres,             // number
-      deliveryDate,       // ISO string or null
+      deliveryDate,       // ISO date string
       full_name,
       email,
       address_line1,
@@ -53,48 +54,44 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "Missing/invalid fuel or litres" });
     }
 
-    // ---- 1) Resolve unit price (GBP/L) from views ----
+    // 1) price lookup
     let unitPriceGBP: number | null = null;
-
-    const try1 = await supabase
+    const p1 = await supabase
       .from("latest_prices")
       .select("fuel,total_price")
       .eq("fuel", fuel)
       .maybeSingle();
 
-    if (try1.data?.total_price != null) {
-      unitPriceGBP = Number(try1.data.total_price);
+    if (p1.data?.total_price != null) {
+      unitPriceGBP = Number(p1.data.total_price);
     } else {
-      const try2 = await supabase
+      const p2 = await supabase
         .from("latest_daily_prices")
         .select("fuel,total_price")
         .eq("fuel", fuel)
         .maybeSingle();
-      if (try2.data?.total_price != null) {
-        unitPriceGBP = Number(try2.data.total_price);
-      }
+      if (p2.data?.total_price != null) unitPriceGBP = Number(p2.data.total_price);
     }
 
     if (unitPriceGBP == null) {
       return res.status(500).json({ error: "Price lookup failed" });
     }
 
-    // Pence math (integers for Stripe)
     const unit_price_pence = Math.round(unitPriceGBP * 100);
     const total_pence = unit_price_pence * litresNum;
-    const amountGBP = total_pence / 100; // legacy column compatibility
+    const amountGBP = total_pence / 100;
 
-    // ---- 2) Insert order (covering legacy NOT NULLs: product, amount) ----
+    // 2) insert pending order
     const { data: order, error: insErr } = await supabase
       .from("orders")
       .insert({
         user_email: typeof email === "string" ? email.toLowerCase() : null,
-        product: fuel,                     // legacy column
-        fuel,                              // preferred column
+        product: fuel, // legacy column
+        fuel,
         litres: litresNum,
         unit_price_pence,
         total_pence,
-        amount: amountGBP,                 // legacy column
+        amount: amountGBP, // legacy column
         status: "pending",
         delivery_date: deliveryDate ?? null,
         name: typeof full_name === "string" ? full_name : null,
@@ -112,12 +109,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // ---- 3) Stripe Checkout (include {CHECKOUT_SESSION_ID}) ----
+    // 3) create Checkout Session
     const base = getBaseUrl(req);
-
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       customer_email: typeof email === "string" ? email : undefined,
+      // We charge total as one line; invoice will rebuild detail from metadata
       line_items: [
         {
           price_data: {
@@ -126,13 +123,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               name: `Fuel order — ${fuel}`,
               description: `${litresNum} L @ £${(unit_price_pence / 100).toFixed(2)}/L`,
             },
-            // we charge the total as one line (you could also multiply unit * litres)
             unit_amount: total_pence,
           },
           quantity: 1,
         },
       ],
-      // IMPORTANT: pass session_id placeholder so success page can retrieve details
       success_url: `${base}/checkout/success?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${base}/checkout/cancel?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
       metadata: {
