@@ -2,67 +2,62 @@
 // src/lib/mailer.ts
 import { Resend } from "resend";
 
-type AttachmentArg = {
+export type AttachmentArg = {
   filename: string;
   content: Buffer | Uint8Array | string;
   contentType?: string;
 };
 
-type SendArgs = {
+export type SendArgs = {
   to: string | string[];
   subject: string;
   text?: string;
   html?: string;
-  attachments?: AttachmentArg[];
   bcc?: string | string[];
+  attachments?: AttachmentArg[];
 };
 
-export async function sendEmail(args: SendArgs): Promise<{
-  ok: boolean;
-  id?: string;
-  error?: string;
-}> {
-  // --- Provider check (Resend only) ---
-  const RESEND_API_KEY = process.env.RESEND_API_KEY;
-  if (!RESEND_API_KEY) {
-    return { ok: false, error: "RESEND_API_KEY is not set" };
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+
+function splitCsv(v?: string | null): string[] | undefined {
+  if (!v) return undefined;
+  const out = v.split(",").map(s => s.trim()).filter(Boolean);
+  return out.length ? out : undefined;
+}
+
+export async function sendEmail(args: SendArgs): Promise<{ ok: boolean; id?: string; error?: string }> {
+  if (!resend) return { ok: false, error: "RESEND_API_KEY is not set" };
+
+  // Must be a verified sender in Resend
+  const FROM = process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
+
+  const to = Array.isArray(args.to) ? args.to : [args.to];
+  const bcc = args.bcc ?? splitCsv(process.env.MAIL_BCC);
+
+  // Build payload WITHOUT any undefined properties (important for your typings)
+  const payload: any = {
+    from: FROM,
+    to,
+    subject: args.subject,
+  };
+  if (bcc && bcc.length) payload.bcc = bcc;
+  if (args.html) payload.html = args.html;
+  if (args.text) payload.text = args.text;
+  if (args.attachments?.length) {
+    payload.attachments = args.attachments.map(a => ({
+      filename: a.filename,
+      content: a.content as any,      // Resend accepts Buffer/Uint8Array/string
+      contentType: a.contentType,
+    }));
   }
 
-  const resend = new Resend(RESEND_API_KEY);
-
-  // From address MUST be a verified Resend sender/domain
-  const FROM =
-    process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
-
   try {
-    const to = Array.isArray(args.to) ? args.to : [args.to];
-
-    // Resend accepts Buffer/Uint8Array/string for attachments.content
-    const attachments =
-      args.attachments?.map((a) => ({
-        filename: a.filename,
-        content: a.content as any,
-        contentType: a.contentType,
-      })) || undefined;
-
-    const { data, error } = await resend.emails.send({
-      from: FROM,
-      to,
-      bcc: args.bcc ?? process.env.MAIL_BCC ?? undefined,
-      subject: args.subject,
-      html: args.html,
-      text: args.text,
-      attachments,
-    });
-
-    if (error) {
-      return { ok: false, error: error.message };
-    }
+    const { data, error } = await resend.emails.send(payload);
+    if (error) return { ok: false, error: error.message };
     return { ok: true, id: data?.id };
   } catch (e: any) {
     return { ok: false, error: e?.message || String(e) };
   }
 }
-
 
 
