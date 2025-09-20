@@ -2,10 +2,9 @@
 // src/lib/mailer.ts
 import { Resend } from "resend";
 
-/** Attachment shape we accept in app code */
-export type MailAttachment = {
+type AttachmentArg = {
   filename: string;
-  content: Buffer | Uint8Array | ArrayBuffer | string;
+  content: Buffer | Uint8Array | string;
   contentType?: string;
 };
 
@@ -14,66 +13,56 @@ type SendArgs = {
   subject: string;
   text?: string;
   html?: string;
+  attachments?: AttachmentArg[];
   bcc?: string | string[];
-  attachments?: MailAttachment[];
-  from?: string;
 };
 
-const resend = new Resend(process.env.RESEND_API_KEY || undefined);
-
-const DEFAULT_FROM =
-  process.env.MAIL_FROM ||
-  process.env.RESEND_FROM ||
-  "FuelFlow <invoices@mail.fuelflow.co.uk>";
-
-/** Ensure Resend gets Buffer|string to satisfy its typings */
-function toResendContent(x: MailAttachment["content"]): Buffer | string {
-  if (typeof x === "string") return x;
-
-  // If it's already a Node Buffer, pass through
-  // (duck-typed to avoid importing node types just for compile)
-  if ((x as any)?.constructor?.name === "Buffer") {
-    return x as any;
+export async function sendEmail(args: SendArgs): Promise<{
+  ok: boolean;
+  id?: string;
+  error?: string;
+}> {
+  // --- Provider check (Resend only) ---
+  const RESEND_API_KEY = process.env.RESEND_API_KEY;
+  if (!RESEND_API_KEY) {
+    return { ok: false, error: "RESEND_API_KEY is not set" };
   }
 
-  if (x instanceof Uint8Array) return Buffer.from(x);
-  if (x instanceof ArrayBuffer) return Buffer.from(new Uint8Array(x));
+  const resend = new Resend(RESEND_API_KEY);
 
-  // Last resort: stringify
-  return Buffer.from(String(x));
-}
+  // From address MUST be a verified Resend sender/domain
+  const FROM =
+    process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
 
-/** Generic email sender used by invoices and tests */
-export async function sendEmail(args: SendArgs): Promise<any> {
-  if (!process.env.RESEND_API_KEY) {
-    throw new Error("RESEND_API_KEY is not set on the server.");
+  try {
+    const to = Array.isArray(args.to) ? args.to : [args.to];
+
+    // Resend accepts Buffer/Uint8Array/string for attachments.content
+    const attachments =
+      args.attachments?.map((a) => ({
+        filename: a.filename,
+        content: a.content as any,
+        contentType: a.contentType,
+      })) || undefined;
+
+    const { data, error } = await resend.emails.send({
+      from: FROM,
+      to,
+      bcc: args.bcc ?? process.env.MAIL_BCC ?? undefined,
+      subject: args.subject,
+      html: args.html,
+      text: args.text,
+      attachments,
+    });
+
+    if (error) {
+      return { ok: false, error: error.message };
+    }
+    return { ok: true, id: data?.id };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
   }
-
-  const to = Array.isArray(args.to) ? args.to : [args.to];
-  const bcc = args.bcc ? (Array.isArray(args.bcc) ? args.bcc : [args.bcc]) : undefined;
-
-  const attachments =
-    args.attachments?.map((a) => ({
-      filename: a.filename,
-      content: toResendContent(a.content), // <- normalized here
-      contentType: a.contentType,
-    })) ?? undefined;
-
-  // Cast payload to any to avoid Buffer<T> generic friction in Resend’s d.ts
-  const resp = await resend.emails.send({
-    from: args.from || DEFAULT_FROM,
-    to,
-    subject: args.subject,
-    text: args.text,
-    html: args.html,
-    bcc,
-    attachments: attachments as any,
-  } as any);
-
-  return resp as any;
 }
 
-/** Back-compat alias */
-export const sendInvoiceEmail = sendEmail;
 
 
