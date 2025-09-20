@@ -1,11 +1,8 @@
-// src/pages/api/stripe/webhook.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-export const config = {
-  api: { bodyParser: false }, // Stripe needs the raw body
-};
+export const config = { api: { bodyParser: false } };
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
@@ -20,7 +17,6 @@ function readRawBody(req: any): Promise<Buffer> {
   });
 }
 
-/** Absolute base URL (works locally & in prod) */
 function getBaseUrl(req: NextApiRequest) {
   const env = process.env.SITE_URL && process.env.SITE_URL.trim();
   if (env) return env.replace(/\/+$/, "");
@@ -35,7 +31,6 @@ function getBaseUrl(req: NextApiRequest) {
   return `${proto}://${host}`;
 }
 
-/** Server-side Supabase (service role) for writes */
 function sb() {
   return createClient(
     process.env.SUPABASE_URL as string,
@@ -43,7 +38,24 @@ function sb() {
   );
 }
 
-/** Call our own invoice route */
+async function logRow(row: {
+  event_type: string;
+  order_id?: string | null;
+  status?: string | null;
+  error?: string | null;
+}) {
+  try {
+    await sb().from("webhook_logs").insert({
+      event_type: row.event_type,
+      order_id: row.order_id ?? null,
+      status: row.status ?? null,
+      error: row.error ?? null,
+    });
+  } catch {
+    /* ignore logging errors */
+  }
+}
+
 async function callInvoiceRoute(baseUrl: string, payload: any) {
   const secret = process.env.INVOICE_SECRET;
   if (!secret) throw new Error("INVOICE_SECRET not set");
@@ -80,7 +92,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       process.env.STRIPE_WEBHOOK_SECRET as string
     );
   } catch (err: any) {
-    console.error("⚠️  Stripe signature verification failed:", err?.message);
+    await logRow({ event_type: "bad_signature", error: err?.message });
     return res.status(400).send(`Webhook Error: ${err?.message}`);
   }
 
@@ -89,21 +101,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     switch (event.type) {
-      /**
-       * PRIMARY PATH: Stripe Checkout finishes and is paid
-       */
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
-
-        // order_id is set in /api/stripe/checkout/create.ts metadata
         const orderId =
           (session.metadata && (session.metadata as any).order_id) ||
           (typeof session.payment_intent === "string"
-            ? (await stripe.paymentIntents.retrieve(session.payment_intent)).metadata
-                ?.order_id
+            ? (await stripe.paymentIntents.retrieve(session.payment_intent)).metadata?.order_id
             : undefined);
 
-        // Pull line items for invoice lines
+        await logRow({ event_type: "checkout.session.completed/received", order_id: orderId ?? null });
+
         const itemsResp = await stripe.checkout.sessions.listLineItems(session.id, {
           limit: 100,
           expand: ["data.price.product"],
@@ -117,11 +124,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           const name =
             row.description ||
             ((row.price?.product as Stripe.Product | undefined)?.name ?? "Item");
-
           return { description: name, quantity: qty, unitPrice: unit };
         });
 
-        // Update order → paid
         if (orderId) {
           const { error } = await supabase
             .from("orders")
@@ -135,40 +140,38 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                   : session.payment_intent?.id ?? null,
             })
             .eq("id", orderId);
-
           if (error) throw new Error(`Supabase update failed: ${error.message}`);
+
+          await logRow({ event_type: "order_updated_to_paid", order_id: orderId, status: "paid" });
         } else {
-          console.warn("No order_id on session metadata — order status not updated.");
+          await logRow({ event_type: "missing_order_id_on_session", status: "pending" });
         }
 
-        // Generate + email invoice
         await callInvoiceRoute(baseUrl, {
           customer: {
             name: session.customer_details?.name || "Customer",
             email:
               (session.customer_details?.email ||
                 session.customer_email ||
-                (session.metadata && (session.metadata as any).email)) ??
-              "",
+                (session.metadata && (session.metadata as any).email)) ?? "",
           },
           items,
           currency: (session.currency || "gbp").toUpperCase(),
         });
 
+        await logRow({ event_type: "invoice_sent", order_id: orderId ?? null, status: "paid" });
         break;
       }
 
-      /**
-       * BACKUP PATH: If you charge via PaymentIntents directly
-       */
       case "payment_intent.succeeded": {
         const pi = event.data.object as Stripe.PaymentIntent;
-
         const orderId =
           (pi.metadata && (pi.metadata as any).order_id) ||
           (typeof pi.latest_charge === "string"
             ? (await stripe.charges.retrieve(pi.latest_charge)).metadata?.order_id
             : undefined);
+
+        await logRow({ event_type: "payment_intent.succeeded/received", order_id: orderId ?? null });
 
         if (orderId) {
           const { error } = await supabase
@@ -179,8 +182,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               stripe_payment_intent_id: pi.id,
             })
             .eq("id", orderId);
-
           if (error) throw new Error(`Supabase update failed: ${error.message}`);
+
+          await logRow({ event_type: "order_updated_to_paid", order_id: orderId, status: "paid" });
         }
 
         await callInvoiceRoute(baseUrl, {
@@ -198,16 +202,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           currency: (pi.currency || "gbp").toUpperCase(),
         });
 
+        await logRow({ event_type: "invoice_sent", order_id: orderId ?? null, status: "paid" });
         break;
       }
 
       default:
-        // ignore others
+        // ignore
         break;
     }
   } catch (e: any) {
-    // Return 200 so Stripe doesn't retry forever, but log for us.
     console.error("Webhook handler error:", e);
+    await logRow({ event_type: "handler_error", error: String(e?.message || e) });
     return res.status(200).json({ received: true, error: e?.message });
   }
 
