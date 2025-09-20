@@ -34,19 +34,15 @@ export async function sendEmail(args: SendArgs): Promise<{ ok: boolean; id?: str
   const to = Array.isArray(args.to) ? args.to : [args.to];
   const bcc = args.bcc ?? splitCsv(process.env.MAIL_BCC);
 
-  // Build payload WITHOUT any undefined properties (important for your typings)
-  const payload: any = {
-    from: FROM,
-    to,
-    subject: args.subject,
-  };
+  // Build a payload *without* undefined fields (fixes your TS compile error)
+  const payload: any = { from: FROM, to, subject: args.subject };
   if (bcc && bcc.length) payload.bcc = bcc;
   if (args.html) payload.html = args.html;
   if (args.text) payload.text = args.text;
   if (args.attachments?.length) {
     payload.attachments = args.attachments.map(a => ({
       filename: a.filename,
-      content: a.content as any,      // Resend accepts Buffer/Uint8Array/string
+      content: a.content as any,      // Buffer/Uint8Array/string
       contentType: a.contentType,
     }));
   }
@@ -60,4 +56,6 @@ export async function sendEmail(args: SendArgs): Promise<{ ok: boolean; id?: str
   }
 }
 
+// Back-compat so existing code that imports `sendInvoiceEmail` keeps working
+export { sendEmail as sendInvoiceEmail };
 
