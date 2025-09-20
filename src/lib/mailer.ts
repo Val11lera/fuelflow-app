@@ -3,51 +3,56 @@
 import { Resend } from "resend";
 import nodemailer from "nodemailer";
 
-type Attachment = { filename: string; content: Buffer };
-type SendArgs = {
+export type MailAttachment = { filename: string; content: Buffer };
+export type SendMailArgs = {
   to: string | string[];
   subject: string;
   text?: string;
   html?: string;
-  attachments?: Attachment[];
+  attachments?: MailAttachment[];
 };
 
-const FROM = process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
+const FROM =
+  process.env.MAIL_FROM ?? "FuelFlow <invoices@mail.fuelflow.co.uk>";
 
 export async function sendMail(
-  args: SendArgs,
+  args: SendMailArgs,
   forceProvider?: "resend" | "smtp"
 ) {
   const provider =
-    forceProvider ||
-    (process.env.MAIL_TRANSPORT as "resend" | "smtp" | undefined) ||
+    forceProvider ??
+    (process.env.MAIL_TRANSPORT as "resend" | "smtp" | undefined) ??
     (process.env.RESEND_API_KEY ? "resend" : "smtp");
 
   if (provider === "resend") {
     const resend = new Resend(process.env.RESEND_API_KEY!);
     const to = Array.isArray(args.to) ? args.to : [args.to];
 
-    const resp = await resend.emails.send({
+    // Build payload WITHOUT undefined fields
+    const payload: any = {
       from: FROM,
       to,
       subject: args.subject,
-      text: args.text,
-      html: args.html,
-      bcc: process.env.MAIL_BCC || undefined,
-      // Resend expects base64 for raw buffers
-      attachments: (args.attachments || []).map((a) => ({
+    };
+    if (args.text) payload.text = args.text;
+    if (args.html) payload.html = args.html;
+    if (process.env.MAIL_BCC) payload.bcc = process.env.MAIL_BCC;
+    if (args.attachments?.length) {
+      payload.attachments = args.attachments.map((a) => ({
         filename: a.filename,
+        // Resend likes base64 string for raw buffers
         content: a.content.toString("base64"),
-      })),
-    });
+      }));
+    }
 
-    if ((resp as any).error) {
+    const resp = await resend.emails.send(payload);
+    if ((resp as any)?.error) {
       throw new Error(`Resend error: ${(resp as any).error.message}`);
     }
     return resp;
   }
 
-  // SMTP fallback (not used for invoices once we force Resend)
+  // SMTP fallback (kept in case you use it elsewhere)
   const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),
@@ -60,17 +65,15 @@ export async function sendMail(
         : undefined,
   });
 
-  await transporter.sendMail({
+  const mail: any = {
     from: FROM,
     to: args.to,
     subject: args.subject,
-    text: args.text,
-    html: args.html,
-    bcc: process.env.MAIL_BCC || undefined,
-    attachments: (args.attachments || []).map((a) => ({
-      filename: a.filename,
-      content: a.content,
-    })),
-  });
-}
+  };
+  if (args.text) mail.text = args.text;
+  if (args.html) mail.html = args.html;
+  if (process.env.MAIL_BCC) mail.bcc = process.env.MAIL_BCC;
+  if (args.attachments?.length) mail.attachments = args.attachments;
 
+  await transporter.sendMail(mail);
+}
