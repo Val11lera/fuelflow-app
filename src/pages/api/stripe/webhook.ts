@@ -1,13 +1,16 @@
+// src/pages/api/stripe/webhook.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 export const config = { api: { bodyParser: false } };
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: "2024-06-20",
-});
+// --- Server-only Stripe client (never imported on the client) ---
+const STRIPE_KEY = process.env.STRIPE_SECRET_KEY as string;
+if (!STRIPE_KEY) throw new Error("Missing STRIPE_SECRET_KEY");
+const stripe = new Stripe(STRIPE_KEY, { apiVersion: "2024-06-20" });
 
+// ---------- helpers ----------
 function readRawBody(req: any): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -18,12 +21,15 @@ function readRawBody(req: any): Promise<Buffer> {
 }
 
 function getBaseUrl(req: NextApiRequest) {
+  // Prefer an explicit SITE_URL (set to https://dashboard.fuelflow.co.uk)
   const env = process.env.SITE_URL && process.env.SITE_URL.trim();
   if (env) return env.replace(/\/+$/, "");
+
+  // Fallback to headers (Vercel sets these)
   const proto =
     (req.headers["x-forwarded-proto"] as string) ||
     (req.headers["x-forwarded-protocol"] as string) ||
-    "http";
+    "https";
   const host =
     (req.headers["x-forwarded-host"] as string) ||
     (req.headers["host"] as string) ||
@@ -32,10 +38,10 @@ function getBaseUrl(req: NextApiRequest) {
 }
 
 function sb() {
-  return createClient(
-    process.env.SUPABASE_URL as string,
-    process.env.SUPABASE_SERVICE_ROLE_KEY as string
-  );
+  const url = process.env.SUPABASE_URL as string;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY as string;
+  if (!url || !key) throw new Error("Missing Supabase server credentials");
+  return createClient(url, key);
 }
 
 async function logRow(row: {
@@ -52,7 +58,7 @@ async function logRow(row: {
       error: row.error ?? null,
     });
   } catch {
-    /* ignore logging errors */
+    // logging should never break the handler
   }
 }
 
@@ -75,6 +81,7 @@ async function callInvoiceRoute(baseUrl: string, payload: any) {
   }
 }
 
+// ---------- main handler ----------
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -86,11 +93,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(
-      rawBody,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET as string
-    );
+    const whsec = process.env.STRIPE_WEBHOOK_SECRET as string;
+    if (!whsec) throw new Error("STRIPE_WEBHOOK_SECRET not set");
+    event = stripe.webhooks.constructEvent(rawBody, sig, whsec);
   } catch (err: any) {
     await logRow({ event_type: "bad_signature", error: err?.message });
     return res.status(400).send(`Webhook Error: ${err?.message}`);
@@ -101,16 +106,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     switch (event.type) {
+      // ─────────────────────────────────────────────────────────────
+      // Checkout flow (your main path)
+      // ─────────────────────────────────────────────────────────────
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
+
+        // Try to recover the order id via metadata or the PI
         const orderId =
           (session.metadata && (session.metadata as any).order_id) ||
           (typeof session.payment_intent === "string"
             ? (await stripe.paymentIntents.retrieve(session.payment_intent)).metadata?.order_id
             : undefined);
 
-        await logRow({ event_type: "checkout.session.completed/received", order_id: orderId ?? null });
+        await logRow({
+          event_type: "checkout.session.completed/received",
+          order_id: orderId ?? null,
+        });
 
+        // Build invoice items from the session line items
         const itemsResp = await stripe.checkout.sessions.listLineItems(session.id, {
           limit: 100,
           expand: ["data.price.product"],
@@ -127,6 +141,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           return { description: name, quantity: qty, unitPrice: unit };
         });
 
+        // Update order to paid (kept from your code)
         if (orderId) {
           const { error } = await supabase
             .from("orders")
@@ -142,11 +157,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             .eq("id", orderId);
           if (error) throw new Error(`Supabase update failed: ${error.message}`);
 
-          await logRow({ event_type: "order_updated_to_paid", order_id: orderId, status: "paid" });
+          await logRow({
+            event_type: "order_updated_to_paid",
+            order_id: orderId,
+            status: "paid",
+          });
         } else {
-          await logRow({ event_type: "missing_order_id_on_session", status: "pending" });
+          await logRow({
+            event_type: "missing_order_id_on_session",
+            status: "pending",
+          });
         }
 
+        // Send invoice via your internal route (Resend runs there)
         await callInvoiceRoute(baseUrl, {
           customer: {
             name: session.customer_details?.name || "Customer",
@@ -159,10 +182,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           currency: (session.currency || "gbp").toUpperCase(),
         });
 
-        await logRow({ event_type: "invoice_sent", order_id: orderId ?? null, status: "paid" });
+        await logRow({
+          event_type: "invoice_sent",
+          order_id: orderId ?? null,
+          status: "paid",
+        });
         break;
       }
 
+      // ─────────────────────────────────────────────────────────────
+      // Optional: direct PI flows (you kept this; we keep it)
+      // ─────────────────────────────────────────────────────────────
       case "payment_intent.succeeded": {
         const pi = event.data.object as Stripe.PaymentIntent;
         const orderId =
@@ -171,7 +201,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             ? (await stripe.charges.retrieve(pi.latest_charge)).metadata?.order_id
             : undefined);
 
-        await logRow({ event_type: "payment_intent.succeeded/received", order_id: orderId ?? null });
+        await logRow({
+          event_type: "payment_intent.succeeded/received",
+          order_id: orderId ?? null,
+        });
 
         if (orderId) {
           const { error } = await supabase
@@ -184,7 +217,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             .eq("id", orderId);
           if (error) throw new Error(`Supabase update failed: ${error.message}`);
 
-          await logRow({ event_type: "order_updated_to_paid", order_id: orderId, status: "paid" });
+          await logRow({
+            event_type: "order_updated_to_paid",
+            order_id: orderId,
+            status: "paid",
+          });
         }
 
         await callInvoiceRoute(baseUrl, {
@@ -202,17 +239,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           currency: (pi.currency || "gbp").toUpperCase(),
         });
 
-        await logRow({ event_type: "invoice_sent", order_id: orderId ?? null, status: "paid" });
+        await logRow({
+          event_type: "invoice_sent",
+          order_id: orderId ?? null,
+          status: "paid",
+        });
         break;
       }
 
       default:
-        // ignore
+        // ignore other events to keep noise down
         break;
     }
   } catch (e: any) {
     console.error("Webhook handler error:", e);
     await logRow({ event_type: "handler_error", error: String(e?.message || e) });
+    // Return 200 so Stripe does not retry forever; error is stored in logs.
     return res.status(200).json({ received: true, error: e?.message });
   }
 
