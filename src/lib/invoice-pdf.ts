@@ -4,15 +4,17 @@ import fs from "fs";
 import path from "path";
 import PDFDocument from "pdfkit";
 
-/* =========================
-   Public types you can import
-   ========================= */
+// IMPORTANT: pull in the exact type your service uses:
+import type {
+  InvoicePayload as ApiInvoicePayload,
+} from "@/pages/api/invoices/create"; // if @ alias isn't set, use "../../../pages/api/invoices/create"
 
+// ---------- Public types you can import ----------
 export type LineItem = {
   description: string;
-  litres?: number;          // used by InvoiceInput
-  unitPrice: number;        // price per litre (ex VAT) — major units
-  vatRatePct?: number;      // optional per-line VAT (not used in total calc below)
+  litres?: number;              // used by InvoiceInput
+  unitPrice: number;            // price per litre (ex VAT), major units
+  vatRatePct?: number;
 };
 
 export type Party = {
@@ -55,30 +57,10 @@ export type BuiltInvoice = {
   pdfBuffer: Buffer;
 };
 
-/* ==========================================================
-   Compatibility type – this is what your existing code passes
-   (from /api/invoices/create.ts).
-   We’ll accept this too and normalise it.
-   ========================================================== */
+// Alias YOUR API route type so we can refer to it clearly here.
+type LegacyInvoicePayload = ApiInvoicePayload;
 
-export type LegacyInvoicePayload = {
-  customer: {
-    name?: string | null;
-    email: string;
-    address_line1?: string | null;
-    address_line2?: string | null;
-    city?: string | null;
-    postcode?: string | null;
-  };
-  items: { description: string; quantity: number; unitPrice: number }[];
-  currency: string;
-  meta?: { invoiceNumber?: string; orderId?: string; notes?: string | null };
-};
-
-/* =========================
-   Internal helpers
-   ========================= */
-
+// ---------- helpers ----------
 const MARGIN = 36;
 const BAR_H = 42;
 const THEME = {
@@ -111,10 +93,7 @@ function metaRow(doc: PDFKit.PDFDocument, x: number, y: number, label: string, v
   doc.fillColor(THEME.text).fontSize(9).text(value, x + w, y);
 }
 
-/* ==========================================================
-   Normalisers: ENV → CompanyMeta, Legacy → InvoiceInput
-   ========================================================== */
-
+// ---------- Normalisers ----------
 function companyFromEnv(): CompanyMeta {
   const name  = process.env.COMPANY_NAME || "FuelFlow";
   const addr  = (process.env.COMPANY_ADDRESS || "1 Example Street\nExample Town\nEX1 2MP\nUnited Kingdom")
@@ -158,14 +137,11 @@ function legacyToInput(payload: LegacyInvoicePayload): InvoiceInput {
   };
 }
 
-/* ==========================================================
-   MAIN: buildInvoicePdf – now accepts EITHER shape
-   ========================================================== */
-
+// ---------- MAIN ----------
 export async function buildInvoicePdf(
   source: InvoiceInput | LegacyInvoicePayload
 ): Promise<BuiltInvoice> {
-  // Normalise to InvoiceInput
+  // If it has billTo, assume already InvoiceInput; otherwise treat as legacy
   const input: InvoiceInput = (source as any).billTo
     ? (source as InvoiceInput)
     : legacyToInput(source as LegacyInvoicePayload);
@@ -184,10 +160,10 @@ export async function buildInvoicePdf(
   doc.on("data", (b) => chunks.push(b));
   const done = new Promise<Buffer>((resolve) => doc.on("end", () => resolve(Buffer.concat(chunks))));
 
-  /* ----- Header bar ----- */
+  // Header bar
   doc.save().rect(0, 0, doc.page.width, BAR_H).fill(THEME.dark).restore();
 
-  // Logo (no align property -> fixes your TS error)
+  // Logo (place by coordinates; no `align` prop)
   const logoPath = path.join(process.cwd(), "public", "logo-email.png");
   if (fs.existsSync(logoPath)) {
     const h = 24, w = 120, y = (BAR_H - h) / 2;
@@ -198,7 +174,7 @@ export async function buildInvoicePdf(
   doc.fillColor(THEME.light).font("Helvetica-Bold").fontSize(10)
      .text("TAX INVOICE", doc.page.width - MARGIN - 120, 14, { width: 120, align: "right" });
 
-  /* ----- Parties ----- */
+  // Parties
   const topY = MARGIN + 8;
   const colW = (doc.page.width - MARGIN * 2) / 2;
 
@@ -226,7 +202,7 @@ export async function buildInvoicePdf(
   metaRow(doc, billX, topY + 60, "Date:", issueDate);
   metaRow(doc, billX, topY + 74, "Invoice No:", input.invoiceNumber);
 
-  /* ----- Table header ----- */
+  // Table header
   doc.moveDown(2);
   let y = doc.y + 6;
 
@@ -244,7 +220,7 @@ export async function buildInvoicePdf(
   doc.text("Net",          colNet,    y, { width: right - colNet, align: "right" });
   y += 16; hr(doc, left, y, right); y += 6;
 
-  /* ----- Lines ----- */
+  // Lines
   let subtotal = 0;
   const defaultVat = input.defaultVatRatePct ?? 0;
 
@@ -257,14 +233,14 @@ export async function buildInvoicePdf(
 
     doc.text(it.description, colDesc, y);
     doc.text(qty ? String(qty) : "-",      colLitres, y, { width: 60, align: "right" });
-    doc.text(`${sym}${toMoney(unit)}`,     colUnit,   y, { width: 70, align: "right" });
-    doc.text(`${sym}${toMoney(line)}`,     colNet,    y, { width: right - colNet, align: "right" });
+    doc.text(`${currencySymbol(cur)}${toMoney(unit)}`, colUnit, y, { width: 70, align: "right" });
+    doc.text(`${currencySymbol(cur)}${toMoney(line)}`, colNet,  y, { width: right - colNet, align: "right" });
     y += 16;
   });
 
   y += 2; hr(doc, left, y, right); y += 6;
 
-  /* ----- Totals ----- */
+  // Totals
   const vat = subtotal * (defaultVat / 100);
   const total = subtotal + vat;
 
@@ -280,14 +256,14 @@ export async function buildInvoicePdf(
   doc.font("Helvetica-Bold").text("Total", colUnit, y, { width: 70, align: "right" });
   doc.text(`${sym}${toMoney(total)}`,   colNet, y, { width: right - colNet, align: "right" });
 
-  /* ----- Notes ----- */
+  // Notes
   if (input.notes) {
     y += 22;
     doc.font("Helvetica").fontSize(9).fillColor(THEME.muted)
        .text(input.notes, left, y, { width: right - left });
   }
 
-  /* ----- Footer ----- */
+  // Footer
   const footerY = doc.page.height - doc.page.margins.bottom + 16;
   hr(doc, MARGIN, footerY - 10, doc.page.width - MARGIN);
 
@@ -303,7 +279,7 @@ export async function buildInvoicePdf(
        align: "center",
      });
 
-  // Page numbers (in case it ever spills)
+  // Page numbers (safety)
   const pageCount = doc.bufferedPageRange().count;
   for (let i = 0; i < pageCount; i++) {
     doc.switchToPage(i);
@@ -316,7 +292,9 @@ export async function buildInvoicePdf(
   }
 
   doc.end();
-  const pdfBuffer = await done;
+  const pdfBuffer = await new Promise<Buffer>((resolve) =>
+    doc.on("end", () => resolve(Buffer.concat(chunks)))
+  );
 
   return {
     filename: `Invoice ${input.invoiceNumber}.pdf`,
@@ -326,3 +304,4 @@ export async function buildInvoicePdf(
     pdfBuffer,
   };
 }
+
