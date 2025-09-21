@@ -7,7 +7,6 @@ const FROM = process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
 
 export type MailAttachment = {
   filename: string;
-  // Resend accepts Buffer | Uint8Array | string
   content: Buffer | Uint8Array | string;
   contentType?: string;
 };
@@ -21,12 +20,15 @@ export type SendEmailArgs = {
   attachments?: MailAttachment[];
 };
 
-export async function sendEmail(args: SendEmailArgs) {
+/**
+ * Sends an email and returns a stable shape { id?: string }.
+ * (We avoid optional keys with undefined in the payload to satisfy Resend's typings.)
+ */
+export async function sendEmail(args: SendEmailArgs): Promise<{ id?: string }> {
   if (!process.env.RESEND_API_KEY) {
     throw new Error("RESEND_API_KEY missing");
   }
 
-  // normalize lists
   const to = Array.isArray(args.to) ? args.to : [args.to];
   const bcc = args.bcc
     ? Array.isArray(args.bcc)
@@ -34,7 +36,6 @@ export async function sendEmail(args: SendEmailArgs) {
       : [args.bcc]
     : undefined;
 
-  // build payload WITHOUT undefined keys to keep TS happy
   const payload: Record<string, any> = {
     from: FROM,
     to,
@@ -47,13 +48,16 @@ export async function sendEmail(args: SendEmailArgs) {
   if (args.attachments?.length) {
     payload.attachments = args.attachments.map((a) => ({
       filename: a.filename,
-      content: a.content,       // Buffer | Uint8Array | string
+      content: a.content,
       contentType: a.contentType,
     }));
   }
 
   const { data, error } = await resend.emails.send(payload as any);
   if (error) throw error;
-  return data; // includes message id
+
+  // Always return the same shape so callers don’t need to handle null unions.
+  return { id: (data as any)?.id };
 }
+
 
