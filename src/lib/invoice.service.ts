@@ -1,73 +1,76 @@
 // src/lib/invoice.service.ts
-// src/lib/invoice.service.ts
-"use server";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { buildInvoicePdf } from "./invoice-pdf";
+import { sendMail } from "@/lib/mailer";
 
-import { buildInvoicePdf } from "@/lib/invoice-pdf";
-import { sendInvoiceEmail } from "@/lib/email";
-import type { InvoicePayload, BuiltInvoice } from "@/lib/invoice-types";
-
-export type CreateInvoiceOptions = {
-  /** whether to email the generated invoice */
-  email?: boolean;
-  /** optional bcc address, if you want to extend later */
-  bcc?: string | null;
-};
-
-export type CreateInvoiceResult =
-  | {
-      ok: true;
-      filename: string;
-      total: number;
-      emailed: boolean;
-      emailId: string | null;
-    }
-  | { ok: false; error: string };
-
-export async function createInvoice(args: {
-  order: InvoicePayload;
-  options?: CreateInvoiceOptions;
-}): Promise<CreateInvoiceResult> {
-  const { order, options } = args;
-
-  let built: BuiltInvoice;
+/**
+ * Public service entry that:
+ *  1) builds the PDF from whatever payload you have
+ *  2) emails it to the customer (Resend)
+ *
+ * We keep the argument type as `unknown` on purpose to avoid
+ * compile-time fights with multiple payload shapes; the PDF
+ * builder normalises them at runtime.
+ */
+export async function createAndSendInvoice(order: unknown): Promise<{
+  ok: boolean;
+  id?: string;
+  error?: string;
+}> {
   try {
-    // build the PDF (returns { pdfBuffer, filename, total })
-    built = await buildInvoicePdf(order);
+    // 1) build pdf
+    const { pdfBuffer, filename } = await buildInvoicePdf(order);
+
+    // try to discover recipient + subject line from the payload best we can
+    const anyOrder = order as any;
+    const company = process.env.COMPANY_NAME || "FuelFlow";
+
+    // derive email "to"
+    const to: string | undefined =
+      anyOrder?.billTo?.email ??
+      anyOrder?.customer?.email ??
+      process.env.FALLBACK_TO_EMAIL;
+
+    if (!to) {
+      return { ok: false, error: "Missing recipient email" };
+    }
+
+    // derive invoice number for subject
+    const invoiceNumber: string =
+      anyOrder?.invoiceNumber ??
+      anyOrder?.meta?.invoiceNumber ??
+      `INV-${Math.floor(Date.now() / 1000)}`;
+
+    const subject = `${company} — Invoice ${invoiceNumber}`;
+
+    const text = [
+      `Hi ${anyOrder?.billTo?.name || anyOrder?.customer?.name || "there"},`,
+      "",
+      `Thanks for your order. Your invoice ${invoiceNumber} is attached.`,
+      "",
+      `Kind regards,`,
+      company,
+    ].join("\n");
+
+    // 2) send via Resend (your existing mailer)
+    const id = await sendMail({
+      to,
+      bcc: process.env.MAIL_BCC || undefined,
+      subject,
+      text,
+      attachments: [
+        {
+          filename,
+          content: pdfBuffer,
+          contentType: "application/pdf",
+        },
+      ],
+    });
+
+    return { ok: true, id };
   } catch (err: any) {
     return { ok: false, error: `pdf: ${err?.message ?? String(err)}` };
+    // You may also want to log to your error pipeline here
   }
-
-  // email (optional)
-  const shouldEmail = options?.email === true;
-  const to = order?.customer?.email;
-  let emailed = false;
-  let emailId: string | null = null;
-
-  if (shouldEmail && to) {
-    try {
-      await sendInvoiceEmail({
-        to,
-        subject: `Invoice ${built.filename}`,
-        html: `<p>Hi ${order.customer.name},</p><p>Your invoice is attached.</p>`,
-        pdfBuffer: built.pdfBuffer,
-        filename: built.filename,
-      });
-      emailed = true;
-      // your sendInvoiceEmail doesn’t return an id in your screenshots,
-      // so we keep emailId as null. If you later add it, set it here.
-    } catch (_err) {
-      // do not fail the whole request if email sending fails
-      emailed = false;
-      emailId = null;
-    }
-  }
-
-  return {
-    ok: true,
-    filename: built.filename,
-    total: built.total,
-    emailed,
-    emailId,
-  };
 }
 
