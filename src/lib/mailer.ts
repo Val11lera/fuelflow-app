@@ -4,8 +4,7 @@ import { Resend } from "resend";
 
 type AttachmentIn = {
   filename: string;
-  // Buffer for normal attachments, OR base64 string if you call with base64
-  content: Buffer | string;
+  content: Buffer | string; // Buffer (recommended) or base64 string you convert before calling
   contentType?: string;
 };
 
@@ -26,11 +25,9 @@ function pickFrom(): string {
     process.env.MAIL_FROM?.trim() ||
     DEFAULT_FROM;
 
-  // Extract just the email address inside <>
   const email = raw.match(/<([^>]+)>/)?.[1] || raw;
   const domain = email.split("@")[1]?.toLowerCase() || "";
 
-  // Force the verified domain if anything else slips through
   if (domain !== "mail.fuelflow.co.uk") {
     console.warn(
       `[mailer] Overriding invalid FROM domain (${domain}) -> ${DEFAULT_FROM}`
@@ -48,17 +45,13 @@ export async function sendMail(args: SendArgs): Promise<string> {
   const from = pickFrom();
 
   const to = Array.isArray(args.to) ? args.to : [args.to];
-  const bcc = args.bcc
-    ? Array.isArray(args.bcc)
-      ? args.bcc
-      : [args.bcc]
-    : undefined;
+  const bcc =
+    args.bcc ? (Array.isArray(args.bcc) ? args.bcc : [args.bcc]) : undefined;
 
   const attachments =
     args.attachments && args.attachments.length
       ? args.attachments.map((a) => ({
           filename: a.filename,
-          // Resend expects Buffer; convert base64 strings if needed
           content:
             typeof a.content === "string"
               ? Buffer.from(a.content, "base64")
@@ -67,20 +60,20 @@ export async function sendMail(args: SendArgs): Promise<string> {
         }))
       : undefined;
 
-  const resp = await resend.emails.send({
-    from,
-    to,
-    bcc,
-    subject: args.subject,
-    html: args.html,
-    text: args.text,
-    attachments,
-  });
+  // Build payload without undefined properties to satisfy strict typings
+  const payload: any = { from, to, subject: args.subject };
+  if (args.html) payload.html = args.html;
+  if (args.text) payload.text = args.text;
+  if (bcc && bcc.length) payload.bcc = bcc;
+  if (attachments && attachments.length) payload.attachments = attachments;
 
-  if (resp.error) {
-    throw new Error(resp.error.message);
+  const resp = await resend.emails.send(payload);
+
+  if ((resp as any)?.error) {
+    throw new Error((resp as any).error.message);
   }
-  return resp.data?.id || "";
+  return (resp as any)?.data?.id || "";
 }
+
 
 
