@@ -1,18 +1,32 @@
 // src/pages/api/attachment-test.ts
+// src/pages/api/attachment-test.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { sendEmail } from "@/lib/mailer";
+// If you don't have @ path alias, use the relative import below
+import { sendEmail } from "../../lib/mailer"; // from src/pages/api -> ../../lib/mailer
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const to = (req.query.to as string) || process.env.MAIL_BCC?.split(",")[0] || "fuelflow.queries@gmail.com";
-  const buf = Buffer.from("Hello attachment!", "utf8");
+  try {
+    const to =
+      (req.query.to as string) ||
+      process.env.MAIL_BCC ||
+      "fuelflow.queries@gmail.com";
 
-  const r = await sendEmail({
-    to,
-    subject: "Attachment test",
-    html: "<p>Attachment test</p>",
-    text: "Attachment test",
-    attachments: [{ filename: "test.txt", content: buf, contentType: "text/plain" }],
-  });
+    const { id } = await sendEmail({
+      to,
+      subject: "Attachment test",
+      text: "Hello attachment!",
+      attachments: [
+        {
+          filename: "test.txt",
+          content: Buffer.from("Hello attachment!", "utf8"),
+          contentType: "text/plain",
+        },
+      ],
+    });
 
-  res.status(200).json({ ok: r.ok, id: r.id ?? null, error: r.error ?? null });
+    // IMPORTANT: don't reference r.ok or r.error here.
+    return res.status(200).json({ ok: true, id: id ?? null });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e?.message || "send_failed" });
+  }
 }
