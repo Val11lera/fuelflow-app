@@ -13,8 +13,8 @@ const resend = new Resend(RESEND_KEY);
 
 export type MailAttachment = {
   filename: string;
-  content: Buffer | string; // Buffer for files, or base64 string
-  contentType?: string;     // e.g. "application/pdf"
+  content: Buffer | string;  // Buffer or base64 string
+  contentType?: string;      // e.g. "application/pdf"
 };
 
 export async function sendMail(args: {
@@ -26,7 +26,9 @@ export async function sendMail(args: {
   attachments?: MailAttachment[];
 }) {
   const to = Array.isArray(args.to) ? args.to : [args.to];
-  const bcc =
+
+  // normalize bcc to string[] (or undefined)
+  const bccArr =
     args.bcc != null
       ? Array.isArray(args.bcc)
         ? args.bcc
@@ -35,8 +37,8 @@ export async function sendMail(args: {
       ? [DEFAULT_BCC]
       : undefined;
 
-  // Resend expects base64 content for attachments
-  const attachments =
+  // map attachments to base64 strings only if provided
+  const atts =
     args.attachments?.map((a) => ({
       filename: a.filename,
       content:
@@ -44,18 +46,20 @@ export async function sendMail(args: {
       contentType: a.contentType ?? "application/octet-stream",
     })) ?? [];
 
-  const { data, error } = await resend.emails.send({
+  // build the payload conditionally; DO NOT pass undefined fields
+  const payload: any = {
     from: FROM,
     to,
-    bcc,
     subject: args.subject,
-    html: args.html,
-    text: args.text,
-    // cast to any so we don’t fight type changes across Resend versions
-    attachments: attachments as any,
-  });
+  };
+  if (bccArr && bccArr.length) payload.bcc = bccArr;
+  if (args.html) payload.html = args.html;
+  if (args.text) payload.text = args.text;
+  if (atts.length) payload.attachments = atts;
 
-  if (error) throw error;
+  const { data, error } = await resend.emails.send(payload);
+
+  if (error) throw (typeof error === "object" ? error : new Error(String(error)));
   return data?.id ?? null;
 }
 
