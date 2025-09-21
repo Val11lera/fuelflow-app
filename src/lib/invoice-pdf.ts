@@ -2,325 +2,231 @@
 // src/lib/invoice-pdf.ts
 import PDFDocument from "pdfkit";
 
-export type Currency = "GBP" | "EUR" | "USD";
+export type LineItemLike = {
+  description: string;
+  quantity: number;          // e.g. litres
+  unitPrice: number;         // major units, e.g. 1.71 for £1.71
+};
 
-export interface InvoiceCompany {
-  name: string;
-  addressLines: string[]; // ["Line 1", "Line 2", "City", "Postcode", "Country"]
-  email?: string;
-  phone?: string;
-  vatNumber?: string;
-  companyNumber?: string;
-  logoPngBase64?: string;  // optional brand logo (data URL or raw base64)
+export type CustomerLike = {
+  name?: string | null;
+  email?: string | null;
+  company?: string | null;
+  address_line1?: string | null;
+  address_line2?: string | null;
+  city?: string | null;
+  postcode?: string | null;
+};
+
+export type OrderLike = {
+  // If you already generate invoice/order numbers, pass them in
+  invoiceNumber?: string;
+  orderId?: string;
+
+  currency?: string;          // "GBP" | "EUR" | "USD" ...
+  items?: LineItemLike[];     // required at runtime (we guard below)
+  customer?: CustomerLike;    // recommended
+  meta?: { notes?: string } | null;
+  issueDate?: string | Date;  // optional override of "today"
+};
+
+export type BuiltInvoice = {
+  pdfBuffer: Buffer;
+  filename: string;
+  total: number;              // numeric total in major units
+};
+
+/* ---------------------------------- utils --------------------------------- */
+
+function currencySymbol(cur: string | undefined): string {
+  const c = (cur || "").toUpperCase();
+  if (c === "GBP") return "£";
+  if (c === "EUR") return "€";
+  if (c === "USD") return "$";
+  return "";
 }
 
-export interface DeliveryInfo {
-  addressLines?: string[];
-  date?: string;        // ISO or human date
-  vehicleReg?: string;
-  driver?: string;
-  noteNumber?: string;  // delivery note / ticket id
+function toDateText(d?: string | Date) {
+  const date = d ? new Date(d) : new Date();
+  return date.toLocaleDateString("en-GB", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
 }
 
-export interface PaymentInfo {
-  status: "paid" | "unpaid" | "refunded";
-  paidAt?: string;            // ISO/human
-  method?: string;            // e.g., "Visa •••• 4242"
-  reference?: string;         // PI_ / CH_ / CS_ or your own ID
-}
+/* ------------------------------- main builder ------------------------------ */
 
-export interface InvoiceItem {
-  description: string;   // e.g., "Diesel"
-  quantity: number;      // litres
-  unitPrice: number;     // price per litre (ex VAT)
-  vatRate?: number;      // default 0.2 (20%)
-}
+export async function buildInvoicePdf(order: OrderLike): Promise<BuiltInvoice> {
+  // Company identity (all optional – pulled from env if present)
+  const companyName = process.env.COMPANY_NAME || "FuelFlow";
+  const companyAddress =
+    process.env.COMPANY_ADDRESS ||
+    "1 Example Street\nExample Town\nEX1 2MP\nUnited Kingdom";
+  const companyVat = process.env.COMPANY_VAT || ""; // e.g. "GB123456789"
+  const companyReg = process.env.COMPANY_REG || ""; // e.g. Companies House number
 
-export interface InvoicePayload {
-  invoiceNumber: string;      // INV-YYYYMMDD-####
-  invoiceDate: string;        // ISO/human
-  currency: Currency;         // "GBP" etc.
-  supplier: InvoiceCompany;
-  customer: {
-    name: string;
-    addressLines?: string[];
-    email?: string;
-  };
-  items: InvoiceItem[];
-  notes?: string[];
+  // Optional payment details
+  const bankName = process.env.COMPANY_BANK_NAME || "";
+  const bankSort = process.env.COMPANY_BANK_SORT || "";
+  const bankAcc  = process.env.COMPANY_BANK_ACC  || "";
+  const bankIban = process.env.COMPANY_IBAN || "";
+  const bankSwift = process.env.COMPANY_SWIFT || "";
 
-  // Optional extra context to make it "fuel specific"
-  orderReference?: string;
-  stripeSessionId?: string;
-  stripePaymentIntentId?: string;
-  delivery?: DeliveryInfo;
-  payment?: PaymentInfo;
-}
+  const currency = (order.currency || "GBP").toUpperCase();
+  const sym = currencySymbol(currency);
 
-function money(n: number, ccy: Currency) {
-  const symbol = ccy === "GBP" ? "£" : ccy === "EUR" ? "€" : "$";
-  return symbol + n.toFixed(2);
-}
+  const invoiceNumber =
+    order.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
+  const issueDateText = toDateText(order.issueDate);
 
-function round2(n: number) {
-  return Math.round(n * 100) / 100;
-}
+  const items: LineItemLike[] = Array.isArray(order.items) ? order.items : [];
+  const customer: CustomerLike = order.customer ?? {};
 
-export async function buildInvoicePdf(payload: InvoicePayload): Promise<Buffer> {
-  const {
-    invoiceNumber,
-    invoiceDate,
-    currency,
-    supplier,
-    customer,
-    items,
-    notes,
-    orderReference,
-    stripeSessionId,
-    stripePaymentIntentId,
-    delivery,
-    payment
-  } = payload;
+  // Calculate totals
+  const subtotal = items.reduce((sum, it) => {
+    const qty = Number(it.quantity || 0);
+    const unit = Number(it.unitPrice || 0);
+    return sum + qty * unit;
+  }, 0);
 
-  // Pre-calc totals (per-line VAT allowed if mixed rates; default 20%)
-  let netTotal = 0;
-  let vatTotal = 0;
+  // If you later add VAT, discounts, delivery, etc, compute here
+  const total = subtotal;
 
-  const computed = items.map((it) => {
-    const rate = it.vatRate ?? 0.2;
-    const net = round2(it.quantity * it.unitPrice);
-    const vat = round2(net * rate);
-    const gross = round2(net + vat);
-    netTotal += net;
-    vatTotal += vat;
-    return { ...it, rate, net, vat, gross };
+  // ----- Begin PDF -----
+  const doc = new PDFDocument({ size: "A4", margin: 50 });
+
+  const chunks: Buffer[] = [];
+  doc.on("data", (c) => chunks.push(c as Buffer));
+  const finished = new Promise<void>((resolve) => doc.on("end", resolve));
+
+  /* Header */
+  doc
+    .fontSize(22)
+    .fillColor("#111")
+    .text(companyName, { continued: false });
+
+  doc
+    .moveDown(0.3)
+    .fontSize(10)
+    .fillColor("#666")
+    .text(companyAddress);
+
+  if (companyReg) doc.text(`Company No: ${companyReg}`);
+  if (companyVat) doc.text(`VAT: ${companyVat}`);
+
+  doc.moveDown(1);
+
+  /* Invoice meta line */
+  doc.fillColor("#111").fontSize(16).text(`Invoice ${invoiceNumber}`);
+  doc.moveDown(0.2);
+  doc
+    .fontSize(10)
+    .fillColor("#333")
+    .text(`Date: ${issueDateText}`);
+  if (order.orderId) doc.text(`Order: ${order.orderId}`);
+
+  doc.moveDown(1);
+
+  /* Bill To */
+  doc.fillColor("#111").fontSize(12).text("Bill To:");
+  doc.fontSize(10).fillColor("#333");
+  if (customer.company) doc.text(customer.company);
+  doc.text(customer.name || "Customer");
+  if (customer.address_line1) doc.text(String(customer.address_line1));
+  if (customer.address_line2) doc.text(String(customer.address_line2));
+  if (customer.city || customer.postcode)
+    doc.text(
+      [customer.city, customer.postcode].filter(Boolean).join(" ")
+    );
+
+  doc.moveDown(1);
+
+  /* Table header */
+  const left = 50;
+  const right = 545;
+  const col1 = left;  // Description
+  const col2 = 350;   // Qty
+  const col3 = 430;   // Unit
+  const col4 = 500;   // Line
+
+  doc
+    .fontSize(11)
+    .fillColor("#111")
+    .text("Description", col1, doc.y, { continued: true })
+    .text("Qty", col2, doc.y, { width: 60, align: "right", continued: true })
+    .text("Unit", col3, doc.y, { width: 60, align: "right", continued: true })
+    .text("Line", col4, doc.y, { width: right - col4, align: "right" });
+
+  doc
+    .moveTo(left, doc.y + 4)
+    .lineTo(right, doc.y + 4)
+    .stroke();
+
+  doc.moveDown(0.6);
+
+  /* Table rows */
+  doc.fontSize(10).fillColor("#333");
+  items.forEach((it) => {
+    const qty = Number(it.quantity || 0);
+    const unit = Number(it.unitPrice || 0);
+    const line = qty * unit;
+
+    doc
+      .text(it.description, col1, doc.y, { continued: true })
+      .text(String(qty), col2, doc.y, { width: 60, align: "right", continued: true })
+      .text(`${sym}${unit.toFixed(2)}`, col3, doc.y, { width: 60, align: "right", continued: true })
+      .text(`${sym}${line.toFixed(2)}`, col4, doc.y, { width: right - col4, align: "right" });
+
+    doc.moveDown(0.3);
   });
 
-  netTotal = round2(netTotal);
-  vatTotal = round2(vatTotal);
-  const grandTotal = round2(netTotal + vatTotal);
+  doc.moveDown(0.8);
+  doc.moveTo(left, doc.y).lineTo(right, doc.y).stroke();
+  doc.moveDown(0.6);
 
-  // === PDF
-  const doc = new PDFDocument({ size: "A4", margin: 36 });
-  const buffers: Buffer[] = [];
-  doc.on("data", (d) => buffers.push(d));
-  const done = new Promise<Buffer>((resolve) =>
-    doc.on("end", () => resolve(Buffer.concat(buffers)))
-  );
+  /* Totals */
+  doc
+    .fontSize(11)
+    .fillColor("#111")
+    .text("Subtotal:", col3, doc.y, { width: 60, align: "right", continued: true })
+    .text(`${sym}${subtotal.toFixed(2)}`, col4, doc.y, { width: right - col4, align: "right" });
 
-  // Brand header bar
-  doc.rect(0, 0, doc.page.width, 70).fill("#0F172A"); // slate-900
-  doc.fill("#FFFFFF");
+  doc
+    .fontSize(12)
+    .text("Total:", col3, doc.y + 6, { width: 60, align: "right", continued: true })
+    .text(`${sym}${total.toFixed(2)}`, col4, doc.y + 6, { width: right - col4, align: "right" });
 
-  // Logo or brand name
-  const titleX = 36;
-  const titleY = 20;
-  if (supplier.logoPngBase64) {
-    try {
-      const data = supplier.logoPngBase64.startsWith("data:")
-        ? supplier.logoPngBase64.split(",")[1]
-        : supplier.logoPngBase64;
-      doc.image(Buffer.from(data, "base64"), titleX, 12, { height: 46 });
-    } catch {
-      doc.fontSize(24).text(supplier.name, titleX, titleY);
-    }
-  } else {
-    doc.fontSize(24).text(supplier.name, titleX, titleY);
+  /* Notes / payment info */
+  doc.moveDown(1.2);
+  if (order.meta?.notes) {
+    doc.fontSize(10).fillColor("#444").text(order.meta.notes);
+    doc.moveDown(0.8);
   }
 
-  // "TAX INVOICE" label
-  doc.fontSize(14).text("TAX INVOICE", doc.page.width - 150, 24, { width: 114, align: "right" });
-
-  // Supplier block
-  doc.fillColor("#111827"); // slate-900 text
-  doc.fontSize(11);
-  let y = 90;
-
-  const colLeftX = 36;
-  const colRightX = doc.page.width / 2 + 10;
-
-  doc.font("Helvetica-Bold").text("From", colLeftX, y);
-  doc.font("Helvetica").moveDown(0.3);
-  const sp = [
-    supplier.name,
-    ...(supplier.addressLines || []),
-    supplier.email ? `Email: ${supplier.email}` : undefined,
-    supplier.phone ? `Tel: ${supplier.phone}` : undefined,
-    supplier.companyNumber ? `Company No: ${supplier.companyNumber}` : undefined,
-    supplier.vatNumber ? `VAT No: ${supplier.vatNumber}` : undefined
-  ].filter(Boolean) as string[];
-  doc.text(sp.join("\n"), { width: doc.page.width / 2 - 48 });
-
-  // Customer block
-  doc.font("Helvetica-Bold").text("Bill To", colRightX, y);
-  doc.font("Helvetica").moveDown(0.3);
-  const cp = [
-    customer.name,
-    ...(customer.addressLines || []),
-    customer.email ? `Email: ${customer.email}` : undefined
-  ].filter(Boolean) as string[];
-  doc.text(cp.join("\n"), { width: doc.page.width / 2 - 48 });
-
-  // Invoice meta
-  y = doc.y + 16;
-  doc.moveTo(colLeftX, y).lineTo(doc.page.width - 36, y).strokeColor("#E5E7EB").stroke();
-
-  y += 12;
-  doc.font("Helvetica-Bold").text("Invoice No:", colLeftX, y);
-  doc.font("Helvetica").text(invoiceNumber, colLeftX + 95, y);
-
-  doc.font("Helvetica-Bold").text("Invoice Date:", colLeftX + 260, y);
-  doc.font("Helvetica").text(invoiceDate, colLeftX + 360, y);
-
-  y += 16;
-  if (orderReference) {
-    doc.font("Helvetica-Bold").text("Order Ref:", colLeftX, y);
-    doc.font("Helvetica").text(orderReference, colLeftX + 95, y);
+  // Lightly show payment details if provided via env
+  if (bankName || bankAcc || bankSort || bankIban || bankSwift) {
+    doc
+      .fontSize(10)
+      .fillColor("#111")
+      .text("Payment details", { underline: true });
+    doc.fillColor("#444");
+    if (bankName)  doc.text(`Bank: ${bankName}`);
+    if (bankAcc)   doc.text(`Account: ${bankAcc}`);
+    if (bankSort)  doc.text(`Sort Code: ${bankSort}`);
+    if (bankIban)  doc.text(`IBAN: ${bankIban}`);
+    if (bankSwift) doc.text(`SWIFT/BIC: ${bankSwift}`);
   }
-
-  if (stripePaymentIntentId) {
-    doc.font("Helvetica-Bold").text("Payment Ref:", colLeftX + 260, y);
-    doc.font("Helvetica").text(stripePaymentIntentId, colLeftX + 360, y);
-  } else if (stripeSessionId) {
-    doc.font("Helvetica-Bold").text("Payment Ref:", colLeftX + 260, y);
-    doc.font("Helvetica").text(stripeSessionId, colLeftX + 360, y);
-  }
-
-  // Delivery info (optional)
-  if (delivery?.addressLines?.length || delivery?.date || delivery?.noteNumber) {
-    y += 22;
-    doc.font("Helvetica-Bold").text("Delivery", colLeftX, y);
-    doc.font("Helvetica");
-    const dl: string[] = [];
-    if (delivery.date) dl.push(`Date: ${delivery.date}`);
-    if (delivery.noteNumber) dl.push(`Note #: ${delivery.noteNumber}`);
-    if (delivery.addressLines?.length) dl.push(`Address: ${delivery.addressLines.join(", ")}`);
-    if (delivery.vehicleReg) dl.push(`Vehicle: ${delivery.vehicleReg}`);
-    if (delivery.driver) dl.push(`Driver: ${delivery.driver}`);
-    doc.text(dl.join("   •   "), colLeftX + 75, y, { width: doc.page.width - colLeftX - 36 });
-  }
-
-  // PAID ribbon
-  if (payment?.status === "paid") {
-    const label = `PAID ${payment.paidAt ? `• ${payment.paidAt}` : ""}${
-      payment.method ? ` • ${payment.method}` : ""
-    }`;
-    const w = doc.widthOfString(label) + 16;
-    doc.save()
-      .rotate(0, { origin: [doc.page.width - w - 36, 90] })
-      .fillColor("#16A34A") // green-600
-      .roundedRect(doc.page.width - w - 36, 90, w, 22, 4)
-      .fill()
-      .fillColor("#FFFFFF")
-      .font("Helvetica-Bold")
-      .text(label, doc.page.width - w - 28, 95)
-      .restore();
-    doc.fillColor("#111827");
-  }
-
-  // Table header
-  y = doc.y + 20;
-  const tableX = colLeftX;
-  const tableW = doc.page.width - 72;
-
-  const cols = [
-    { key: "description", label: "Description", width: 180, align: "left" as const },
-    { key: "qty",          label: "Litres",      width: 70,  align: "right" as const },
-    { key: "unit",         label: "Unit (ex-VAT)", width: 95, align: "right" as const },
-    { key: "net",          label: "Net",         width: 95,  align: "right" as const },
-    { key: "rate",         label: "VAT %",       width: 60,  align: "right" as const },
-    { key: "vat",          label: "VAT",         width: 95,  align: "right" as const },
-    { key: "gross",        label: "Total",       width: 95,  align: "right" as const },
-  ];
-
-  // header row
-  doc.rect(tableX, y, tableW, 24).fill("#F3F4F6").strokeColor("#E5E7EB").stroke();
-  doc.fillColor("#111827").font("Helvetica-Bold").fontSize(10);
-
-  let x = tableX + 8;
-  cols.forEach((c) => {
-    const textX = c.align === "right" ? x + c.width - 8 : x;
-    doc.text(c.label, textX, y + 7, { width: c.width - 16, align: c.align });
-    x += c.width;
-  });
-
-  // rows
-  doc.font("Helvetica").fontSize(10);
-  let rowY = y + 24;
-  computed.forEach((row, idx) => {
-    const isZebra = idx % 2 === 1;
-    if (isZebra) {
-      doc.rect(tableX, rowY, tableW, 22).fill("#FAFAFA");
-      doc.fillColor("#111827");
-    }
-
-    x = tableX + 8;
-    const cells = [
-      { v: row.description, align: "left" as const, width: cols[0].width },
-      { v: row.quantity.toLocaleString(), align: "right" as const, width: cols[1].width },
-      { v: money(row.unitPrice, currency), align: "right" as const, width: cols[2].width },
-      { v: money(row.net, currency), align: "right" as const, width: cols[3].width },
-      { v: (row.rate * 100).toFixed(0) + "%", align: "right" as const, width: cols[4].width },
-      { v: money(row.vat, currency), align: "right" as const, width: cols[5].width },
-      { v: money(row.gross, currency), align: "right" as const, width: cols[6].width },
-    ];
-    cells.forEach((c, i) => {
-      const textX = c.align === "right" ? x + c.width - 8 : x;
-      doc.text(String(c.v), textX, rowY + 6, { width: c.width - 16, align: c.align });
-      x += c.width;
-    });
-
-    doc.rect(tableX, rowY, tableW, 22).strokeColor("#E5E7EB").stroke();
-    rowY += 22;
-  });
-
-  // Totals
-  rowY += 8;
-  const rightBlockW = cols.slice(-3).reduce((sum, c) => sum + c.width, 0);
-  const rightBlockX = tableX + tableW - rightBlockW;
-
-  const totalRows = [
-    { label: "Subtotal (Net)", value: money(netTotal, currency) },
-    { label: "VAT",            value: money(vatTotal, currency) },
-    { label: "Total",          value: money(grandTotal, currency), bold: true },
-  ];
-
-  totalRows.forEach((r, i) => {
-    const h = 22;
-    doc.rect(rightBlockX, rowY, rightBlockW, h).fill(i === totalRows.length - 1 ? "#F3F4F6" : "#FFFFFF").strokeColor("#E5E7EB").stroke();
-    doc.fillColor("#111827").font(r.bold ? "Helvetica-Bold" : "Helvetica");
-
-    doc.text(r.label, rightBlockX + 12, rowY + 6, { width: rightBlockW / 2 - 12, align: "left" });
-    doc.text(r.value, rightBlockX + rightBlockW / 2, rowY + 6, { width: rightBlockW / 2 - 12, align: "right" });
-
-    rowY += h;
-  });
-
-  // Notes
-  if ((notes && notes.length) || payment?.status) {
-    rowY += 12;
-    doc.font("Helvetica-Bold").text("Notes", tableX, rowY);
-    doc.font("Helvetica");
-
-    const arr: string[] = [];
-    if (payment?.status === "paid") arr.push("This invoice is marked as PAID.");
-    if (payment?.reference) arr.push(`Payment ref: ${payment.reference}`);
-    if (payment?.method) arr.push(`Payment method: ${payment.method}`);
-    if (notes?.length) arr.push(...notes);
-
-    doc.text(arr.join("\n"), tableX, rowY + 16, { width: tableW - 10 });
-  }
-
-  // Footer
-  doc.fontSize(9).fillColor("#6B7280");
-  doc.text(
-    `${supplier.name} — Registered in England & Wales${supplier.companyNumber ? " • Company No " + supplier.companyNumber : ""}${supplier.vatNumber ? " • VAT No " + supplier.vatNumber : ""}`,
-    36,
-    doc.page.height - 40,
-    { width: doc.page.width - 72, align: "center" }
-  );
 
   doc.end();
-  return done;
-}
+  await finished;
 
+  const pdfBuffer = Buffer.concat(chunks);
+  const filename = `${invoiceNumber}.pdf`;
+
+  return {
+    pdfBuffer,
+    filename,
+    total: Number(total.toFixed(2)),
+  };
+}
