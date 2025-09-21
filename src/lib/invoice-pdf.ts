@@ -1,414 +1,326 @@
-// src/lib/invoice-pdf.ts
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import fs from "fs";
-import path from "path";
+// src/lib/invoice-pdf.ts// src/lib/invoice-pdf.ts
+//
+// Generates a professional Invoice PDF (single page, clean layout) with pdfkit.
+// Fixes TS issues by separating the value (constructor) and the type.
+// - Value to construct:  default import PDFDocument
+// - Type to annotate:    PDFKit.PDFDocument  → we'll alias it to PDFDoc
+
+import fs from "node:fs";
+import path from "node:path";
 import PDFDocument from "pdfkit";
 
-/** what the builder returns */
-export type BuiltInvoice = {
+// ---- Types you can reuse elsewhere ----
+
+export type Currency = "GBP" | "EUR" | "USD";
+
+export interface InvoiceLine {
+  description: string;
+  litres?: number | null;          // optional, will show if provided
+  unitPrice: number;               // major units (e.g. 1.71 => £1.71)
+  vatRatePct?: number | null;      // e.g. 20 means 20%
+}
+
+export interface Party {
+  name?: string | null;
+  email?: string | null;
+  address_line1?: string | null;
+  address_line2?: string | null;
+  city?: string | null;
+  postcode?: string | null;
+}
+
+export interface InvoiceInput {
+  invoiceNumber: string;           // e.g. 'INV-1758456xxx'
+  billTo: Party;                   // customer billing details
+  currency: Currency;              // 'GBP' | 'EUR' | 'USD'
+  lines: InvoiceLine[];            // at least 1 line
+  notes?: string | null;           // optional footer/note
+  // Company can be overridden via env; these are fallbacks
+  company?: {
+    name?: string;
+    regNo?: string;
+    vatNo?: string | null;
+    phone?: string | null;
+    email?: string | null;
+    address?: string;              // multi-line allowed with "\n"
+  };
+}
+
+export interface BuiltInvoice {
   pdfBuffer: Buffer;
   filename: string;
-  total: number;
-};
-
-/** Canonical internal shape the renderer uses */
-type InvoiceInput = {
-  invoiceNumber: string;
-  billTo: {
-    name?: string | null;
-    email?: string | null;
-    address_line1?: string | null;
-    address_line2?: string | null;
-    city?: string | null;
-    postcode?: string | null;
-  };
-  items: Array<{
-    description: string;
-    litres?: number | null;
-    unitPrice: number; // major units (e.g. 1.71)
-    vatRate?: number | null; // percent, e.g. 20
-  }>;
-  currency: string; // "GBP", "EUR", "USD"
-  meta?: {
-    notes?: string | null;
-    orderId?: string | null;
-  };
-};
-
-/** Legacy/API shape we may receive from your /api/invoices/create route */
-type ApiInvoicePayload = {
-  customer: {
-    name?: string | null;
-    email: string;
-    address_line1?: string | null;
-    address_line2?: string | null;
-    city?: string | null;
-    postcode?: string | null;
-  };
-  items: Array<{
-    description: string;
-    quantity?: number;
-    litres?: number; // tolerate both
-    unitPrice: number;
-    vatRate?: number | null;
-  }>;
-  currency: string;
-  meta?: {
-    invoiceNumber?: string;
-    orderId?: string;
-    notes?: string;
-  };
-};
-
-// ---------- helpers ----------
-
-const COMPANY_NAME = process.env.COMPANY_NAME || "FuelFlow";
-const COMPANY_ADDRESS =
-  process.env.COMPANY_ADDRESS ||
-  "1 Example Street\nExample Town\nEX1 2MP\nUnited Kingdom";
-const COMPANY_EMAIL =
-  process.env.COMPANY_EMAIL || "invoices@mail.fuelflow.co.uk";
-const COMPANY_PHONE = process.env.COMPANY_PHONE || "+44 (0)20 1234 5678";
-const COMPANY_COMPANY_NO = process.env.COMPANY_NUMBER || "12345678";
-const COMPANY_VAT_NO = process.env.VAT_NUMBER || "GB123456789";
-
-const BRAND_DARK = "#101827"; // header band
-const BRAND_ACCENT = "#0ea5e9"; // thin lines
-const GREY = "#6b7280";
-const BLACK = "#0b0f16";
-
-function currencySymbol(cur: string) {
-  const c = (cur || "").toUpperCase();
-  if (c === "GBP") return "£";
-  if (c === "EUR") return "€";
-  if (c === "USD") return "$";
-  return "";
+  total: number;                   // grand total (incl VAT)
 }
 
-function money(n: number, cur: string) {
-  const sym = currencySymbol(cur);
-  return `${sym}${(isFinite(n) ? n : 0).toFixed(2)}`;
-}
+// ---- PDFKit type alias (important to avoid the TS error) ----
+type PDFDoc = PDFKit.PDFDocument;
 
-function formatDate(d: Date) {
-  try {
-    return new Intl.DateTimeFormat("en-GB", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    }).format(d);
-  } catch {
-    return d.toISOString().slice(0, 10);
+// ---- Helpers ----
+
+const MARGIN = 36; // half inch
+const PAGE_WIDTH = 595.28; // A4 width in points
+
+function currencySymbol(cur: Currency) {
+  switch (cur) {
+    case "GBP":
+      return "£";
+    case "EUR":
+      return "€";
+    case "USD":
+      return "$";
+    default:
+      return "";
   }
 }
 
-function looksLikeLegacy(x: any): x is ApiInvoicePayload {
-  return (
-    x &&
-    typeof x === "object" &&
-    x.customer &&
-    typeof x.customer.email === "string" &&
-    Array.isArray(x.items) &&
-    typeof x.currency === "string"
-  );
+function fmtMoney(n: number, sym: string) {
+  return `${sym}${n.toFixed(2)}`;
 }
 
-function looksLikeInput(x: any): x is InvoiceInput {
-  return (
-    x &&
-    typeof x === "object" &&
-    Array.isArray(x.items) &&
-    ("billTo" in x || "invoiceNumber" in x)
-  );
+function todayUK() {
+  return new Date().toLocaleDateString("en-GB");
 }
 
-/** Convert legacy/API shape to our internal InvoiceInput */
-function legacyToInput(src: ApiInvoicePayload): InvoiceInput {
-  const invoiceNumber =
-    src.meta?.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
-
-  return {
-    invoiceNumber,
-    billTo: {
-      name: src.customer?.name ?? null,
-      email: src.customer?.email ?? null,
-      address_line1: src.customer?.address_line1 ?? null,
-      address_line2: src.customer?.address_line2 ?? null,
-      city: src.customer?.city ?? null,
-      postcode: src.customer?.postcode ?? null,
-    },
-    items: (src.items || []).map((it) => ({
-      description: it.description,
-      litres: (it.litres ?? it.quantity) ?? null,
-      unitPrice: it.unitPrice,
-      vatRate: it.vatRate ?? null,
-    })),
-    currency: (src.currency || "GBP").toUpperCase(),
-    meta: {
-      notes: src.meta?.notes ?? null,
-      orderId: src.meta?.orderId ?? null,
-    },
-  };
+function sectionHeading(doc: PDFDoc, text: string, yPad = 8) {
+  doc.moveDown(0.8);
+  doc.fontSize(10).fillColor("#666").text(text.toUpperCase());
+  doc.moveDown(yPad / 10);
+  doc.fillColor("black");
 }
 
-function kv(
-  doc: PDFDocument,
-  key: string,
-  value: string | undefined | null,
-  x: number,
-  y: number,
-  keyWidth = 60,
-  valueWidth = 200
-) {
-  const yy = y;
-  doc.fillColor(GREY).fontSize(8).text(key, x, yy, {
-    width: keyWidth,
-  });
+function kvLine(doc: PDFDoc, key: string, value: string | undefined | null) {
+  if (!value) return;
+  const y = doc.y;
+  doc.fontSize(10).fillColor("#333").text(key, MARGIN, y, { width: 90 });
+  doc.fillColor("black").text(value, MARGIN + 90, y);
+}
+
+function drawRule(doc: PDFDoc, yOffset = 6) {
+  const y = doc.y + yOffset;
   doc
-    .fillColor(BLACK)
-    .fontSize(9)
-    .text(value || "", x + keyWidth, yy, { width: valueWidth });
-}
-
-function rule(doc: PDFDocument, x1: number, y: number, x2: number) {
-  doc
-    .moveTo(x1, y)
-    .lineTo(x2, y)
+    .moveTo(MARGIN, y)
+    .lineTo(PAGE_WIDTH - MARGIN, y)
     .lineWidth(0.7)
-    .strokeColor(BRAND_ACCENT)
-    .stroke();
+    .strokeColor("#E6E8EB")
+    .stroke()
+    .strokeColor("black")
+    .lineWidth(1);
+  doc.moveDown(0.7);
 }
 
-// ---------- main builder ----------
+// Try load /public/logo-email.png if present
+function tryGetLogoPath(): string | null {
+  const p = path.join(process.cwd(), "public", "logo-email.png");
+  return fs.existsSync(p) ? p : null;
+}
 
-/**
- * Accepts ANY shape, normalises to `InvoiceInput` and renders.
- * This avoids TS type fights while keeping the layout consistent.
- */
-export async function buildInvoicePdf(source: unknown): Promise<BuiltInvoice> {
-  const anySrc = source as any;
+// ---- Main builder ----
 
-  // Normalise
-  const input: InvoiceInput = looksLikeInput(anySrc)
-    ? anySrc
-    : legacyToInput(looksLikeLegacy(anySrc) ? anySrc : ({} as ApiInvoicePayload));
+export async function buildInvoicePdf(
+  order: InvoiceInput
+): Promise<BuiltInvoice> {
+  if (!order.lines || order.lines.length === 0) {
+    throw new Error("Invoice has no line items");
+  }
 
-  // PDF doc
-  const doc = new PDFDocument({
-    size: "A4",
-    margin: 40,
-    bufferPages: false,
-    autoFirstPage: true,
-  });
+  const companyName =
+    order.company?.name ?? process.env.COMPANY_NAME ?? "FuelFlow";
+
+  const companyReg =
+    order.company?.regNo ?? process.env.COMPANY_REG_NO ?? "Company No 12345678";
+
+  // VAT may be optional in your business model; display only if present
+  const companyVat =
+    order.company?.vatNo ?? process.env.COMPANY_VAT_NO ?? null;
+
+  const companyPhone =
+    order.company?.phone ?? process.env.COMPANY_PHONE ?? null;
+
+  const companyEmail =
+    order.company?.email ?? process.env.INVOICE_FROM ?? "invoices@mail.fuelflow.co.uk";
+
+  const companyAddress =
+    order.company?.address ??
+    process.env.COMPANY_ADDRESS ??
+    "1 Example Street\nExample Town\nEX1 2MP\nUnited Kingdom";
+
+  const sym = currencySymbol(order.currency);
+
+  // Compute totals
+  let net = 0;
+  let vat = 0;
+
+  for (const l of order.lines) {
+    const qty = Number(l.litres ?? 1);
+    const lineNet = qty * Number(l.unitPrice);
+    net += lineNet;
+    const rate = Number(l.vatRatePct ?? 0) / 100;
+    vat += lineNet * rate;
+  }
+
+  const total = net + vat;
+
+  // ---------- Create PDF ----------
+  const doc = new PDFDocument({ size: "A4", margin: MARGIN }) as PDFDoc;
 
   const chunks: Buffer[] = [];
-  doc.on("data", (c) => chunks.push(c));
-  const done = new Promise<void>((resolve) => doc.on("end", () => resolve()));
+  doc.on("data", (c: Buffer) => chunks.push(c));
+  const done = new Promise<void>((resolve) => doc.on("end", resolve));
 
-  // Header dark band
-  const pageWidth = doc.page.width;
-  const MARGIN = 40;
-  const bandHeight = 48;
-
-  doc.save();
-  doc.rect(0, 0, pageWidth, bandHeight).fill(BRAND_DARK).restore();
-
-  // Logo (optional)
-  const logoPath = path.join(process.cwd(), "public", "logo-email.png");
-  const hasLogo = fs.existsSync(logoPath);
-  if (hasLogo) {
-    // NOTE: no 'align' in image options (that caused your previous TS error)
-    doc.image(logoPath, MARGIN, 10, { width: 120, height: 24 });
-  }
-
-  // Title
+  // ---------- Header bar ----------
   doc
-    .fillColor("#ffffff")
-    .fontSize(10)
-    .text("TAX INVOICE", pageWidth - MARGIN - 120, 18, {
-      width: 120,
-      align: "right",
-    })
-    .fillColor(BLACK);
+    .rect(0, 0, PAGE_WIDTH, 56)
+    .fill("#0F1A2B"); // dark header
+  doc.fillColor("white").fontSize(22).text(companyName, MARGIN, 16);
 
-  let y = bandHeight + 12;
-
-  // Seller block + Bill To block
-  // Left (From)
-  doc
-    .fontSize(9)
-    .fillColor(GREY)
-    .text("From", MARGIN, y)
-    .fillColor(BLACK)
-    .moveDown(0.3);
-
-  const sellerText = [
-    COMPANY_NAME,
-    COMPANY_ADDRESS,
-    `Email: ${COMPANY_EMAIL}`,
-    `Tel: ${COMPANY_PHONE}`,
-    `Company No: ${COMPANY_COMPANY_NO}`,
-  ].join("\n");
-
-  doc.fontSize(9).text(sellerText, MARGIN, doc.y);
-
-  // Right (Bill To)
-  const rightColX = pageWidth / 2 + 10;
-  doc
-    .fontSize(9)
-    .fillColor(GREY)
-    .text("Bill To", rightColX, y)
-    .fillColor(BLACK)
-    .moveDown(0.3);
-
-  const billToLines = [
-    input.billTo?.name,
-    input.billTo?.email,
-    input.billTo?.address_line1,
-    input.billTo?.address_line2,
-    [input.billTo?.city, input.billTo?.postcode].filter(Boolean).join(" "),
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  doc.fontSize(9).text(billToLines || "—", rightColX, doc.y);
-
-  // Meta (invoice no / date / order)
-  y = Math.max(doc.y, bandHeight + 80) + 6;
-  rule(doc, MARGIN, y, pageWidth - MARGIN);
-  y += 10;
-
-  kv(doc, "Invoice #", input.invoiceNumber, MARGIN, y);
-  kv(doc, "Date", formatDate(new Date()), MARGIN + 200, y);
-  if (input.meta?.orderId) {
-    kv(doc, "Order Ref", input.meta.orderId, MARGIN + 380, y);
-  }
-  y += 30;
-
-  // Table header
-  const colDesc = MARGIN;
-  const colLitres = pageWidth * 0.50;
-  const colUnit = pageWidth * 0.66;
-  const colLine = pageWidth * 0.83;
-  doc
-    .fontSize(9)
-    .fillColor(GREY)
-    .text("Description", colDesc, y)
-    .text("Litres", colLitres, y, { width: 60, align: "right" })
-    .text("Unit (ex-VAT)", colUnit, y, { width: 80, align: "right" })
-    .text("Line", colLine, y, { width: pageWidth - colLine - MARGIN, align: "right" })
-    .fillColor(BLACK);
-  y += 14;
-  rule(doc, MARGIN, y, pageWidth - MARGIN);
-  y += 8;
-
-  // Lines
-  let subTotal = 0;
-  for (const it of input.items) {
-    const qty = it.litres ?? null;
-    const line = (qty ?? 1) * (it.unitPrice ?? 0);
-    subTotal += line;
-
-    doc
-      .fontSize(9)
-      .text(it.description || "", colDesc, y, {
-        width: colLitres - colDesc - 8,
-      })
-      .text(qty != null ? String(qty) : "—", colLitres, y, {
-        width: 60,
-        align: "right",
-      })
-      .text(money(it.unitPrice ?? 0, input.currency), colUnit, y, {
-        width: 80,
-        align: "right",
-      })
-      .text(money(line, input.currency), colLine, y, {
-        width: pageWidth - colLine - MARGIN,
-        align: "right",
-      });
-
-    y += 18;
-
-    // If near the bottom, add a page (rare for one line invoices)
-    if (y > doc.page.height - 120) {
-      doc.addPage();
-      y = bandHeight + 12;
-    }
-  }
-
-  y += 4;
-  rule(doc, MARGIN, y, pageWidth - MARGIN);
-  y += 8;
-
-  // Totals
-  const vatRate =
-    input.items.find((i) => typeof i.vatRate === "number")?.vatRate ?? 0;
-  const vatAmount = (subTotal * (vatRate || 0)) / 100;
-  const grandTotal = subTotal + vatAmount;
-
-  doc
-    .fontSize(9)
-    .fillColor(GREY)
-    .text("Subtotal (Net)", colUnit, y, { width: 120, align: "right" })
-    .fillColor(BLACK)
-    .text(money(subTotal, input.currency), colLine, y, {
-      width: pageWidth - colLine - MARGIN,
-      align: "right",
-    });
-  y += 16;
-
-  doc
-    .fontSize(9)
-    .fillColor(GREY)
-    .text("VAT", colUnit, y, { width: 120, align: "right" })
-    .fillColor(BLACK)
-    .text(money(vatAmount, input.currency), colLine, y, {
-      width: pageWidth - colLine - MARGIN,
-      align: "right",
-    });
-  y += 16;
-
+  // Right side "TAX INVOICE" label
   doc
     .fontSize(10)
-    .fillColor(BLACK)
-    .text("Total", colUnit, y, { width: 120, align: "right" })
-    .font("Helvetica-Bold")
-    .text(money(grandTotal, input.currency), colLine, y, {
-      width: pageWidth - colLine - MARGIN,
-      align: "right",
-    })
-    .font("Helvetica");
+    .text("TAX INVOICE", PAGE_WIDTH - MARGIN - 100, 22, { width: 100, align: "right" });
 
-  y += 24;
-
-  if (input.meta?.notes) {
-    rule(doc, MARGIN, y, pageWidth - MARGIN);
-    y += 8;
-    doc.fillColor(GREY).fontSize(9).text(String(input.meta.notes), MARGIN, y, {
-      width: pageWidth - MARGIN * 2,
-    });
-    y = doc.y + 4;
+  // Optional logo (draw over the dark bar)
+  const logo = tryGetLogoPath();
+  if (logo) {
+    // *No* align here — we position by x/y
+    doc.image(logo, MARGIN, 14, { width: 120, height: 24 });
   }
 
-  // Footer
-  const footerY = doc.page.height - 42;
-  doc.save();
-  rule(doc, MARGIN, footerY - 8, pageWidth - MARGIN);
+  doc.moveDown(3);
+  doc.fillColor("black");
+
+  // ---------- From (company) ----------
+  sectionHeading(doc, "From", 4);
+  kvLine(doc, "", companyName);
+  kvLine(doc, "", companyAddress);
+  if (companyEmail) kvLine(doc, "Email:", companyEmail);
+  if (companyPhone) kvLine(doc, "Tel:", companyPhone);
+  kvLine(doc, "Company:", companyReg);
+  if (companyVat) kvLine(doc, "VAT:", companyVat);
+
+  // ---------- Bill To ----------
+  const saveY = doc.y - 80; // start of right column
+  doc.y = saveY;
+  const rightX = PAGE_WIDTH / 2;
+  doc.fontSize(10);
+  doc.text("", rightX, doc.y); // set cursor to right column
+
+  sectionHeading(doc, "Bill To", 4);
+  kvLine(doc, "", order.billTo.name ?? "");
+  if (order.billTo.email) kvLine(doc, "Email:", order.billTo.email);
+  if (order.billTo.address_line1) kvLine(doc, "", String(order.billTo.address_line1));
+  if (order.billTo.address_line2) kvLine(doc, "", String(order.billTo.address_line2));
+  if (order.billTo.city || order.billTo.postcode) {
+    kvLine(
+      doc,
+      "",
+      [order.billTo.city, order.billTo.postcode].filter(Boolean).join(" ")
+    );
+  }
+  kvLine(doc, "Date:", todayUK());
+  kvLine(doc, "Invoice #:", order.invoiceNumber);
+
+  // Back to full width flow
+  doc.moveDown(1.2);
+  drawRule(doc, 2);
+
+  // ---------- Lines table ----------
+  const col1 = MARGIN;
+  const col2 = PAGE_WIDTH - MARGIN - 170;   // Unit
+  const col3 = PAGE_WIDTH - MARGIN - 90;    // VAT %
+  const col4 = PAGE_WIDTH - MARGIN;         // Line total (right al.)
+
+  doc.fontSize(10).fillColor("#666");
+  doc.text("Description", col1, doc.y, { continued: true });
+  doc.text("Unit (ex-VAT)", col2, doc.y, { width: 80, align: "right", continued: true });
+  doc.text("VAT %", col3, doc.y, { width: 60, align: "right", continued: true });
+  doc.text("Line", col4, doc.y, { width: 60, align: "right" });
+  drawRule(doc, 2);
+  doc.fillColor("black");
+
+  for (const l of order.lines) {
+    const qty = Number(l.litres ?? 1);
+    const lineNet = qty * Number(l.unitPrice);
+    const rate = Number(l.vatRatePct ?? 0);
+    const y = doc.y;
+
+    const desc = l.litres != null ? `${l.description} — ${qty}` : l.description;
+
+    doc.text(desc, col1, y, { width: col2 - col1 - 6 });
+    doc.text(fmtMoney(Number(l.unitPrice), sym), col2, y, {
+      width: 80,
+      align: "right",
+    });
+    doc.text(`${rate}%`, col3, y, { width: 60, align: "right" });
+    doc.text(fmtMoney(lineNet, sym), col4, y, { width: 60, align: "right" });
+    doc.moveDown(0.3);
+  }
+
+  drawRule(doc, 4);
+
+  // ---------- Totals ----------
+  const labelW = 80;
+  const valW = 60;
+  const xLabel = col3; // align with VAT % col
+  const xVal = col4;
+
+  doc.fontSize(10).fillColor("#666").text("Subtotal (Net)", xLabel, doc.y, {
+    width: labelW,
+    align: "right",
+    continued: true,
+  });
+  doc.fillColor("black").text(fmtMoney(net, sym), xVal, doc.y, {
+    width: valW,
+    align: "right",
+  });
+
+  doc.fontSize(10).fillColor("#666").text("VAT", xLabel, doc.y + 4, {
+    width: labelW,
+    align: "right",
+    continued: true,
+  });
+  doc.fillColor("black").text(fmtMoney(vat, sym), xVal, doc.y + 4, {
+    width: valW,
+    align: "right",
+  });
+
+  doc.fontSize(10).fillColor("#666").text("Total", xLabel, doc.y + 10, {
+    width: labelW,
+    align: "right",
+    continued: true,
+  });
+  doc.fillColor("black").fontSize(11).text(fmtMoney(total, sym), xVal, doc.y + 10, {
+    width: valW,
+    align: "right",
+  });
+
+  // ---------- Notes ----------
+  if (order.notes) {
+    doc.moveDown(1.2);
+    drawRule(doc, 2);
+    doc.fontSize(9).fillColor("#666").text(order.notes);
+    doc.fillColor("black");
+  }
+
+  // ---------- Footer ----------
+  doc.moveTo(MARGIN, 792 - 36).lineTo(PAGE_WIDTH - MARGIN, 792 - 36).lineWidth(2).stroke("#222");
   doc
     .fontSize(8)
-    .fillColor(GREY)
+    .fillColor("#666")
     .text(
-      `${COMPANY_NAME} — Registered in England & Wales · Company No ${COMPANY_COMPANY_NO} · VAT No ${COMPANY_VAT_NO}`,
+      `${companyName} — Registered in England & Wales • ${companyReg}` +
+        (companyVat ? ` • VAT No ${companyVat}` : ""),
       MARGIN,
-      footerY,
-      { width: pageWidth - MARGIN * 2, align: "center" }
-    )
-    .restore();
+      792 - 28,
+      { width: PAGE_WIDTH - MARGIN * 2, align: "center" }
+    );
 
   doc.end();
   await done;
 
-  const pdfBuffer = Buffer.concat(chunks);
-  const filename = `${input.invoiceNumber}.pdf`;
-  return { pdfBuffer, filename, total: grandTotal };
+  return {
+    pdfBuffer: Buffer.concat(chunks),
+    filename: `${order.invoiceNumber}.pdf`,
+    total,
+  };
 }
+
