@@ -2,62 +2,61 @@
 // src/lib/mailer.ts
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY || "");
-const FROM = process.env.MAIL_FROM || "FuelFlow <invoices@mail.fuelflow.co.uk>";
+const RESEND_KEY = process.env.RESEND_API_KEY || "";
+const FROM =
+  process.env.RESEND_FROM ||
+  process.env.MAIL_FROM ||
+  "FuelFlow <invoices@mail.fuelflow.co.uk>";
+const DEFAULT_BCC = process.env.MAIL_BCC || undefined;
+
+const resend = new Resend(RESEND_KEY);
 
 export type MailAttachment = {
   filename: string;
-  content: Buffer | Uint8Array | string;
-  contentType?: string;
+  content: Buffer | string; // Buffer for files, or base64 string
+  contentType?: string;     // e.g. "application/pdf"
 };
 
-export type SendEmailArgs = {
+export async function sendMail(args: {
   to: string | string[];
   subject: string;
   html?: string;
   text?: string;
   bcc?: string | string[];
   attachments?: MailAttachment[];
-};
-
-/**
- * Sends an email and returns a stable shape { id?: string }.
- * (We avoid optional keys with undefined in the payload to satisfy Resend's typings.)
- */
-export async function sendEmail(args: SendEmailArgs): Promise<{ id?: string }> {
-  if (!process.env.RESEND_API_KEY) {
-    throw new Error("RESEND_API_KEY missing");
-  }
-
+}) {
   const to = Array.isArray(args.to) ? args.to : [args.to];
-  const bcc = args.bcc
-    ? Array.isArray(args.bcc)
-      ? args.bcc
-      : [args.bcc]
-    : undefined;
+  const bcc =
+    args.bcc != null
+      ? Array.isArray(args.bcc)
+        ? args.bcc
+        : [args.bcc]
+      : DEFAULT_BCC
+      ? [DEFAULT_BCC]
+      : undefined;
 
-  const payload: Record<string, any> = {
+  // Resend expects base64 content for attachments
+  const attachments =
+    args.attachments?.map((a) => ({
+      filename: a.filename,
+      content:
+        typeof a.content === "string" ? a.content : a.content.toString("base64"),
+      contentType: a.contentType ?? "application/octet-stream",
+    })) ?? [];
+
+  const { data, error } = await resend.emails.send({
     from: FROM,
     to,
+    bcc,
     subject: args.subject,
-  };
+    html: args.html,
+    text: args.text,
+    // cast to any so we don’t fight type changes across Resend versions
+    attachments: attachments as any,
+  });
 
-  if (args.html) payload.html = args.html;
-  if (args.text) payload.text = args.text;
-  if (bcc) payload.bcc = bcc;
-  if (args.attachments?.length) {
-    payload.attachments = args.attachments.map((a) => ({
-      filename: a.filename,
-      content: a.content,
-      contentType: a.contentType,
-    }));
-  }
-
-  const { data, error } = await resend.emails.send(payload as any);
   if (error) throw error;
-
-  // Always return the same shape so callers don’t need to handle null unions.
-  return { id: (data as any)?.id };
+  return data?.id ?? null;
 }
 
 
