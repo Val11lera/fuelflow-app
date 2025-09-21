@@ -1,73 +1,26 @@
 // src/lib/invoice.service.ts
-// src/lib/invoice.service.ts 21/09/25
 // src/lib/invoice.service.ts
-"use server";
+//
+// Small service that builds the PDF and returns a result for callers.
+// Keeps types consistent with invoice-pdf.ts to avoid “missing properties” errors.
 
-import { buildInvoicePdf } from "@/lib/invoice-pdf";
-import { sendInvoiceEmail } from "@/lib/email";
-import type { InvoicePayload, BuiltInvoice } from "@/lib/invoice-types";
+import { buildInvoicePdf, type InvoiceInput } from "./invoice-pdf";
 
-export type CreateInvoiceOptions = {
-  /** whether to email the generated invoice */
-  email?: boolean;
-  /** optional bcc address, if you want to extend later */
-  bcc?: string | null;
-};
-
-export type CreateInvoiceResult =
-  | {
-      ok: true;
-      filename: string;
-      total: number;
-      emailed: boolean;
-      emailId: string | null;
-    }
+export type BuildResult =
+  | { ok: true; pdfBuffer: Buffer; filename: string; total: number }
   | { ok: false; error: string };
 
-export async function createInvoice(args: {
-  order: InvoicePayload;
-  options?: CreateInvoiceOptions;
-}): Promise<CreateInvoiceResult> {
-  const { order, options } = args;
-
-  let built: BuiltInvoice;
+export async function buildInvoice(order: InvoiceInput): Promise<BuildResult> {
   try {
-    // build the PDF (returns { pdfBuffer, filename, total })
-    built = await buildInvoicePdf(order);
+    const built = await buildInvoicePdf(order);
+    return {
+      ok: true,
+      pdfBuffer: built.pdfBuffer,
+      filename: built.filename,
+      total: built.total,
+    };
   } catch (err: any) {
     return { ok: false, error: `pdf: ${err?.message ?? String(err)}` };
   }
-
-  // email (optional)
-  const shouldEmail = options?.email === true;
-  const to = order?.customer?.email;
-  let emailed = false;
-  let emailId: string | null = null;
-
-  if (shouldEmail && to) {
-    try {
-      await sendInvoiceEmail({
-        to,
-        subject: `Invoice ${built.filename}`,
-        html: `<p>Hi ${order.customer.name},</p><p>Your invoice is attached.</p>`,
-        pdfBuffer: built.pdfBuffer,
-        filename: built.filename,
-      });
-      emailed = true;
-      // your sendInvoiceEmail doesn’t return an id in your screenshots,
-      // so we keep emailId as null. If you later add it, set it here.
-    } catch (_err) {
-      // do not fail the whole request if email sending fails
-      emailed = false;
-      emailId = null;
-    }
-  }
-
-  return {
-    ok: true,
-    filename: built.filename,
-    total: built.total,
-    emailed,
-    emailId,
-  };
 }
+
