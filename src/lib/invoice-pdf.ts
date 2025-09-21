@@ -4,16 +4,40 @@ import fs from "fs";
 import path from "path";
 import PDFDocument from "pdfkit";
 
-// IMPORTANT: pull in the exact type your service uses:
-import type {
-  InvoicePayload as ApiInvoicePayload,
-} from "@/pages/api/invoices/create"; // if @ alias isn't set, use "../../../pages/api/invoices/create"
+/* ------------------------------------------------------------------ */
+/* Local copy of your API payload type (so we don't import from pages) */
+/* ------------------------------------------------------------------ */
 
-// ---------- Public types you can import ----------
+type ApiLineItem = {
+  description: string;
+  quantity: number;   // litres
+  unitPrice: number;  // major units
+};
+
+type ApiInvoicePayload = {
+  customer: {
+    name?: string | null;
+    email: string;
+    address_line1?: string | null;
+    address_line2?: string | null;
+    city?: string | null;
+    postcode?: string | null;
+  };
+  items: ApiLineItem[];
+  currency: string;
+  meta?: {
+    invoiceNumber?: string;
+    orderId?: string;
+    notes?: string;
+  };
+};
+
+/* --------------------------- Public types -------------------------- */
+
 export type LineItem = {
   description: string;
-  litres?: number;              // used by InvoiceInput
-  unitPrice: number;            // price per litre (ex VAT), major units
+  litres?: number;          // used by InvoiceInput
+  unitPrice: number;        // ex-VAT price per litre, major units
   vatRatePct?: number;
 };
 
@@ -33,7 +57,7 @@ export type CompanyMeta = {
   companyPhone?: string | null;
   companyNumber?: string | null;
   vatNumber?: string | null;
-  address: string[];
+  address: string[];        // lines already split
   website?: string | null;
 };
 
@@ -51,16 +75,14 @@ export type InvoiceInput = {
 
 export type BuiltInvoice = {
   filename: string;
-  subtotal: number;  // ex VAT
+  subtotal: number;  // ex-VAT
   vat: number;
   total: number;
   pdfBuffer: Buffer;
 };
 
-// Alias YOUR API route type so we can refer to it clearly here.
-type LegacyInvoicePayload = ApiInvoicePayload;
+/* ------------------------------ Theme ------------------------------ */
 
-// ---------- helpers ----------
 const MARGIN = 36;
 const BAR_H = 42;
 const THEME = {
@@ -71,6 +93,8 @@ const THEME = {
   tableHeader: "#F2F5F8",
 };
 
+/* ----------------------------- Helpers ----------------------------- */
+
 function currencySymbol(cur: string) {
   switch ((cur || "").toUpperCase()) {
     case "GBP": return "£";
@@ -80,8 +104,8 @@ function currencySymbol(cur: string) {
   }
 }
 function toMoney(n: number) { return (Math.round(n * 100) / 100).toFixed(2); }
-function safeDate(d?: string) {
-  try { return (d ? new Date(d) : new Date()).toLocaleDateString("en-GB"); }
+function safeDate(iso?: string) {
+  try { return (iso ? new Date(iso) : new Date()).toLocaleDateString("en-GB"); }
   catch { return new Date().toLocaleDateString("en-GB"); }
 }
 function hr(doc: PDFKit.PDFDocument, x1: number, y: number, x2: number) {
@@ -93,14 +117,17 @@ function metaRow(doc: PDFKit.PDFDocument, x: number, y: number, label: string, v
   doc.fillColor(THEME.text).fontSize(9).text(value, x + w, y);
 }
 
-// ---------- Normalisers ----------
+/* ---------------------------- Normalisers -------------------------- */
+
 function companyFromEnv(): CompanyMeta {
-  const name  = process.env.COMPANY_NAME || "FuelFlow";
-  const addr  = (process.env.COMPANY_ADDRESS || "1 Example Street\nExample Town\nEX1 2MP\nUnited Kingdom")
-                  .split(/\r?\n/).filter(Boolean);
+  const name = process.env.COMPANY_NAME || "FuelFlow";
+  const addressLines = (process.env.COMPANY_ADDRESS ||
+    "1 Example Street\nExample Town\nEX1 2MP\nUnited Kingdom")
+      .split(/\r?\n/).filter(Boolean);
+
   return {
     companyName: name,
-    address: addr,
+    address: addressLines,
     companyEmail: process.env.COMPANY_EMAIL || "invoices@mail.fuelflow.co.uk",
     companyPhone: process.env.COMPANY_PHONE || undefined,
     companyNumber: process.env.COMPANY_NUMBER || undefined,
@@ -109,14 +136,14 @@ function companyFromEnv(): CompanyMeta {
   };
 }
 
-function legacyToInput(payload: LegacyInvoicePayload): InvoiceInput {
+function legacyToInput(payload: ApiInvoicePayload): InvoiceInput {
   const invoiceNumber = payload.meta?.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
   const defaultVat = Number(process.env.VAT_RATE || 0) || 0;
 
   return {
     invoiceNumber,
     issueDateISO: new Date().toISOString(),
-    currency: (payload.currency || "GBP") as InvoiceInput["currency"],
+    currency: (payload.currency || "GBP"),
     billTo: {
       name: payload.customer.name || "Customer",
       email: payload.customer.email,
@@ -137,14 +164,15 @@ function legacyToInput(payload: LegacyInvoicePayload): InvoiceInput {
   };
 }
 
-// ---------- MAIN ----------
+/* --------------------------- Main builder -------------------------- */
+
 export async function buildInvoicePdf(
-  source: InvoiceInput | LegacyInvoicePayload
+  source: InvoiceInput | ApiInvoicePayload
 ): Promise<BuiltInvoice> {
-  // If it has billTo, assume already InvoiceInput; otherwise treat as legacy
+  // Accept either shape
   const input: InvoiceInput = (source as any).billTo
     ? (source as InvoiceInput)
-    : legacyToInput(source as LegacyInvoicePayload);
+    : legacyToInput(source as ApiInvoicePayload);
 
   const cur = input.currency || "GBP";
   const sym = currencySymbol(cur);
@@ -158,23 +186,24 @@ export async function buildInvoicePdf(
 
   const chunks: Buffer[] = [];
   doc.on("data", (b) => chunks.push(b));
-  const done = new Promise<Buffer>((resolve) => doc.on("end", () => resolve(Buffer.concat(chunks))));
+  const pdfProm = new Promise<Buffer>((resolve) => doc.on("end", () => resolve(Buffer.concat(chunks))));
 
-  // Header bar
+  /* Header bar */
   doc.save().rect(0, 0, doc.page.width, BAR_H).fill(THEME.dark).restore();
 
-  // Logo (place by coordinates; no `align` prop)
+  // Logo – place by coordinates only (no align prop)
   const logoPath = path.join(process.cwd(), "public", "logo-email.png");
   if (fs.existsSync(logoPath)) {
     const h = 24, w = 120, y = (BAR_H - h) / 2;
     doc.image(logoPath, MARGIN, y, { width: w, height: h });
   } else {
-    doc.fillColor(THEME.light).font("Helvetica-Bold").fontSize(18).text(input.company.companyName, MARGIN, 12);
+    doc.fillColor(THEME.light).font("Helvetica-Bold").fontSize(18)
+       .text(input.company.companyName, MARGIN, 12);
   }
   doc.fillColor(THEME.light).font("Helvetica-Bold").fontSize(10)
      .text("TAX INVOICE", doc.page.width - MARGIN - 120, 14, { width: 120, align: "right" });
 
-  // Parties
+  /* Parties */
   const topY = MARGIN + 8;
   const colW = (doc.page.width - MARGIN * 2) / 2;
 
@@ -202,7 +231,7 @@ export async function buildInvoicePdf(
   metaRow(doc, billX, topY + 60, "Date:", issueDate);
   metaRow(doc, billX, topY + 74, "Invoice No:", input.invoiceNumber);
 
-  // Table header
+  /* Table header */
   doc.moveDown(2);
   let y = doc.y + 6;
 
@@ -220,7 +249,7 @@ export async function buildInvoicePdf(
   doc.text("Net",          colNet,    y, { width: right - colNet, align: "right" });
   y += 16; hr(doc, left, y, right); y += 6;
 
-  // Lines
+  /* Lines */
   let subtotal = 0;
   const defaultVat = input.defaultVatRatePct ?? 0;
 
@@ -232,15 +261,15 @@ export async function buildInvoicePdf(
     subtotal += line;
 
     doc.text(it.description, colDesc, y);
-    doc.text(qty ? String(qty) : "-",      colLitres, y, { width: 60, align: "right" });
+    doc.text(qty ? String(qty) : "-", colLitres, y, { width: 60, align: "right" });
     doc.text(`${currencySymbol(cur)}${toMoney(unit)}`, colUnit, y, { width: 70, align: "right" });
-    doc.text(`${currencySymbol(cur)}${toMoney(line)}`, colNet,  y, { width: right - colNet, align: "right" });
+    doc.text(`${currencySymbol(cur)}${toMoney(line)}`, colNet, y, { width: right - colNet, align: "right" });
     y += 16;
   });
 
   y += 2; hr(doc, left, y, right); y += 6;
 
-  // Totals
+  /* Totals */
   const vat = subtotal * (defaultVat / 100);
   const total = subtotal + vat;
 
@@ -256,14 +285,14 @@ export async function buildInvoicePdf(
   doc.font("Helvetica-Bold").text("Total", colUnit, y, { width: 70, align: "right" });
   doc.text(`${sym}${toMoney(total)}`,   colNet, y, { width: right - colNet, align: "right" });
 
-  // Notes
+  /* Notes */
   if (input.notes) {
     y += 22;
     doc.font("Helvetica").fontSize(9).fillColor(THEME.muted)
        .text(input.notes, left, y, { width: right - left });
   }
 
-  // Footer
+  /* Footer */
   const footerY = doc.page.height - doc.page.margins.bottom + 16;
   hr(doc, MARGIN, footerY - 10, doc.page.width - MARGIN);
 
@@ -279,7 +308,7 @@ export async function buildInvoicePdf(
        align: "center",
      });
 
-  // Page numbers (safety)
+  /* Page numbers */
   const pageCount = doc.bufferedPageRange().count;
   for (let i = 0; i < pageCount; i++) {
     doc.switchToPage(i);
@@ -292,9 +321,7 @@ export async function buildInvoicePdf(
   }
 
   doc.end();
-  const pdfBuffer = await new Promise<Buffer>((resolve) =>
-    doc.on("end", () => resolve(Buffer.concat(chunks)))
-  );
+  const pdfBuffer = await pdfProm;
 
   return {
     filename: `Invoice ${input.invoiceNumber}.pdf`,
@@ -304,4 +331,3 @@ export async function buildInvoicePdf(
     pdfBuffer,
   };
 }
-
