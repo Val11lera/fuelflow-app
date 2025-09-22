@@ -20,16 +20,17 @@ export type BuiltInvoice = { pdfBuffer: Buffer; filename: string; total: number;
 
 const MARGIN = 36;
 
+// Absolute text helper: draw and restore cursor so PDFKit never flows or paginates.
 function drawText(doc: any, str: string, x: number, y: number, opt: any = {}) {
   const px = doc.x, py = doc.y;
   doc.text(str, x, y, { lineBreak: false, ...opt });
-  doc.x = px; doc.y = py; // never advance internal cursor
+  doc.x = px; doc.y = py;
 }
 function n(v: unknown, d = 0) { const x = Number(v); return Number.isFinite(x) ? x : d; }
 function r2(v: number) { return Math.round(v * 100) / 100; }
 function sym(c: string) { c = (c || "").toUpperCase(); return c === "GBP" ? "£" : c === "EUR" ? "€" : c === "USD" ? "$" : ""; }
 function money(v: number, c: string) { return `${sym(c)}${r2(v).toFixed(2)}`; }
-function qty(v: number) { return new Intl.NumberFormat("en-GB",{maximumFractionDigits:2}).format(v); }
+function qty(v: number) { return new Intl.NumberFormat("en-GB", { maximumFractionDigits: 2 }).format(v); }
 
 export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice> {
   const VAT_ENABLED = process.env.VAT_ENABLED !== "false";
@@ -42,7 +43,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   doc.on("data", (c: Buffer) => chunks.push(c));
   const done = new Promise<void>((resolve) => doc.on("end", resolve));
 
-  // one page we control
+  // One page we fully control
   doc.addPage({ size: "A4", margins: { top: MARGIN, left: MARGIN, right: MARGIN, bottom: MARGIN } });
 
   const W = doc.page.width, H = doc.page.height, C = (input.currency || "GBP").toUpperCase();
@@ -57,7 +58,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const invNo = input.meta?.invoiceNumber || `INV-${Math.floor(Date.now()/1000)}`;
   const invDate = new Date().toLocaleDateString("en-GB");
 
-  // header
+  // Header
   doc.rect(0, 0, W, 84).fill("#0F172A");
   doc.fill("#FFFFFF").font("Helvetica-Bold").fontSize(26);
   drawText(doc, companyName, MARGIN, 26, { width: W - MARGIN * 2 });
@@ -66,7 +67,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
 
   doc.fill("#111827").font("Helvetica").fontSize(10);
 
-  // columns
+  // Columns
   const leftX = MARGIN, rightX = W/2 + 12, colW = W/2 - MARGIN - 24;
   let y = 100;
 
@@ -116,7 +117,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     drawText(doc, String(input.meta.orderId), MARGIN + 95, y);
   }
 
-  // compute lines
+  // Compute lines
   type Row = { d: string; q: number; ux: number; net: number; vp: number; vat: number; gross: number };
   const rows: Row[] = [];
   let netTotal = 0, vatTotal = 0;
@@ -134,7 +135,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   netTotal = r2(netTotal); vatTotal = r2(vatTotal);
   const grand = r2(netTotal + vatTotal);
 
-  // table
+  // Table
   y += 22;
   const tableX = MARGIN, tableW = W - MARGIN*2;
   const cols = [
@@ -158,7 +159,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
 
   let rowY = y + 24;
   const rowH = 22;
-  const bottomSafe = H - 170; // extra safety so viewers don't “split” sheets
+  const bottomSafe = H - 190; // generous safety so viewers never split the page
   doc.font("Helvetica").fontSize(10).fill("#111827");
 
   for (let i = 0; i < rows.length; i++) {
@@ -192,7 +193,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     rowY += rowH;
   }
 
-  // totals
+  // Totals
   rowY += 12;
   const totalsW = cols.slice(-3).reduce((a, c) => a + c.w, 0);
   const totalsX = tableX + tableW - totalsW;
@@ -211,7 +212,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     rowY += h;
   }
 
-  // notes (optional) — draw line by line to avoid any flow
+  // Notes (optional)
   if (input.meta?.notes) {
     rowY += 16;
     doc.font("Helvetica-Bold").fontSize(10);
@@ -230,7 +231,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     for (const s of lines) { drawText(doc, s, MARGIN, ny, { width: W - MARGIN * 2 }); ny += lh2; }
   }
 
-  // footer
+  // Footer
   doc.font("Helvetica").fontSize(9).fill("#6B7280");
   drawText(
     doc,
