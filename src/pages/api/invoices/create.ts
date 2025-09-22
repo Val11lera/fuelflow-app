@@ -1,6 +1,7 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
+import crypto from "node:crypto";
 import PDFDocument from "pdfkit";
 import { sendMail } from "@/lib/mailer"; // keep as-is
 
@@ -44,6 +45,21 @@ function currencySymbol(cur: string) {
   return "";
 }
 
+// --- Small helpers for safer math & compare (no behaviour changes) ---
+function num(n: unknown, fallback = 0) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : fallback;
+}
+function round2(n: number) {
+  return Math.round(n * 100) / 100;
+}
+function safeEqual(a: string, b: string) {
+  // timing-safe secret compare
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+}
+
 /**
  * Build a professional VAT invoice.
  * - VAT is enabled by default (20%). Configure with env:
@@ -56,10 +72,7 @@ function currencySymbol(cur: string) {
  */
 async function buildPdf(payload: InvoicePayload): Promise<Buffer> {
   const VAT_ENABLED = process.env.VAT_ENABLED !== "false";
-  const VAT_RATE = Math.max(
-    0,
-    parseFloat(process.env.VAT_RATE ?? "20")
-  ) / 100; // 0.20
+  const VAT_RATE = Math.max(0, parseFloat(process.env.VAT_RATE ?? "20")) / 100; // 0.20
   const PRICES_INCLUDE_VAT = process.env.PRICES_INCLUDE_VAT === "true";
 
   const doc = new PDFDocument({ size: "A4", margin: 36 });
@@ -69,9 +82,9 @@ async function buildPdf(payload: InvoicePayload): Promise<Buffer> {
   const done = new Promise<void>((resolve) => doc.on("end", () => resolve()));
 
   const companyName = process.env.COMPANY_NAME || "FuelFlow";
+  // Support both "\n" and "\\n" in env
   const companyAddr =
-    process.env.COMPANY_ADDRESS ||
-    "1 Example Street\nExample Town\nEX1 2MP\nUnited Kingdom";
+    (process.env.COMPANY_ADDRESS || "1 Example Street\\nExample Town\\nEX1 2MP\\nUnited Kingdom").replace(/\\n/g, "\n");
   const companyEmail = process.env.COMPANY_EMAIL || "invoices@mail.fuelflow.co.uk";
   const companyPhone = process.env.COMPANY_PHONE || "";
   const companyVat = process.env.COMPANY_VAT_NUMBER || "";
@@ -79,13 +92,13 @@ async function buildPdf(payload: InvoicePayload): Promise<Buffer> {
 
   const cur = (payload.currency || "GBP").toUpperCase();
   const sym = currencySymbol(cur);
-  const invNo =
-    payload.meta?.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
+  const invNo = payload.meta?.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
   const invDate = new Date().toLocaleDateString("en-GB");
 
-  /* ======== Brand Header ======== */
+  /* ======== Brand Header (navy/shell keeps your visual fingerprint) ======== */
   doc.rect(0, 0, doc.page.width, 70).fill("#0F172A"); // slate-900 bar
-  doc.fill("#FFFFFF")
+  doc
+    .fill("#FFFFFF")
     .font("Helvetica-Bold")
     .fontSize(22)
     .text(companyName, 36, 22, { width: doc.page.width - 72, align: "left" })
@@ -96,7 +109,7 @@ async function buildPdf(payload: InvoicePayload): Promise<Buffer> {
   doc.fill("#111827"); // back to dark text
   doc.moveDown();
 
-  /* ======== Company & Bill To ======== */
+  /* ======== Company & Bill To (fixed columns; no overlap) ======== */
   const leftColX = 36;
   const rightColX = doc.page.width / 2 + 10;
   let y = 90;
@@ -162,8 +175,8 @@ async function buildPdf(payload: InvoicePayload): Promise<Buffer> {
   let vatTotal = 0;
 
   payload.items.forEach((it) => {
-    const qty = Number(it.quantity || 0);
-    const unitRaw = Number(it.unitPrice || 0);
+    const qty = num(it.quantity, 0);
+    const unitRaw = num(it.unitPrice, 0);
     const unitEx = !VAT_ENABLED
       ? unitRaw
       : PRICES_INCLUDE_VAT
@@ -188,9 +201,9 @@ async function buildPdf(payload: InvoicePayload): Promise<Buffer> {
     });
   });
 
-  netTotal = Math.round(netTotal * 100) / 100;
-  vatTotal = Math.round(vatTotal * 100) / 100;
-  const grandTotal = Math.round((netTotal + vatTotal) * 100) / 100;
+  netTotal = round2(netTotal);
+  vatTotal = round2(vatTotal);
+  const grandTotal = round2(netTotal + vatTotal);
 
   /* ======== Table ======== */
   const tableX = 36;
@@ -226,7 +239,7 @@ async function buildPdf(payload: InvoicePayload): Promise<Buffer> {
   rowY += 24;
   doc.font("Helvetica").fontSize(10).fill("#111827");
 
-  const money = (n: number) => sym + n.toFixed(2);
+  const money = (n: number) => sym + round2(n).toFixed(2);
 
   rows.forEach((r, i) => {
     // zebra
@@ -313,10 +326,11 @@ async function buildPdf(payload: InvoicePayload): Promise<Buffer> {
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return bad(res, 405, "Method Not Allowed");
 
-  // Secret check
-  const secret = req.headers["x-invoice-secret"];
-  if (!process.env.INVOICE_SECRET) return bad(res, 500, "INVOICE_SECRET not set");
-  if (!secret || secret !== process.env.INVOICE_SECRET) {
+  // Secret check (timing-safe; same behaviour)
+  const expected = process.env.INVOICE_SECRET;
+  if (!expected) return bad(res, 500, "INVOICE_SECRET not set");
+  const provided = String(req.headers["x-invoice-secret"] || "");
+  if (!provided || !safeEqual(provided, expected)) {
     return bad(res, 401, "Invalid invoice secret");
   }
 
@@ -324,6 +338,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!payload?.customer?.email) return bad(res, 400, "Missing customer.email");
   if (!Array.isArray(payload.items) || payload.items.length === 0)
     return bad(res, 400, "Missing items");
+  if (!payload.currency) return bad(res, 400, "Missing currency");
 
   try {
     const pdf = await buildPdf(payload);
@@ -356,3 +371,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return bad(res, 500, e?.message || "invoice_error");
   }
 }
+
