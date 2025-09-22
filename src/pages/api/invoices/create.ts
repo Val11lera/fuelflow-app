@@ -1,14 +1,23 @@
 // src/pages/api/invoices/create.ts
+// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "node:crypto";
 import { sendMail } from "@/lib/mailer";
 import { buildInvoicePdf } from "@/lib/invoice-pdf"; // shared generator
 
+// Caller may send different shapes; we accommodate all without breaking your current clients.
 type LineItemIn = {
   description: string;
-  litres?: number;             // many callers send this
-  quantity?: number;           // or this
-  unitPrice: number;           // price per litre, major units (e.g. 1.354)
+
+  // Quantities that may appear
+  litres?: number;           // common in your system
+  quantity?: number;         // alias for litres
+
+  // Pricing that may appear
+  unitPrice?: number;        // price per litre (major units)
+  unit_price_pence?: number; // price per litre (minor units)
+  total?: number;            // line total (major units)
+  total_pence?: number;      // line total (minor units)
 };
 
 type InvoicePayload = {
@@ -22,11 +31,7 @@ type InvoicePayload = {
   };
   items: LineItemIn[];
   currency: string;
-  meta?: {
-    invoiceNumber?: string;
-    orderId?: string;
-    notes?: string;
-  };
+  meta?: { invoiceNumber?: string; orderId?: string; notes?: string; };
 };
 
 export const config = { api: { bodyParser: true } };
@@ -54,6 +59,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!payload.currency) return bad(res, 400, "Missing currency");
 
   try {
+    const normItems = payload.items.map((raw) => {
+      // 1) quantity in litres
+      const qty =
+        Number(raw.quantity ?? raw.litres ?? 0);
+
+      // 2) per-litre price (major units), from any of the forms we might get
+      let unit = Number(raw.unitPrice ?? 0);
+      if (!unit && raw.unit_price_pence != null) unit = Number(raw.unit_price_pence) / 100;
+
+      // 3) if caller actually sent a *line total* instead of unit price, derive the per-litre price
+      const lineTotalMajor =
+        raw.total != null ? Number(raw.total) :
+        raw.total_pence != null ? Number(raw.total_pence) / 100 :
+        0;
+
+      if (qty > 0) {
+        // If unit is missing OR if qty === 1 but unit looks like a full line total (e.g. £37.50),
+        // derive per-litre from the provided total.
+        const looksLikeLineTotal = (qty === 1 && lineTotalMajor > 0 && unit > 10);
+        if (!unit && lineTotalMajor > 0) unit = lineTotalMajor / qty;
+        else if (looksLikeLineTotal) unit = lineTotalMajor / qty;
+      }
+
+      return {
+        description: raw.description,
+        quantity: isFinite(qty) ? qty : 0,
+        unitPrice: isFinite(unit) ? unit : 0,
+      };
+    });
+
     const { pdfBuffer, filename } = await buildInvoicePdf({
       customer: {
         name: payload.customer.name ?? null,
@@ -63,11 +98,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         city: payload.customer.city ?? null,
         postcode: payload.customer.postcode ?? null,
       },
-      items: payload.items.map(i => ({
-        description: i.description,
-        quantity: Number((i.quantity ?? i.litres) || 0),  // <-- accept litres or quantity
-        unitPrice: Number(i.unitPrice || 0),              // price per litre
-      })),
+      items: normItems,
       currency: (payload.currency || "GBP").toUpperCase(),
       meta: {
         invoiceNumber: payload.meta?.invoiceNumber,
@@ -99,4 +130,3 @@ ${process.env.COMPANY_NAME || "FuelFlow"}`;
     return bad(res, 500, e?.message || "invoice_error");
   }
 }
-
