@@ -1,15 +1,14 @@
 // src/pages/api/invoices/create.ts
-// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "node:crypto";
 import { sendMail } from "@/lib/mailer";
-import { buildInvoicePdf } from "@/lib/invoice-pdf"; // <-- use the fixed, shared generator
+import { buildInvoicePdf } from "@/lib/invoice-pdf"; // shared generator
 
-// ---- Request types (kept exactly as you described) ----
-type LineItem = {
+type LineItemIn = {
   description: string;
-  quantity: number;          // litres
-  unitPrice: number;         // major units (e.g., 1.71 = £1.71)
+  litres?: number;             // many callers send this
+  quantity?: number;           // or this
+  unitPrice: number;           // price per litre, major units (e.g. 1.354)
 };
 
 type InvoicePayload = {
@@ -21,8 +20,8 @@ type InvoicePayload = {
     city?: string | null;
     postcode?: string | null;
   };
-  items: LineItem[];
-  currency: string; // "GBP" | "EUR" | "USD" | etc
+  items: LineItemIn[];
+  currency: string;
   meta?: {
     invoiceNumber?: string;
     orderId?: string;
@@ -30,39 +29,31 @@ type InvoicePayload = {
   };
 };
 
-export const config = {
-  api: { bodyParser: true }, // keep JSON parsing
-};
+export const config = { api: { bodyParser: true } };
 
-// ---- Small helpers (unchanged behaviour) ----
 function bad(res: NextApiResponse, code: number, msg: string) {
   return res.status(code).json({ ok: false, error: msg });
 }
-
 function safeEqual(a: string, b: string) {
-  const ab = Buffer.from(a, "utf8");
-  const bb = Buffer.from(b, "utf8");
-  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+  const A = Buffer.from(a, "utf8");
+  const B = Buffer.from(b, "utf8");
+  return A.length === B.length && crypto.timingSafeEqual(A, B);
 }
 
-// ---- Handler ----
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return bad(res, 405, "Method Not Allowed");
 
-  // Secret check (timing-safe)
   const expected = process.env.INVOICE_SECRET;
   if (!expected) return bad(res, 500, "INVOICE_SECRET not set");
   const provided = String(req.headers["x-invoice-secret"] || "");
   if (!provided || !safeEqual(provided, expected)) return bad(res, 401, "Invalid invoice secret");
 
-  // Validate minimal fields (same checks you had)
   const payload = req.body as InvoicePayload;
   if (!payload?.customer?.email) return bad(res, 400, "Missing customer.email");
   if (!Array.isArray(payload.items) || payload.items.length === 0) return bad(res, 400, "Missing items");
   if (!payload.currency) return bad(res, 400, "Missing currency");
 
   try {
-    // Build the PDF using the shared, fixed generator (single-page, no overlap)
     const { pdfBuffer, filename } = await buildInvoicePdf({
       customer: {
         name: payload.customer.name ?? null,
@@ -74,8 +65,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
       items: payload.items.map(i => ({
         description: i.description,
-        quantity: Number(i.quantity || 0),
-        unitPrice: Number(i.unitPrice || 0),
+        quantity: Number((i.quantity ?? i.litres) || 0),  // <-- accept litres or quantity
+        unitPrice: Number(i.unitPrice || 0),              // price per litre
       })),
       currency: (payload.currency || "GBP").toUpperCase(),
       meta: {
@@ -96,7 +87,7 @@ ${process.env.COMPANY_NAME || "FuelFlow"}`;
 
     const id = await sendMail({
       to: payload.customer.email,
-      bcc: process.env.MAIL_BCC || undefined, // still supported
+      bcc: process.env.MAIL_BCC || undefined,
       subject,
       text,
       attachments: [{ filename, content: pdfBuffer, contentType: "application/pdf" }],
