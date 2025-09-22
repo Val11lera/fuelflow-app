@@ -41,11 +41,9 @@ function customerTag(email: string | undefined) {
   return tag || "CUS";
 }
 
-/** Short, traceable, unique invoice number:
- *   INV-YYMMDD-CCC-XXXX
- *   - CCC = first 3 alnum chars of customer email (uppercased)
- *   - XXXX = 4-char base36 random
- *   If orderId exists -> INV-YYMMDD-CCC-<last4(orderId)>
+/** INV-YYMMDD-CCC-XXXX
+ *  CCC = first 3 alnum chars of customer email (uppercased) so you can trace by eye
+ *  XXXX = 4-char base36; if orderId present → last 4 chars of orderId instead
  */
 function makeInvoiceNumber(meta: { invoiceNumber?: string; orderId?: string } | undefined, customerEmail?: string) {
   if (meta?.invoiceNumber) return meta.invoiceNumber;
@@ -162,3 +160,4 @@ ${process.env.COMPANY_NAME || "FuelFlow"}`;
     return bad(res, 500, e?.message || "invoice_error");
   }
 }
+
