@@ -6,16 +6,15 @@ import { buildInvoicePdf } from "@/lib/invoice-pdf";
 
 export const config = { api: { bodyParser: true } };
 
-/* ---------- Types incoming from callers ---------- */
 type ApiItem =
-  | { description: string; litres: number; unitPrice?: number; total?: number; vatRate?: number }
-  | { description: string; quantity: number; unitPrice?: number; total?: number; vatRate?: number };
+  | { description: string; litres: number; unitPrice?: number; total?: number }
+  | { description: string; quantity: number; unitPrice?: number; total?: number };
 
 type ApiPayload = {
   customer: {
     name?: string | null;
     email: string;
-    address?: string | null; // legacy multi-line
+    address?: string | null;      // legacy multi-line
     address_line1?: string | null;
     address_line2?: string | null;
     city?: string | null;
@@ -31,28 +30,36 @@ type ApiPayload = {
   };
 };
 
-/* ---------- Helpers ---------- */
 function bad(res: NextApiResponse, code: number, msg: string) {
   return res.status(code).json({ ok: false, error: msg });
 }
 
+/** Short, unique invoice numbers.
+ *  - If orderId: INV-<first4><last4>  (e.g. INV-AB12Z9QP)
+ *  - Else:       INV-YYMMDD-XXXX      (e.g. INV-250922-7F3K)
+ */
 function makeInvoiceNumber(meta: { invoiceNumber?: string; orderId?: string } | undefined) {
   if (meta?.invoiceNumber) return meta.invoiceNumber;
-  if (meta?.orderId) return `INV-${meta.orderId}`;
+  if (meta?.orderId) {
+    const id = String(meta.orderId).replace(/[^A-Za-z0-9]/g, "");
+    const a = id.slice(0, 4).toUpperCase().padEnd(4, "X");
+    const b = id.slice(-4).toUpperCase().padStart(4, "X");
+    return `INV-${a}${b}`;
+  }
   const d = new Date();
-  const ymd = [
-    d.getFullYear(),
-    String(d.getMonth() + 1).padStart(2, "0"),
-    String(d.getDate()).padStart(2, "0"),
-  ].join("");
-  const rand = Math.random().toString(36).slice(2, 8).toUpperCase(); // 6 chars
-  return `INV-${ymd}-${rand}`;
+  const y = String(d.getFullYear()).slice(-2);
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const rand = Math.random().toString(36).slice(2, 6).toUpperCase(); // 4 chars
+  return `INV-${y}${m}${day}-${rand}`;
 }
 
-/** Normalize items: prefer litres if present; else quantity. If only "total" supplied, derive unit. */
 function normalizeItems(items: ApiItem[]) {
   return items.map((it) => {
-    const litres = typeof (it as any).litres === "number" ? (it as any).litres : (it as any).quantity ?? 0;
+    const litres =
+      typeof (it as any).litres === "number"
+        ? (it as any).litres
+        : (it as any).quantity ?? 0;
     let unitPrice = (it as any).unitPrice as number | undefined;
     const total = (it as any).total as number | undefined;
     if ((unitPrice == null || isNaN(unitPrice)) && typeof total === "number" && litres) {
@@ -69,7 +76,6 @@ function normalizeItems(items: ApiItem[]) {
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return bad(res, 405, "Method Not Allowed");
 
-  // Secret check
   if (!process.env.INVOICE_SECRET) return bad(res, 500, "INVOICE_SECRET not set");
   const secret = req.headers["x-invoice-secret"];
   if (!secret || secret !== process.env.INVOICE_SECRET) return bad(res, 401, "Invalid invoice secret");
@@ -79,12 +85,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!Array.isArray(payload.items) || payload.items.length === 0) return bad(res, 400, "Missing items");
   if (!payload.currency) return bad(res, 400, "Missing currency");
 
-  const debugRequested =
+  const debug =
     String(req.query.debug ?? req.headers["x-invoice-debug"] ?? "").toLowerCase() === "1";
 
   try {
-    // 1) Normalize input
     const normItems = normalizeItems(payload.items);
+
     const meta = {
       invoiceNumber: makeInvoiceNumber(payload.meta),
       orderId: payload.meta?.orderId,
@@ -92,47 +98,40 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       dateISO: payload.meta?.dateISO,
     };
 
-    const customer = payload.customer;
-    // Expand legacy address into lines if provided
-    let addr1 = customer.address_line1 ?? null;
-    let addr2 = customer.address_line2 ?? null;
-    if (!addr1 && customer.address) {
-      const parts = customer.address.replace(/\\n/g, "\n").split("\n");
-      addr1 = parts[0] ?? null;
-      addr2 = parts.slice(1).join(", ") || null;
+    const c = payload.customer;
+    let address_line1 = c.address_line1 ?? null;
+    let address_line2 = c.address_line2 ?? null;
+    if (!address_line1 && c.address) {
+      const parts = c.address.replace(/\\n/g, "\n").split("\n");
+      address_line1 = parts[0] ?? null;
+      address_line2 = parts.slice(1).join(", ") || null;
     }
 
-    // 2) Build PDF
     const { pdfBuffer, filename, pages } = await buildInvoicePdf({
       customer: {
-        name: customer.name ?? null,
-        email: customer.email,
-        address_line1: addr1,
-        address_line2: addr2,
-        city: customer.city ?? null,
-        postcode: customer.postcode ?? null,
+        name: c.name ?? null,
+        email: c.email,
+        address_line1,
+        address_line2,
+        city: c.city ?? null,
+        postcode: c.postcode ?? null,
       },
-      items: normItems.map(({ description, quantity, unitPrice }) => ({
-        description,
-        quantity,
-        unitPrice,
-      })),
+      items: normItems.map(({ description, quantity, unitPrice }) => ({ description, quantity, unitPrice })),
       currency: (payload.currency || "GBP").toUpperCase(),
       meta,
     });
 
     const invNo = meta.invoiceNumber;
     const subject = `${process.env.COMPANY_NAME || "FuelFlow"} — Invoice ${invNo}`;
-    const text = `Hi ${customer.name || "there"},
+    const text = `Hi ${c.name || "there"},
 
 Thank you for your order. Your invoice ${invNo} is attached.
 
 Kind regards,
 ${process.env.COMPANY_NAME || "FuelFlow"}`;
 
-    // 3) Send email
     const id = await sendMail({
-      to: customer.email,
+      to: c.email,
       bcc: process.env.MAIL_BCC || undefined,
       subject,
       text,
@@ -141,16 +140,11 @@ ${process.env.COMPANY_NAME || "FuelFlow"}`;
       ],
     });
 
-    // 4) Response (with optional debug echo)
-    if (debugRequested) {
+    if (debug) {
       return res.status(200).json({
         ok: true,
         id,
-        debug: {
-          normalized: normItems,
-          invoiceNumber: invNo,
-          pages,
-        },
+        debug: { normalized: normItems, invoiceNumber: invNo, pages },
       });
     }
     return res.status(200).json({ ok: true, id });
@@ -159,4 +153,3 @@ ${process.env.COMPANY_NAME || "FuelFlow"}`;
     return bad(res, 500, e?.message || "invoice_error");
   }
 }
-
