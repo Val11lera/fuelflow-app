@@ -1,269 +1,304 @@
-// src/lib/invoice-pdf.ts// src/lib/invoice-pdf.ts
-import fs from "node:fs";
-import path from "node:path";
+// src/lib/invoice-pdf.ts
 import PDFDocument from "pdfkit";
 
 export type LineItem = {
   description: string;
-  litres: number;
-  unitPrice: number;      // major units
-  vatRate?: number;       // 0 | 5 | 20 …
-};
-
-export type Party = {
-  name?: string | null;
-  email?: string | null;
-  address?: string | null; // can contain \n or \\n
+  quantity: number;          // litres
+  unitPrice: number;         // major units (e.g., 1.71 = £1.71)
 };
 
 export type InvoiceInput = {
-  invoiceNumber: string;
-  date?: string | Date;
-  currency?: string;       // default GBP
-  billTo: Party;
-  items: LineItem[];
-  company?: {
-    name?: string;
-    address?: string;      // can contain \n or \\n
-    email?: string;
-    phone?: string;
-    regNo?: string;
-    vatNo?: string | null;
+  customer: {
+    name?: string | null;
+    email: string;
+    address_line1?: string | null;
+    address_line2?: string | null;
+    city?: string | null;
+    postcode?: string | null;
   };
-  notes?: string | null;
+  items: LineItem[];
+  currency: string; // "GBP" | "EUR" | "USD" | etc
+  meta?: {
+    invoiceNumber?: string;
+    orderId?: string;
+    notes?: string;
+  };
 };
 
-// Convert either "\n" or "\\n" into a real newline
-const nl = (s?: string | null) => (s ?? "").replace(/\\n|\n/g, "\n");
+export type BuiltInvoice = {
+  pdfBuffer: Buffer;
+  filename: string;
+  total: number; // grand total (gross)
+};
 
-const fmtDate = (d?: string | Date) =>
-  (d ? new Date(d) : new Date()).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
+function currencySymbol(cur: string) {
+  const c = (cur || "").toUpperCase();
+  if (c === "GBP") return "£";
+  if (c === "EUR") return "€";
+  if (c === "USD") return "$";
+  return "";
+}
 
-const sym = (cur: string) =>
-  ({ GBP: "£", EUR: "€", USD: "$" }[cur.toUpperCase()] ?? "");
+function num(n: unknown, fallback = 0) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : fallback;
+}
+function round2(n: number) {
+  return Math.round(n * 100) / 100;
+}
 
-export async function buildInvoicePdf(order: InvoiceInput) {
-  // Page + layout
-  const PAGE_W = 595.28;
-  const PAGE_H = 841.89;
-  const MARGIN = 40;
-  const GAP = 24;
-  const CONTENT_W = PAGE_W - 2 * MARGIN;
+export async function buildInvoicePdf(payload: InvoiceInput): Promise<BuiltInvoice> {
+  // VAT config mirrors your /api route
+  const VAT_ENABLED = process.env.VAT_ENABLED !== "false";
+  const VAT_RATE = Math.max(0, parseFloat(process.env.VAT_RATE ?? "20")) / 100; // 0.20
+  const PRICES_INCLUDE_VAT = process.env.PRICES_INCLUDE_VAT === "true";
 
-  // Use a fixed left column width to avoid any chance of overlap
-  const LEFT_W = 260; // ~9.2cm
-  const RIGHT_W = CONTENT_W - LEFT_W - GAP;
-  const RIGHT_X = MARGIN + LEFT_W + GAP;
+  const doc: any = new PDFDocument({ size: "A4", margin: 36 });
 
-  // Company (env defaults)
-  const companyName =
-    order.company?.name ?? process.env.COMPANY_NAME ?? "FuelFlow";
-  const companyAddress = nl(
-    order.company?.address ??
-      process.env.COMPANY_ADDRESS ??
-      "1 Example Street\\nExample Town\\nEX1 2MP\\nUnited Kingdom"
-  );
-  const companyEmail =
-    order.company?.email ??
-    process.env.INVOICE_FROM ??
-    "invoices@mail.fuelflow.co.uk";
-  const companyPhone =
-    order.company?.phone ?? process.env.COMPANY_PHONE ?? "+44 (0)20 1234 5678";
-  const companyRegNo =
-    order.company?.regNo ?? process.env.COMPANY_REG_NO ?? "Company No 12345678";
-  const companyVatNo =
-    order.company?.vatNo ?? process.env.COMPANY_VAT_NO ?? null;
+  const chunks: Buffer[] = [];
+  doc.on("data", (c: Buffer) => chunks.push(c));
+  const done = new Promise<void>((resolve) => doc.on("end", () => resolve()));
 
-  const billName = order.billTo.name ?? "";
-  const billEmail = order.billTo.email ?? "";
-  const billAddr = nl(order.billTo.address ?? "");
+  const companyName = process.env.COMPANY_NAME || "FuelFlow";
+  // Accept both "\n" and "\\n" for env address
+  const companyAddr =
+    (process.env.COMPANY_ADDRESS || "1 Example Street\\nExample Town\\nEX1 2MP\\nUnited Kingdom").replace(/\\n/g, "\n");
+  const companyEmail = process.env.COMPANY_EMAIL || "invoices@mail.fuelflow.co.uk";
+  const companyPhone = process.env.COMPANY_PHONE || "";
+  const companyVat = process.env.COMPANY_VAT_NUMBER || process.env.COMPANY_VAT_NO || "";
+  const companyNo = process.env.COMPANY_NUMBER || process.env.COMPANY_REG_NO || "";
 
-  const currency = (order.currency ?? "GBP").toUpperCase();
-  const dateStr = fmtDate(order.date);
+  const cur = (payload.currency || "GBP").toUpperCase();
+  const sym = currencySymbol(cur);
+  const invNo = payload.meta?.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
+  const invDate = new Date().toLocaleDateString("en-GB");
 
-  // Doc + buffer
-  const doc = new PDFDocument({
-    size: "A4",
-    margins: { top: MARGIN, right: MARGIN, bottom: MARGIN, left: MARGIN },
-  });
-  const bufs: Buffer[] = [];
-  doc.on("data", (c) => bufs.push(c));
-  const done = new Promise<void>((r) => doc.on("end", r));
-
-  // --- Header bar (visual fingerprint so you know this file is used) ---
-  const BAR_H = 48;
-  doc.save().rect(0, 0, PAGE_W, BAR_H).fill("#0C1A2B").restore();
-  const logoPath = path.join(process.cwd(), "public", "logo-email.png");
-  if (fs.existsSync(logoPath)) {
-    try {
-      doc.image(logoPath, MARGIN, 10, { height: 28 });
-    } catch {}
-  }
+  /* ======== Header (navy bar + TAX INVOICE) ======== */
+  doc.rect(0, 0, doc.page.width, 70).fill("#0F172A"); // slate-900
   doc
-    .fillColor("#fff")
-    .fontSize(14)
-    .text("TAX INVOICE", 0, 16, { width: PAGE_W - MARGIN, align: "right" })
-    .fillColor("#000");
+    .fill("#FFFFFF")
+    .font("Helvetica-Bold")
+    .fontSize(22)
+    .text(companyName, 36, 22, { width: doc.page.width - 72, align: "left" })
+    .font("Helvetica")
+    .fontSize(12)
+    .text("TAX INVOICE", { align: "right" });
 
-  let y = BAR_H + 18;
+  doc.fill("#111827"); // back to dark text
+  doc.moveDown();
 
-  // --- Left column: From (company)
-  y += label(doc, "From", MARGIN, y);
-  y += title(doc, companyName, MARGIN, y);
+  /* ======== From (left) / Bill To (right) — fixed columns ======== */
+  const leftColX = 36;
+  const rightColX = doc.page.width / 2 + 10;
+  let y = 90;
 
-  const fromText =
-    [
-      companyAddress,
-      `Email: ${companyEmail}`,
-      `Tel: ${companyPhone}`,
-      companyRegNo,
-      companyVatNo ? `VAT No: ${companyVatNo}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n") || "";
+  doc.font("Helvetica-Bold").fontSize(11).text("From", leftColX, y);
+  doc.font("Helvetica").fontSize(10);
+  const supplierLines = [
+    companyName,
+    ...companyAddr.split("\n"),
+    companyEmail ? `Email: ${companyEmail}` : undefined,
+    companyPhone ? `Tel: ${companyPhone}` : undefined,
+    companyNo ? `Company No: ${companyNo}` : undefined,
+    companyVat ? `VAT No: ${companyVat}` : undefined,
+  ].filter(Boolean) as string[];
+  doc.text(supplierLines.join("\n"), { width: doc.page.width / 2 - 48 });
 
-  y += block(doc, fromText, MARGIN, y, LEFT_W);
-
-  // --- Right column: Bill To + Date
-  let ry = BAR_H + 18;
-  ry += label(doc, "Bill To", RIGHT_X, ry);
-
+  doc.font("Helvetica-Bold").fontSize(11).text("Bill To", rightColX, y);
+  doc.font("Helvetica").fontSize(10);
+  const cust = payload.customer;
   const billLines = [
-    billName && `Name: ${billName}`,
-    billEmail && `Email: ${billEmail}`,
-    billAddr,
-  ]
-    .filter(Boolean)
-    .join("\n");
+    cust.name || "Customer",
+    cust.address_line1 || undefined,
+    cust.address_line2 || undefined,
+    [cust.city, cust.postcode].filter(Boolean).join(" ") || undefined,
+    cust.email ? `Email: ${cust.email}` : undefined,
+  ].filter(Boolean) as string[];
+  doc.text(billLines.join("\n"), rightColX, y, { width: doc.page.width / 2 - 48 });
 
-  ry += block(doc, billLines, RIGHT_X, ry, RIGHT_W);
-  ry += 6;
-  ry += kv(doc, "Date:", dateStr, RIGHT_X, ry, RIGHT_W);
+  /* ======== Invoice Meta ======== */
+  y = doc.y + 16;
+  doc
+    .moveTo(leftColX, y)
+    .lineTo(doc.page.width - 36, y)
+    .strokeColor("#E5E7EB")
+    .stroke();
 
-  y = Math.max(y, ry) + 18;
+  y += 10;
+  doc.font("Helvetica-Bold").text("Invoice No:", leftColX, y);
+  doc.font("Helvetica").text(invNo, leftColX + 95, y);
 
-  // --- Table header
-  const colDesc = MARGIN;
-  const colLitres = colDesc + Math.floor(CONTENT_W * 0.58);
-  const colUnit = colLitres + 70;
-  const colVat = colUnit + 90;
-  headerRow(
-    doc,
-    ["Description", "Litres", "Unit (ex-VAT)", "VAT %"],
-    [colDesc, colLitres, colUnit, colVat],
-    y,
-    PAGE_W - MARGIN
-  );
-  y += 26;
+  doc.font("Helvetica-Bold").text("Date:", leftColX + 260, y);
+  doc.font("Helvetica").text(invDate, leftColX + 310, y);
 
-  // --- Items
-  let net = 0;
-  let vat = 0;
-  const cSym = sym(currency);
-
-  for (const it of order.items) {
-    const qty = +it.litres || 0;
-    const unit = +it.unitPrice || 0;
-    const rate = +((it.vatRate ?? 0) || 0);
-    const lineNet = qty * unit;
-    const lineVat = +(lineNet * (rate / 100)).toFixed(2);
-    net += lineNet;
-    vat += lineVat;
-
-    const h = Math.max(doc.heightOfString(it.description, { width: colLitres - colDesc - 8 }), 12);
-
-    // hard wrap using the same width we measured
-    doc.fontSize(10).fillColor("#000");
-    doc.text(it.description, colDesc, y, {
-      width: colLitres - colDesc - 8,
-      lineBreak: true,
-      continued: false,
-    });
-    doc.text(qty.toString(), colLitres, y, { width: 50, align: "right" });
-    doc.text(`${cSym}${unit.toFixed(2)}`, colUnit, y, { width: 70, align: "right" });
-    doc.text(`${rate.toFixed(0)}%`, colVat, y, { width: 50, align: "right" });
-
-    y += h + 8;
+  if (payload.meta?.orderId) {
+    y += 16;
+    doc.font("Helvetica-Bold").text("Order Ref:", leftColX, y);
+    doc.font("Helvetica").text(String(payload.meta.orderId), leftColX + 95, y);
   }
 
-  // --- Totals
-  hr(doc, MARGIN, y, PAGE_W - MARGIN);
-  y += 10;
+  /* ======== Compute rows (VAT aware) ======== */
+  type Row = {
+    description: string;
+    qty: number;
+    unitEx: number; // ex-VAT
+    net: number;
+    vatRatePct: number;
+    vat: number;
+    gross: number;
+  };
 
-  const totalsW = 200;
-  const totalsX = PAGE_W - MARGIN - totalsW;
-  y = Math.max(y, kv(doc, "Subtotal (Net):", `${cSym}${net.toFixed(2)}`, totalsX, y, totalsW));
-  y = Math.max(y, kv(doc, "VAT:", `${cSym}${vat.toFixed(2)}`, totalsX, y, totalsW));
-  doc.font("Helvetica-Bold");
-  y = Math.max(y, kv(doc, "Total:", `${cSym}${(net + vat).toFixed(2)}`, totalsX, y, totalsW));
-  doc.font("Helvetica");
+  const rows: Row[] = [];
+  let netTotal = 0;
+  let vatTotal = 0;
 
-  y += 16;
+  payload.items.forEach((it) => {
+    const qty = num(it.quantity, 0);
+    const unitRaw = num(it.unitPrice, 0);
+    const unitEx = !VAT_ENABLED ? unitRaw : PRICES_INCLUDE_VAT ? unitRaw / (1 + VAT_RATE) : unitRaw;
+
+    const net = qty * unitEx;
+    const vat = VAT_ENABLED ? net * VAT_RATE : 0;
+    const gross = net + vat;
+
+    netTotal += net;
+    vatTotal += vat;
+
+    rows.push({
+      description: it.description || "Item",
+      qty,
+      unitEx,
+      net,
+      vatRatePct: VAT_ENABLED ? VAT_RATE * 100 : 0,
+      vat,
+      gross,
+    });
+  });
+
+  netTotal = round2(netTotal);
+  vatTotal = round2(vatTotal);
+  const grandTotal = round2(netTotal + vatTotal);
+
+  /* ======== Table (fixed widths; no wrap collision) ======== */
+  const tableX = 36;
+  const tableW = doc.page.width - 72;
+  let rowY = doc.y + 22;
+
+  const cols = [
+    { label: "Description", w: 180, align: "left" as const },
+    { label: "Litres", w: 70, align: "right" as const },
+    { label: "Unit (ex-VAT)", w: 95, align: "right" as const },
+    { label: "Net", w: 90, align: "right" as const },
+    { label: "VAT %", w: 55, align: "right" as const },
+    { label: "VAT", w: 90, align: "right" as const },
+    { label: "Total", w: 100, align: "right" as const },
+  ];
+
+  // Header band
+  doc
+    .rect(tableX, rowY, tableW, 24)
+    .fill("#F3F4F6")
+    .strokeColor("#E5E7EB")
+    .stroke();
+  doc.fill("#111827").font("Helvetica-Bold").fontSize(10);
+
+  let x = tableX + 8;
+  cols.forEach((c) => {
+    const tx = c.align === "right" ? x + c.w - 8 : x;
+    doc.text(c.label, tx, rowY + 7, { width: c.w - 16, align: c.align });
+    x += c.w;
+  });
+
+  // Rows
+  rowY += 24;
+  doc.font("Helvetica").fontSize(10).fill("#111827");
+
+  const money = (n: number) => `${currencySymbol(cur)}${round2(n).toFixed(2)}`;
+
+  rows.forEach((r, i) => {
+    if (i % 2 === 1) {
+      doc.rect(tableX, rowY, tableW, 22).fill("#FAFAFA");
+      doc.fill("#111827");
+    }
+    x = tableX + 8;
+    const cells = [
+      { v: r.description, w: cols[0].w, align: cols[0].align },
+      { v: r.qty.toLocaleString(), w: cols[1].w, align: cols[1].align },
+      { v: money(r.unitEx), w: cols[2].w, align: cols[2].align },
+      { v: money(r.net), w: cols[3].w, align: cols[3].align },
+      { v: VAT_ENABLED ? `${r.vatRatePct.toFixed(0)}%` : "—", w: cols[4].w, align: cols[4].align },
+      { v: VAT_ENABLED ? money(r.vat) : money(0), w: cols[5].w, align: cols[5].align },
+      { v: money(r.gross), w: cols[6].w, align: cols[6].align },
+    ] as const;
+
+    cells.forEach((c) => {
+      const tx = c.align === "right" ? x + c.w - 8 : x;
+      doc.text(String(c.v), tx, rowY + 6, { width: c.w - 16, align: c.align });
+      x += c.w;
+    });
+
+    // row border
+    doc.rect(tableX, rowY, tableW, 22).strokeColor("#E5E7EB").stroke();
+    rowY += 22;
+  });
+
+  // Totals block (right aligned)
+  rowY += 10;
+  const totalsW = cols.slice(-3).reduce((acc, c) => acc + c.w, 0);
+  const totalsX = tableX + tableW - totalsW;
+
+  const totals = [
+    { label: "Subtotal (Net)", value: money(netTotal), bold: false },
+    { label: "VAT", value: money(vatTotal), bold: false },
+    { label: "Total", value: money(grandTotal), bold: true },
+  ];
+
+  totals.forEach((t, idx) => {
+    const h = 22;
+    doc
+      .rect(totalsX, rowY, totalsW, h)
+      .fill(idx === totals.length - 1 ? "#F3F4F6" : "#FFFFFF")
+      .strokeColor("#E5E7EB")
+      .stroke();
+
+    doc.fill("#111827").font(t.bold ? "Helvetica-Bold" : "Helvetica");
+    doc.text(t.label, totalsX + 12, rowY + 6, { width: totalsW / 2 - 12, align: "left" });
+    doc.text(t.value, totalsX + totalsW / 2, rowY + 6, { width: totalsW / 2 - 12, align: "right" });
+
+    rowY += h;
+  });
 
   // Notes
-  const notes = nl(order.notes ?? "");
-  if (notes) {
-    y += label(doc, "Notes", MARGIN, y);
-    y += block(doc, notes, MARGIN, y, CONTENT_W, true);
+  if (payload.meta?.notes) {
+    rowY += 14;
+    doc.font("Helvetica-Bold").text("Notes", tableX, rowY);
+    doc.font("Helvetica").fill("#374151");
+    doc.text(payload.meta.notes, tableX, rowY + 16, { width: tableW });
+    doc.fill("#111827");
   }
 
   // Footer
-  const foot = `${companyName} — Registered in England & Wales — ${companyRegNo}${
-    companyVatNo ? ` — VAT No ${companyVatNo}` : ""
-  }`;
   doc
-    .fontSize(8)
-    .fillColor("#777")
-    .text(foot, MARGIN, PAGE_H - MARGIN - 12, { width: CONTENT_W, align: "center" })
-    .fillColor("#000");
+    .font("Helvetica")
+    .fontSize(9)
+    .fill("#6B7280")
+    .text(
+      `${companyName} — Registered in England & Wales${
+        companyNo ? " • Company No " + companyNo : ""
+      }${companyVat ? " • VAT No " + companyVat : ""}`,
+      36,
+      doc.page.height - 40,
+      { width: doc.page.width - 72, align: "center" }
+    );
 
   doc.end();
   await done;
-  return {
-    pdfBuffer: Buffer.concat(bufs),
-    filename: `${order.invoiceNumber}.pdf`,
-    total: +(net + vat).toFixed(2),
-  };
 
-  // ---- helpers ----
-  function label(d: any, t: string, x: number, y0: number) {
-    d.font("Helvetica-Bold").fontSize(11).fillColor("#0C1A2B").text(t, x, y0);
-    d.font("Helvetica").fillColor("#000");
-    return 16;
-  }
-  function title(d: any, t: string, x: number, y0: number) {
-    d.font("Helvetica-Bold").fontSize(13).text(t, x, y0);
-    d.font("Helvetica").fontSize(10);
-    return 16;
-  }
-  function block(d: any, t: string, x: number, y0: number, w: number, dim = false) {
-    d.fontSize(10).fillColor(dim ? "#555" : "#000");
-    const h = d.heightOfString(t, { width: w, lineBreak: true });
-    d.text(t, x, y0, { width: w, lineBreak: true });
-    d.fillColor("#000");
-    return h;
-  }
-  function kv(d: any, k: string, v: string, x: number, y0: number, w: number) {
-    const kw = 90;
-    d.fontSize(10).fillColor("#555").text(k, x, y0, { width: kw, align: "right" });
-    d.fillColor("#000").text(v, x + kw + 8, y0, { width: w - kw - 8, align: "right" });
-    return 14;
-  }
-  function headerRow(d: any, names: string[], xs: number[], y0: number, rightEdge: number) {
-    d.save().rect(MARGIN - 2, y0 - 6, rightEdge - (MARGIN - 2), 22).fill("#EEF3F8").restore();
-    d.font("Helvetica-Bold").fontSize(10);
-    d.text(names[0], xs[0], y0, { width: xs[1] - xs[0] - 8, align: "left" });
-    d.text(names[1], xs[1], y0, { width: 50, align: "right" });
-    d.text(names[2], xs[2], y0, { width: 70, align: "right" });
-    d.text(names[3], xs[3], y0, { width: 50, align: "right" });
-    d.font("Helvetica");
-  }
-  function hr(d: any, x1: number, y0: number, x2: number) {
-    d.save().moveTo(x1, y0).lineTo(x2, y0).lineWidth(1).strokeColor("#D6DEE6").stroke().restore();
-  }
+  return {
+    pdfBuffer: Buffer.concat(chunks),
+    filename: `${invNo}.pdf`,
+    total: grandTotal,
+  };
 }
+
 
