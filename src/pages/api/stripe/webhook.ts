@@ -18,6 +18,22 @@ function sb() {
   );
 }
 
+// ---------- Order typing (fixes your TS error) ----------
+type OrderRow = {
+  id?: string;
+  product?: string | null;
+  fuel?: string | null;
+  litres?: number | null;
+  unit_price_pence?: number | null;
+  total_pence?: number | null;
+  name?: string | null;
+  address_line1?: string | null;
+  address_line2?: string | null;
+  city?: string | null;
+  postcode?: string | null;
+  delivery_date?: string | null;
+};
+
 // ---------- Helpers ----------
 function readRawBody(req: any): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -33,7 +49,7 @@ const CANONICAL_BASE =
   (process.env.SITE_URL || process.env.NEXT_PUBLIC_SITE_URL || "").replace(/\/+$/, "") ||
   (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
 
-// Optional: set INVOICE_DEBUG_IN_WEBHOOK=true to ask the invoice route for a debug echo
+// Optional: set INVOICE_DEBUG_IN_WEBHOOK=true to echo normalized items & page count
 const WEBHOOK_DEBUG =
   String(process.env.INVOICE_DEBUG_IN_WEBHOOK || "").toLowerCase() === "true";
 
@@ -64,7 +80,7 @@ async function saveWebhookEvent(e: Stripe.Event) {
 }
 
 // --- pull the order row so we can get litres/unit_price/total straight from DB ---
-async function fetchOrder(orderId?: string | null) {
+async function fetchOrder(orderId?: string | null): Promise<OrderRow | null> {
   if (!orderId) return null;
   const { data, error } = await sb()
     .from("orders")
@@ -91,12 +107,12 @@ async function fetchOrder(orderId?: string | null) {
     console.error("[webhook] fetchOrder error:", error);
     return null;
   }
-  return data;
+  return (data as unknown as OrderRow) || null;
 }
 
 // Build invoice items prioritising order data; fallback to Stripe metadata
 function buildItemsFromOrderOrStripe(args: {
-  order: any | null;
+  order: OrderRow | null;
   lineItems: Stripe.ApiList<Stripe.LineItem> | null;
   session: Stripe.Checkout.Session | null;
 }) {
@@ -472,4 +488,3 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   return res.status(200).json({ received: true });
 }
-
