@@ -34,24 +34,33 @@ function bad(res: NextApiResponse, code: number, msg: string) {
   return res.status(code).json({ ok: false, error: msg });
 }
 
-/** Short, unique invoice numbers.
- *  - If orderId: INV-<first4><last4>  (e.g. INV-AB12Z9QP)
- *  - Else:       INV-YYMMDD-XXXX      (e.g. INV-250922-7F3K)
+function customerTag(email: string | undefined) {
+  if (!email) return "CUS";
+  const local = email.split("@")[0] || "";
+  const tag = (local.match(/[A-Za-z0-9]/g) || []).join("").toUpperCase().slice(0, 3);
+  return tag || "CUS";
+}
+
+/** Short, traceable, unique invoice number:
+ *   INV-YYMMDD-CCC-XXXX
+ *   - CCC = first 3 alnum chars of customer email (uppercased)
+ *   - XXXX = 4-char base36 random
+ *   If orderId exists -> INV-YYMMDD-CCC-<last4(orderId)>
  */
-function makeInvoiceNumber(meta: { invoiceNumber?: string; orderId?: string } | undefined) {
+function makeInvoiceNumber(meta: { invoiceNumber?: string; orderId?: string } | undefined, customerEmail?: string) {
   if (meta?.invoiceNumber) return meta.invoiceNumber;
-  if (meta?.orderId) {
-    const id = String(meta.orderId).replace(/[^A-Za-z0-9]/g, "");
-    const a = id.slice(0, 4).toUpperCase().padEnd(4, "X");
-    const b = id.slice(-4).toUpperCase().padStart(4, "X");
-    return `INV-${a}${b}`;
-  }
   const d = new Date();
   const y = String(d.getFullYear()).slice(-2);
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
-  const rand = Math.random().toString(36).slice(2, 6).toUpperCase(); // 4 chars
-  return `INV-${y}${m}${day}-${rand}`;
+  const c3 = customerTag(customerEmail);
+  if (meta?.orderId) {
+    const id = String(meta.orderId).replace(/[^A-Za-z0-9]/g, "");
+    const tail = (id.slice(-4) || "XXXX").toUpperCase().padStart(4, "X");
+    return `INV-${y}${m}${day}-${c3}-${tail}`;
+  }
+  const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `INV-${y}${m}${day}-${c3}-${rand}`;
 }
 
 function normalizeItems(items: ApiItem[]) {
@@ -92,7 +101,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const normItems = normalizeItems(payload.items);
 
     const meta = {
-      invoiceNumber: makeInvoiceNumber(payload.meta),
+      invoiceNumber: makeInvoiceNumber(payload.meta, payload.customer.email),
       orderId: payload.meta?.orderId,
       notes: payload.meta?.notes,
       dateISO: payload.meta?.dateISO,
