@@ -33,6 +33,10 @@ const CANONICAL_BASE =
   (process.env.SITE_URL || process.env.NEXT_PUBLIC_SITE_URL || "").replace(/\/+$/, "") ||
   (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
 
+// Optional: set INVOICE_DEBUG_IN_WEBHOOK=true to ask the invoice route for a debug echo
+const WEBHOOK_DEBUG =
+  String(process.env.INVOICE_DEBUG_IN_WEBHOOK || "").toLowerCase() === "true";
+
 // best-effort logging (ignore errors)
 async function logRow(row: {
   event_type: string;
@@ -55,11 +59,126 @@ async function saveWebhookEvent(e: Stripe.Event) {
   try {
     await sb()
       .from("webhook_events")
-      .upsert(
-        [{ id: e.id, type: e.type, raw: e as any }],
-        { onConflict: "id" }
-      );
+      .upsert([{ id: e.id, type: e.type, raw: e as any }], { onConflict: "id" });
   } catch {}
+}
+
+// --- pull the order row so we can get litres/unit_price/total straight from DB ---
+async function fetchOrder(orderId?: string | null) {
+  if (!orderId) return null;
+  const { data, error } = await sb()
+    .from("orders")
+    .select(
+      [
+        "id",
+        "product",
+        "fuel",
+        "litres",
+        "unit_price_pence",
+        "total_pence",
+        "name",
+        "address_line1",
+        "address_line2",
+        "city",
+        "postcode",
+        "delivery_date",
+      ].join(",")
+    )
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[webhook] fetchOrder error:", error);
+    return null;
+  }
+  return data;
+}
+
+// Build invoice items prioritising order data; fallback to Stripe metadata
+function buildItemsFromOrderOrStripe(args: {
+  order: any | null;
+  lineItems: Stripe.ApiList<Stripe.LineItem> | null;
+  session: Stripe.Checkout.Session | null;
+}) {
+  const { order, lineItems, session } = args;
+
+  // Prefer the order row (DB is the source of truth)
+  if (order && (order.litres || order.total_pence || order.unit_price_pence)) {
+    const litres = Number(order.litres || 0);
+    const desc =
+      order.product ||
+      order.fuel ||
+      (lineItems?.data?.[0]?.description ?? "Fuel order");
+
+    const totalMajor =
+      order.total_pence != null ? Number(order.total_pence) / 100 : undefined;
+    const unitMajor =
+      order.unit_price_pence != null
+        ? Number(order.unit_price_pence) / 100
+        : totalMajor && litres
+        ? totalMajor / litres
+        : undefined;
+
+    // Prefer { litres, total } so the invoice route derives per-litre exactly
+    if (litres && totalMajor != null) {
+      return [{ description: desc, litres, total: totalMajor }];
+    }
+    if (litres && unitMajor != null) {
+      return [{ description: desc, litres, unitPrice: unitMajor }];
+    }
+  }
+
+  // Fallback: Stripe line items + metadata
+  const items: Array<{ description: string; litres: number; total?: number; unitPrice?: number }> = [];
+  if (lineItems) {
+    for (const row of lineItems.data) {
+      const qty = row.quantity ?? 1;
+
+      // Try metadata in a few common places
+      const metaLitres =
+        Number(
+          // @ts-ignore
+          (row as any)?.metadata?.litres ??
+            (row.price?.metadata as any)?.litres ??
+            ((row.price?.product as any)?.metadata?.litres)
+        ) || 0;
+
+      // also try the session metadata as a global litres
+      const sessionLitres = Number((session?.metadata as any)?.litres || 0);
+
+      // Choose litres (prefer metadata; else fall back to Stripe "quantity")
+      const litres = metaLitres || sessionLitres || qty;
+
+      // Compute a reliable line total in major units
+      const totalMajor =
+        (typeof row.amount_total === "number"
+          ? row.amount_total
+          : row.price?.unit_amount != null && qty
+          ? row.price.unit_amount * qty
+          : 0) / 100;
+
+      const name =
+        row.description ||
+        ((row.price?.product as Stripe.Product | undefined)?.name ?? "Item");
+
+      // Send litres + total so the invoice route prints litres correctly
+      items.push({ description: name, litres, total: totalMajor });
+    }
+  }
+
+  // If we somehow have no line items, fallback to 1 line with session amount
+  if (items.length === 0) {
+    const totalMajor =
+      (typeof session?.amount_total === "number" ? session!.amount_total : 0) /
+      100;
+    items.push({
+      description: "Payment",
+      litres: Number((session?.metadata as any)?.litres || 1),
+      total: totalMajor,
+    });
+  }
+
+  return items;
 }
 
 async function callInvoiceRoute(payload: any) {
@@ -70,24 +189,36 @@ async function callInvoiceRoute(payload: any) {
     throw new Error("SITE_URL / NEXT_PUBLIC_SITE_URL / VERCEL_URL not set");
   }
 
-  const url = `${CANONICAL_BASE}/api/invoices/create`;
+  const url =
+    `${CANONICAL_BASE}/api/invoices/create` + (WEBHOOK_DEBUG ? `?debug=1` : "");
   const resp = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-invoice-secret": process.env.INVOICE_SECRET,
+      ...(WEBHOOK_DEBUG ? { "x-invoice-debug": "1" } : {}),
     } as any,
     body: JSON.stringify(payload),
   });
 
   if (!resp.ok) {
     const txt = await resp.text().catch(() => "");
-    // clear server log for diagnosis
     console.error(
       "[invoice] route call failed",
-      JSON.stringify({ url, status: resp.status, body: txt?.slice(0, 500) })
+      JSON.stringify({ url, status: resp.status, body: txt?.slice(0, 1000) })
     );
     throw new Error(`Invoice route error: ${resp.status}`);
+  }
+
+  // Optional debug visibility in logs
+  if (WEBHOOK_DEBUG) {
+    try {
+      const j = await resp.json();
+      console.log("[invoice] debug.normalized:", j?.debug?.normalized);
+      console.log("[invoice] pages:", j?.debug?.pages);
+    } catch {
+      // ignore if not JSON
+    }
   }
 }
 
@@ -113,7 +244,6 @@ async function upsertPaymentRow(args: {
       cs_id: args.cs_id ?? undefined,
       meta: args.meta ?? undefined,
     };
-    // upsert by pi_id when we have it, otherwise insert
     if (row.pi_id) {
       await sb().from("payments").upsert([row as any], { onConflict: "pi_id" });
     } else {
@@ -155,7 +285,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
 
-        // Try to find order id the same way your Checkout create code sets metadata
+        // Order ID the same way your Checkout create code sets metadata
         let orderId =
           (session.metadata as any)?.order_id ||
           (typeof session.payment_intent === "string"
@@ -167,24 +297,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           order_id: orderId ?? null,
         });
 
-        // Build invoice line items from Checkout
+        // Pull line items + product expansion for metadata
         const li = await stripe.checkout.sessions.listLineItems(session.id, {
           limit: 100,
           expand: ["data.price.product"],
         });
 
-        const items = li.data.map((row) => {
-          const qty = row.quantity ?? 1;
-          const unit =
-            (row.price?.unit_amount ??
-              (row.amount_total && qty ? Math.round(row.amount_total / qty) : 0)) / 100;
-          const name =
-            row.description ||
-            ((row.price?.product as Stripe.Product | undefined)?.name ?? "Item");
-          return { description: name, quantity: qty, unitPrice: unit };
-        });
+        // Prefer DB order as source of truth for litres/unit/total
+        const order = await fetchOrder(orderId);
 
-        // Mark order paid (keep minimal to avoid schema mismatches)
+        // Mark order paid (minimal update)
         if (orderId) {
           const { error } = await sb()
             .from("orders")
@@ -220,18 +342,38 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           meta: session.metadata ?? null,
         });
 
-        // Trigger invoice email
-        await callInvoiceRoute({
+        // Build invoice payload
+        const items = buildItemsFromOrderOrStripe({
+          order,
+          lineItems: li,
+          session,
+        });
+
+        const payload = {
           customer: {
-            name: session.customer_details?.name || "Customer",
+            name:
+              order?.name ||
+              session.customer_details?.name ||
+              "Customer",
             email:
               (session.customer_details?.email ||
                 session.customer_email ||
                 (session.metadata as any)?.email) ?? "",
+            address_line1: order?.address_line1 ?? null,
+            address_line2: order?.address_line2 ?? null,
+            city: order?.city ?? null,
+            postcode: order?.postcode ?? null,
           },
           items,
           currency: (session.currency || "gbp").toUpperCase(),
-        });
+          meta: {
+            orderId: orderId ?? undefined,
+            notes: (session.metadata as any)?.notes ?? undefined,
+          },
+        };
+
+        // Trigger invoice email
+        await callInvoiceRoute(payload);
 
         await logRow({ event_type: "invoice_sent", order_id: orderId ?? null, status: "paid" });
         break;
@@ -248,6 +390,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             : undefined);
 
         await logRow({ event_type: "payment_intent.succeeded/received", order_id: orderId ?? null });
+
+        const order = await fetchOrder(orderId);
 
         if (orderId) {
           const { error } = await sb()
@@ -272,20 +416,43 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           meta: pi.metadata ?? null,
         });
 
+        // Build invoice items (prefer order, else PI metadata)
+        let items: Array<{ description: string; litres: number; total?: number; unitPrice?: number }>;
+        if (order && (order.litres || order.total_pence || order.unit_price_pence)) {
+          const litres = Number(order.litres || 0);
+          const totalMajor =
+            order.total_pence != null ? Number(order.total_pence) / 100 : undefined;
+          const unitMajor =
+            order.unit_price_pence != null
+              ? Number(order.unit_price_pence) / 100
+              : totalMajor && litres
+              ? totalMajor / litres
+              : undefined;
+
+          const desc = order.product || order.fuel || "Payment";
+          items = totalMajor != null
+            ? [{ description: desc, litres, total: totalMajor }]
+            : [{ description: desc, litres, unitPrice: unitMajor || 0 }];
+        } else {
+          const litres = Number((pi.metadata as any)?.litres || 1);
+          const totalMajor = ((pi.amount_received ?? pi.amount) || 0) / 100;
+          const desc = (pi.metadata as any)?.description || "Payment";
+          items = [{ description: desc, litres, total: totalMajor }];
+        }
+
         // Send invoice
         await callInvoiceRoute({
           customer: {
-            name: pi.shipping?.name || (pi.metadata as any)?.customer_name || "Customer",
+            name: order?.name || pi.shipping?.name || (pi.metadata as any)?.customer_name || "Customer",
             email: (pi.receipt_email || (pi.metadata as any)?.customer_email) ?? "",
+            address_line1: order?.address_line1 ?? null,
+            address_line2: order?.address_line2 ?? null,
+            city: order?.city ?? null,
+            postcode: order?.postcode ?? null,
           },
-          items: [
-            {
-              description: (pi.metadata as any)?.description || "Payment",
-              quantity: 1,
-              unitPrice: ((pi.amount_received ?? pi.amount) || 0) / 100,
-            },
-          ],
+          items,
           currency: (pi.currency || "gbp").toUpperCase(),
+          meta: { orderId: orderId ?? undefined, notes: (pi.metadata as any)?.notes ?? undefined },
         });
 
         await logRow({ event_type: "invoice_sent", order_id: orderId ?? null, status: "paid" });
@@ -305,5 +472,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   return res.status(200).json({ received: true });
 }
-
 
