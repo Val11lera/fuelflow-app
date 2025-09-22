@@ -5,19 +5,19 @@ import crypto from "node:crypto";
 import { sendMail } from "@/lib/mailer";
 import { buildInvoicePdf } from "@/lib/invoice-pdf"; // shared generator
 
-// Caller may send different shapes; we accommodate all without breaking your current clients.
+// Upstream may send different shapes; we normalize them here.
 type LineItemIn = {
   description: string;
 
-  // Quantities that may appear
-  litres?: number;           // common in your system
-  quantity?: number;         // alias for litres
+  // quantity shapes
+  litres?: number;             // common in your system
+  quantity?: number;           // alias for litres
 
-  // Pricing that may appear
-  unitPrice?: number;        // price per litre (major units)
-  unit_price_pence?: number; // price per litre (minor units)
-  total?: number;            // line total (major units)
-  total_pence?: number;      // line total (minor units)
+  // pricing shapes
+  unitPrice?: number;          // price per litre (major units)
+  unit_price_pence?: number;   // price per litre (minor units)
+  total?: number;              // line total (major units)
+  total_pence?: number;        // line total (minor units)
 };
 
 type InvoicePayload = {
@@ -31,7 +31,7 @@ type InvoicePayload = {
   };
   items: LineItemIn[];
   currency: string;
-  meta?: { invoiceNumber?: string; orderId?: string; notes?: string; };
+  meta?: { invoiceNumber?: string; orderId?: string; notes?: string };
 };
 
 export const config = { api: { bodyParser: true } };
@@ -50,6 +50,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const expected = process.env.INVOICE_SECRET;
   if (!expected) return bad(res, 500, "INVOICE_SECRET not set");
+
   const provided = String(req.headers["x-invoice-secret"] || "");
   if (!provided || !safeEqual(provided, expected)) return bad(res, 401, "Invalid invoice secret");
 
@@ -59,37 +60,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!payload.currency) return bad(res, 400, "Missing currency");
 
   try {
-    const normItems = payload.items.map((raw) => {
-      // 1) quantity in litres
-      const qty =
-        Number(raw.quantity ?? raw.litres ?? 0);
+    // ---- DEBUG flag (optional): set header x-invoice-debug: 1 on the request to get echo data back
+    const debug = String(req.headers["x-invoice-debug"] || "") === "1";
 
-      // 2) per-litre price (major units), from any of the forms we might get
+    // ---- Normalize items: accept litres OR quantity; derive unit price from totals when needed
+    const normItems = payload.items.map((raw) => {
+      const qty = Number(raw.quantity ?? raw.litres ?? 0);
+
+      // major-units unit price if provided
       let unit = Number(raw.unitPrice ?? 0);
       if (!unit && raw.unit_price_pence != null) unit = Number(raw.unit_price_pence) / 100;
 
-      // 3) if caller actually sent a *line total* instead of unit price, derive the per-litre price
-      const lineTotalMajor =
+      // line total (if the caller sent total instead of unit price)
+      const lineTotal =
         raw.total != null ? Number(raw.total) :
         raw.total_pence != null ? Number(raw.total_pence) / 100 :
         0;
 
       if (qty > 0) {
-        // If unit is missing OR if qty === 1 but unit looks like a full line total (e.g. £37.50),
-        // derive per-litre from the provided total.
-        const looksLikeLineTotal = (qty === 1 && lineTotalMajor > 0 && unit > 10);
-        if (!unit && lineTotalMajor > 0) unit = lineTotalMajor / qty;
-        else if (looksLikeLineTotal) unit = lineTotalMajor / qty;
+        // If unit is missing OR looks like they sent the full line total as "unitPrice" with qty===1,
+        // use the provided total to derive proper per-litre price.
+        const looksLikeLineTotal = (qty === 1 && unit > 10 && lineTotal > 0);
+        if (!unit && lineTotal > 0) unit = lineTotal / qty;
+        else if (looksLikeLineTotal) unit = lineTotal / qty;
       }
 
       return {
         description: raw.description,
-        quantity: isFinite(qty) ? qty : 0,
-        unitPrice: isFinite(unit) ? unit : 0,
+        quantity: Number.isFinite(qty) ? qty : 0,
+        unitPrice: Number.isFinite(unit) ? unit : 0,
+        _debug_raw: debug ? raw : undefined, // only for debug echo
       };
     });
 
-    const { pdfBuffer, filename } = await buildInvoicePdf({
+    // ---- Build the PDF using the shared, fixed generator
+    const { pdfBuffer, filename, pages } = await buildInvoicePdf({
       customer: {
         name: payload.customer.name ?? null,
         email: payload.customer.email,
@@ -98,7 +103,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         city: payload.customer.city ?? null,
         postcode: payload.customer.postcode ?? null,
       },
-      items: normItems,
+      items: normItems.map(({ description, quantity, unitPrice }) => ({ description, quantity, unitPrice })),
       currency: (payload.currency || "GBP").toUpperCase(),
       meta: {
         invoiceNumber: payload.meta?.invoiceNumber,
@@ -123,6 +128,20 @@ ${process.env.COMPANY_NAME || "FuelFlow"}`;
       text,
       attachments: [{ filename, content: pdfBuffer, contentType: "application/pdf" }],
     });
+
+    // If debugging, echo what the route actually used + page count
+    if (debug) {
+      res.setHeader("X-FF-Pages", String(pages ?? "?"));
+      return res.status(200).json({
+        ok: true,
+        id,
+        debug: {
+          received: payload.items,
+          normalized: normItems.map(i => ({ description: i.description, quantity: i.quantity, unitPrice: i.unitPrice })),
+          pages,
+        },
+      });
+    }
 
     return res.status(200).json({ ok: true, id });
   } catch (e: any) {
