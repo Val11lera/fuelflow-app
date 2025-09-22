@@ -1,4 +1,5 @@
 // src/lib/invoice-pdf.ts
+// src/lib/invoice-pdf.ts
 import PDFDocument from "pdfkit";
 
 export type LineItem = {
@@ -47,17 +48,28 @@ function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
 
+// Helper: draw multi-line block at (x,y) with fixed width and return endY
+function drawBlock(doc: any, text: string, x: number, y: number, width: number) {
+  const h = doc.heightOfString(text, { width });
+  doc.text(text, x, y, { width });
+  return y + h;
+}
+
 export async function buildInvoicePdf(payload: InvoiceInput): Promise<BuiltInvoice> {
-  // VAT config mirrors your /api route
+  // VAT config (same as your API route)
   const VAT_ENABLED = process.env.VAT_ENABLED !== "false";
   const VAT_RATE = Math.max(0, parseFloat(process.env.VAT_RATE ?? "20")) / 100; // 0.20
   const PRICES_INCLUDE_VAT = process.env.PRICES_INCLUDE_VAT === "true";
 
-  const doc: any = new PDFDocument({ size: "A4", margin: 36 });
+  const MARGIN = 36;
+  const doc: any = new PDFDocument({ size: "A4", margin: MARGIN });
 
   const chunks: Buffer[] = [];
   doc.on("data", (c: Buffer) => chunks.push(c));
   const done = new Promise<void>((resolve) => doc.on("end", () => resolve()));
+
+  const pageW = doc.page.width;
+  const pageH = doc.page.height;
 
   const companyName = process.env.COMPANY_NAME || "FuelFlow";
   // Accept both "\n" and "\\n" for env address
@@ -74,27 +86,30 @@ export async function buildInvoicePdf(payload: InvoiceInput): Promise<BuiltInvoi
   const invDate = new Date().toLocaleDateString("en-GB");
 
   /* ======== Header (navy bar + TAX INVOICE) ======== */
-  doc.rect(0, 0, doc.page.width, 70).fill("#0F172A"); // slate-900
+  doc.rect(0, 0, pageW, 70).fill("#0F172A"); // navy/shell
   doc
     .fill("#FFFFFF")
     .font("Helvetica-Bold")
     .fontSize(22)
-    .text(companyName, 36, 22, { width: doc.page.width - 72, align: "left" })
+    .text(companyName, MARGIN, 22, { width: pageW - MARGIN * 2, align: "left" })
     .font("Helvetica")
     .fontSize(12)
     .text("TAX INVOICE", { align: "right" });
 
   doc.fill("#111827"); // back to dark text
-  doc.moveDown();
 
-  /* ======== From (left) / Bill To (right) — fixed columns ======== */
-  const leftColX = 36;
-  const rightColX = doc.page.width / 2 + 10;
+  /* ======== From (left) / Bill To (right) — measured columns ======== */
+  const colGap = 10;
+  const leftX = MARGIN;
+  const rightX = pageW / 2 + colGap;
+  const colW = pageW / 2 - MARGIN - colGap - 12; // ~half page, minus gap
+
   let y = 90;
 
-  doc.font("Helvetica-Bold").fontSize(11).text("From", leftColX, y);
-  doc.font("Helvetica").fontSize(10);
-  const supplierLines = [
+  // Left title
+  doc.font("Helvetica-Bold").fontSize(11).text("From", leftX, y);
+  // Build left block string
+  const leftLines = [
     companyName,
     ...companyAddr.split("\n"),
     companyEmail ? `Email: ${companyEmail}` : undefined,
@@ -102,39 +117,52 @@ export async function buildInvoicePdf(payload: InvoiceInput): Promise<BuiltInvoi
     companyNo ? `Company No: ${companyNo}` : undefined,
     companyVat ? `VAT No: ${companyVat}` : undefined,
   ].filter(Boolean) as string[];
-  doc.text(supplierLines.join("\n"), { width: doc.page.width / 2 - 48 });
 
-  doc.font("Helvetica-Bold").fontSize(11).text("Bill To", rightColX, y);
+  // Right title
+  doc.font("Helvetica-Bold").fontSize(11).text("Bill To", rightX, y);
+
+  // Body text style
   doc.font("Helvetica").fontSize(10);
-  const cust = payload.customer;
-  const billLines = [
-    cust.name || "Customer",
-    cust.address_line1 || undefined,
-    cust.address_line2 || undefined,
-    [cust.city, cust.postcode].filter(Boolean).join(" ") || undefined,
-    cust.email ? `Email: ${cust.email}` : undefined,
-  ].filter(Boolean) as string[];
-  doc.text(billLines.join("\n"), rightColX, y, { width: doc.page.width / 2 - 48 });
 
-  /* ======== Invoice Meta ======== */
-  y = doc.y + 16;
+  const leftBodyY = y + 15;
+  const rightBodyY = y + 15;
+
+  // Measure & draw both columns, then advance y to the max
+  const leftText = leftLines.join("\n");
+  const rightLines = [
+    payload.customer.name || "Customer",
+    payload.customer.address_line1 || undefined,
+    payload.customer.address_line2 || undefined,
+    [payload.customer.city, payload.customer.postcode].filter(Boolean).join(" ") || undefined,
+    payload.customer.email ? `Email: ${payload.customer.email}` : undefined,
+  ].filter(Boolean) as string[];
+  const rightText = rightLines.join("\n");
+
+  const leftEndY = drawBlock(doc, leftText, leftX, leftBodyY, colW);
+  const rightEndY = drawBlock(doc, rightText, rightX, rightBodyY, colW);
+
+  y = Math.max(leftEndY, rightEndY) + 12; // spacer below columns
+
+  /* ======== Invoice Meta (always below the taller column) ======== */
   doc
-    .moveTo(leftColX, y)
-    .lineTo(doc.page.width - 36, y)
+    .moveTo(MARGIN, y)
+    .lineTo(pageW - MARGIN, y)
     .strokeColor("#E5E7EB")
     .stroke();
 
   y += 10;
-  doc.font("Helvetica-Bold").text("Invoice No:", leftColX, y);
-  doc.font("Helvetica").text(invNo, leftColX + 95, y);
 
-  doc.font("Helvetica-Bold").text("Date:", leftColX + 260, y);
-  doc.font("Helvetica").text(invDate, leftColX + 310, y);
+  doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
+  doc.text("Invoice No:", MARGIN, y);
+  doc.font("Helvetica").text(invNo, MARGIN + 95, y);
+
+  doc.font("Helvetica-Bold").text("Date:", MARGIN + 260, y);
+  doc.font("Helvetica").text(invDate, MARGIN + 310, y);
 
   if (payload.meta?.orderId) {
     y += 16;
-    doc.font("Helvetica-Bold").text("Order Ref:", leftColX, y);
-    doc.font("Helvetica").text(String(payload.meta.orderId), leftColX + 95, y);
+    doc.font("Helvetica-Bold").text("Order Ref:", MARGIN, y);
+    doc.font("Helvetica").text(String(payload.meta.orderId), MARGIN + 95, y);
   }
 
   /* ======== Compute rows (VAT aware) ======== */
@@ -179,10 +207,19 @@ export async function buildInvoicePdf(payload: InvoiceInput): Promise<BuiltInvoi
   vatTotal = round2(vatTotal);
   const grandTotal = round2(netTotal + vatTotal);
 
-  /* ======== Table (fixed widths; no wrap collision) ======== */
-  const tableX = 36;
-  const tableW = doc.page.width - 72;
-  let rowY = doc.y + 22;
+  /* ======== Table (fixed positions; no accidental flow) ======== */
+  y += 22; // space before table
+  const tableX = MARGIN;
+  const tableW = pageW - MARGIN * 2;
+
+  // Header band
+  doc
+    .rect(tableX, y, tableW, 24)
+    .fill("#F3F4F6")
+    .strokeColor("#E5E7EB")
+    .stroke();
+
+  doc.fill("#111827").font("Helvetica-Bold").fontSize(10);
 
   const cols = [
     { label: "Description", w: 180, align: "left" as const },
@@ -194,32 +231,42 @@ export async function buildInvoicePdf(payload: InvoiceInput): Promise<BuiltInvoi
     { label: "Total", w: 100, align: "right" as const },
   ];
 
-  // Header band
-  doc
-    .rect(tableX, rowY, tableW, 24)
-    .fill("#F3F4F6")
-    .strokeColor("#E5E7EB")
-    .stroke();
-  doc.fill("#111827").font("Helvetica-Bold").fontSize(10);
-
   let x = tableX + 8;
   cols.forEach((c) => {
     const tx = c.align === "right" ? x + c.w - 8 : x;
-    doc.text(c.label, tx, rowY + 7, { width: c.w - 16, align: c.align });
+    doc.text(c.label, tx, y + 7, { width: c.w - 16, align: c.align });
     x += c.w;
   });
 
   // Rows
-  rowY += 24;
+  let rowY = y + 24;
   doc.font("Helvetica").fontSize(10).fill("#111827");
+  const money = (n: number) => `${sym}${round2(n).toFixed(2)}`;
 
-  const money = (n: number) => `${currencySymbol(cur)}${round2(n).toFixed(2)}`;
+  const rowH = 22;
+  const bottomSafe = pageH - 140; // leave room for totals + notes + footer
 
-  rows.forEach((r, i) => {
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+
+    // Keep single page: stop rendering rows if we’d overflow
+    if (rowY + rowH > bottomSafe) {
+      const remaining = rows.length - i;
+      doc.font("Helvetica-Oblique").fontSize(9).fill("#6B7280").text(
+        `(+${remaining} more item${remaining > 1 ? "s" : ""} not shown to keep single-page layout)`,
+        tableX + 8,
+        rowY + 6,
+        { width: tableW - 16 }
+      );
+      rowY += rowH;
+      break;
+    }
+
     if (i % 2 === 1) {
-      doc.rect(tableX, rowY, tableW, 22).fill("#FAFAFA");
+      doc.rect(tableX, rowY, tableW, rowH).fill("#FAFAFA");
       doc.fill("#111827");
     }
+
     x = tableX + 8;
     const cells = [
       { v: r.description, w: cols[0].w, align: cols[0].align },
@@ -238,11 +285,11 @@ export async function buildInvoicePdf(payload: InvoiceInput): Promise<BuiltInvoi
     });
 
     // row border
-    doc.rect(tableX, rowY, tableW, 22).strokeColor("#E5E7EB").stroke();
-    rowY += 22;
-  });
+    doc.rect(tableX, rowY, tableW, rowH).strokeColor("#E5E7EB").stroke();
+    rowY += rowH;
+  }
 
-  // Totals block (right aligned)
+  /* ======== Totals block (right aligned) ======== */
   rowY += 10;
   const totalsW = cols.slice(-3).reduce((acc, c) => acc + c.w, 0);
   const totalsX = tableX + tableW - totalsW;
@@ -268,27 +315,27 @@ export async function buildInvoicePdf(payload: InvoiceInput): Promise<BuiltInvoi
     rowY += h;
   });
 
-  // Notes
+  /* ======== Notes (optional) ======== */
   if (payload.meta?.notes) {
     rowY += 14;
-    doc.font("Helvetica-Bold").text("Notes", tableX, rowY);
+    doc.font("Helvetica-Bold").fontSize(10).fill("#111827").text("Notes", tableX, rowY);
     doc.font("Helvetica").fill("#374151");
     doc.text(payload.meta.notes, tableX, rowY + 16, { width: tableW });
     doc.fill("#111827");
   }
 
-  // Footer
+  /* ======== Footer (fixed position, no page break) ======== */
   doc
     .font("Helvetica")
     .fontSize(9)
     .fill("#6B7280")
     .text(
-      `${companyName} — Registered in England & Wales${
-        companyNo ? " • Company No " + companyNo : ""
-      }${companyVat ? " • VAT No " + companyVat : ""}`,
-      36,
-      doc.page.height - 40,
-      { width: doc.page.width - 72, align: "center" }
+      `${companyName} — Registered in England & Wales${companyNo ? " • Company No " + companyNo : ""}${
+        companyVat ? " • VAT No " + companyVat : ""
+      }`,
+      MARGIN,
+      pageH - 40,
+      { width: pageW - MARGIN * 2, align: "center" }
     );
 
   doc.end();
@@ -300,5 +347,3 @@ export async function buildInvoicePdf(payload: InvoiceInput): Promise<BuiltInvoi
     total: grandTotal,
   };
 }
-
-
