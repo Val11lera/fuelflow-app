@@ -1,11 +1,12 @@
 // src/pages/terms.tsx
+// src/pages/terms.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 
-const VERSION = "v1.1";            // bump when you change terms text
-const LAST_UPDATED = "30 Aug 2025"; // show on the page
+const VERSION = "v1.2";            // bump when you change terms text
+const LAST_UPDATED = "23 Sep 2025"; // show on the page
 
 export default function TermsPage() {
   const [checked, setChecked] = useState(false);
@@ -24,7 +25,9 @@ export default function TermsPage() {
   // hCaptcha
   const [captchaToken, setCaptchaToken] = useState<string>("");
 
-  const endRef = useRef<HTMLDivElement | null>(null);
+  // small reader + fullscreen
+  const readerRef = useRef<HTMLDivElement | null>(null);
+  const [showFullscreen, setShowFullscreen] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -32,16 +35,15 @@ export default function TermsPage() {
     const e = params.get("email");
     if (r) setReturnTo(r.startsWith("/") ? r : "/client-dashboard");
     if (e) setEmail(e);
-
-    const obs = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((x) => x.isIntersecting)) setScrolledEnough(true);
-      },
-      { threshold: 0.25 }
-    );
-    if (endRef.current) obs.observe(endRef.current);
-    return () => obs.disconnect();
   }, []);
+
+  // Track scroll position inside the reader window
+  function onReaderScroll() {
+    const el = readerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24; // 24px leeway
+    if (atBottom) setScrolledEnough(true);
+  }
 
   const acceptEnabled = useMemo(
     () => checked && scrolledEnough && !!captchaToken && !submitting && !submitted,
@@ -91,7 +93,6 @@ export default function TermsPage() {
     }
   }
 
-
   return (
     <div className="min-h-screen text-white relative overflow-x-hidden">
       {/* Brand background */}
@@ -138,8 +139,37 @@ export default function TermsPage() {
           {/* Content */}
           <article className="lg:col-span-8 rounded-2xl border border-white/10 bg-white/[0.05] p-6 md:p-8 shadow-2xl backdrop-blur-sm">
             <TOC />
-            <LegalBody />
-            <div ref={endRef} className="mt-2" />
+
+            {/* Reader window (small, scrollable) */}
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-sm text-white/70">
+                Please scroll to the end to enable <b>Accept</b>.
+              </div>
+              <button
+                className="rounded-lg bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
+                onClick={() => setShowFullscreen(true)}
+                aria-label="Open fullscreen reader"
+              >
+                Fullscreen
+              </button>
+            </div>
+
+            <div
+              ref={readerRef}
+              onScroll={onReaderScroll}
+              className="rounded-xl border border-white/10 bg-white/[0.04] p-4 max-h-[420px] overflow-y-auto prose prose-invert prose-p:leading-relaxed"
+            >
+              <LegalBody />
+              {/* Spacer so the last paragraph isn't glued to the bottom */}
+              <div className="h-6" />
+            </div>
+
+            {/* Progress hint */}
+            {!scrolledEnough && (
+              <div className="mt-3 text-xs text-white/60">
+                Keep scrolling the window above until you reach the end.
+              </div>
+            )}
           </article>
 
           {/* Accept Card */}
@@ -149,8 +179,7 @@ export default function TermsPage() {
                 <>
                   <h3 className="text-lg font-semibold mb-2">Accept these terms</h3>
                   <p className="text-sm text-white/80 mb-4">
-                    Please read the terms. You’ll need to scroll near the end, pass hCaptcha and tick
-                    the box before accepting.
+                    You’ll need to scroll the terms (left) to the end, pass hCaptcha and tick the box.
                   </p>
 
                   <div className="flex gap-2 mb-3">
@@ -187,12 +216,6 @@ export default function TermsPage() {
                       />
                     </div>
                   </div>
-
-                  {!scrolledEnough && (
-                    <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.06] p-2 text-xs text-white/70">
-                      Scroll to the end of the terms to enable the Accept button.
-                    </div>
-                  )}
 
                   <div className="mb-3">
                     <HCaptcha
@@ -250,12 +273,19 @@ export default function TermsPage() {
         </div>
       </main>
 
+      {/* Footer — removed the legal-advice note per your request */}
       <footer className="relative z-10 border-t border-white/10 bg-white/[0.02] backdrop-blur-sm">
         <div className="mx-auto max-w-6xl px-5 py-4 text-xs text-white/60">
-          © {new Date().getFullYear()} FuelFlow. This template is provided for convenience and does
-          not constitute legal advice; please seek solicitor review.
+          © {new Date().getFullYear()} FuelFlow.
         </div>
       </footer>
+
+      {/* Fullscreen reader */}
+      {showFullscreen && (
+        <FullscreenReader onClose={() => setShowFullscreen(false)}>
+          <LegalBody />
+        </FullscreenReader>
+      )}
     </div>
   );
 }
@@ -283,7 +313,7 @@ function TOC() {
   ] as const;
 
   return (
-    <nav className="mb-6 rounded-xl border border-white/10 bg-white/[0.04] p-4 text-sm">
+    <nav className="mb-4 rounded-xl border border-white/10 bg-white/[0.04] p-4 text-sm">
       <div className="mb-2 font-semibold">Contents</div>
       <ol className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 list-decimal list-inside">
         {items.map(([id, label]) => (
@@ -315,7 +345,42 @@ function Section({
   );
 }
 
-/* ------------------- LEGAL BODY (full text) ------------------- */
+/* ------------------- FULLSCREEN READER ------------------- */
+
+function FullscreenReader({
+  onClose,
+  children,
+}: {
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm"
+    >
+      <div className="absolute inset-0 p-4 md:p-8">
+        <div className="mx-auto h-full max-w-5xl rounded-2xl border border-white/10 bg-[#0f172a] shadow-2xl flex flex-col">
+          <div className="flex items-center justify-between p-4 border-b border-white/10">
+            <div className="text-sm font-semibold text-white/80">Terms — Fullscreen Reader</div>
+            <button
+              onClick={onClose}
+              className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 prose prose-invert max-w-none">
+            {children}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------- LEGAL BODY (detailed) ------------------- */
 
 function LegalBody() {
   return (
@@ -353,12 +418,16 @@ function LegalBody() {
             Quotes are invitations to treat and valid only for the period stated.
           </li>
           <li>
-            Unless stated otherwise, prices exclude any applicable taxes, duties and levies (added at
+            Unless stated otherwise, prices exclude applicable taxes, duties and levies (added at
             the rate in force at the tax point).
           </li>
           <li>
             Extra charges may apply for timed windows, out-of-hours deliveries, restricted access,
-            waiting time, aborted deliveries or special compliance requests.
+            waiting time, diversions, aborts, failed access or special compliance requests.
+          </li>
+          <li>
+            If duty/tax rates or mandated fuel components change between order and delivery, the
+            price will be adjusted accordingly.
           </li>
         </ul>
       </Section>
@@ -372,7 +441,11 @@ function LegalBody() {
           </li>
           <li>
             We may require prepayment or security. We may cancel or suspend supply if credit limits
-            are exceeded or payments are overdue.
+            are exceeded, details cannot be verified, fraud is suspected or payments are overdue.
+          </li>
+          <li>
+            Cancellation or delivery window changes within 24 hours of the scheduled slot may incur
+            charges (including restocking, haulage and lost time).
           </li>
         </ul>
       </Section>
@@ -381,11 +454,17 @@ function LegalBody() {
         <ul>
           <li>
             Delivery dates are estimates. Risk passes upon physical delivery into your tank or agreed
-            point. Title passes on receipt of full cleared payment.
+            point. <strong>Title</strong> passes only on receipt of full cleared payment for that
+            delivery and all other overdue sums (retention of title).
           </li>
           <li>
             You must ensure safe, unobstructed access, correct tank identification and sufficient
-            ullage. Waiting time, diversions and aborts may be chargeable.
+            ullage. Waiting time, diversions and aborts may be chargeable. We may refuse/suspend
+            delivery if the site is unsafe or non-compliant.
+          </li>
+          <li>
+            If you instruct delivery to third-party tanks/locations, you remain liable for the
+            charges and for ensuring authority to deliver.
           </li>
         </ul>
       </Section>
@@ -415,12 +494,17 @@ function LegalBody() {
       <Section id="tanks" title="6. Tanks & Site Safety">
         <ul>
           <li>
-            You are responsible for the integrity and compliance of your tanks, pipework and associated
-            systems unless we supply and maintain equipment under a separate written agreement.
+            You are responsible for the integrity and compliance of your tanks, pipework and
+            associated systems unless we supply and maintain equipment under a separate written
+            agreement.
           </li>
           <li>
             You must keep appropriate spill response equipment on site and maintain a current spill
             plan. We may refuse/suspend delivery if the site is unsafe or non-compliant.
+          </li>
+          <li>
+            You must immediately notify us of leaks, contamination, theft or incidents and cooperate
+            fully with any investigation or remediation.
           </li>
         </ul>
       </Section>
@@ -432,7 +516,10 @@ function LegalBody() {
             responsible for contamination, degradation or loss occurring after delivery.
           </li>
           <li>
-            Quantities are determined by tanker meters or calibrated dip; reasonable tolerances apply.
+            Quantities are determined by tanker meters or calibrated dip; reasonable tolerances
+            apply. If you dispute a quantity, you must notify us in writing within 2 business days,
+            providing meter tickets, dip readings and photo evidence. Absent timely evidence, the
+            delivery note shall be conclusive.
           </li>
         </ul>
       </Section>
@@ -450,6 +537,11 @@ function LegalBody() {
           <li>
             You agree to reimburse our reasonable costs (including legal fees) incurred in recovering
             overdue sums, repossessing rental equipment, or enforcing these Terms.
+          </li>
+          <li>
+            <strong>Chargebacks/Fraud.</strong> Where payment is reversed or disputed after delivery,
+            you remain liable for the full amount, interest and our recovery costs unless the
+            transaction was unauthorised due to our fault proven by competent evidence.
           </li>
         </ul>
       </Section>
@@ -479,8 +571,9 @@ function LegalBody() {
       <Section id="environment" title="10. Environmental & Compliance">
         <ul>
           <li>
-            You must comply with all laws, permits and industry codes relating to storage and handling,
-            and immediately notify us of incidents. We may suspend supply if we consider a site unsafe.
+            You must comply with all laws, permits and industry codes relating to storage and
+            handling, and immediately notify us of incidents. We may suspend supply if we consider a
+            site unsafe.
           </li>
           <li>
             Any sustainability initiatives we run (e.g., tree planting) are discretionary and do not
@@ -597,4 +690,3 @@ function AcceptedCard({ returnTo }: { returnTo: string }) {
     </div>
   );
 }
-
