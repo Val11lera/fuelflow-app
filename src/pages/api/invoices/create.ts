@@ -3,6 +3,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { sendMail } from "@/lib/mailer";
 import { buildInvoicePdf } from "@/lib/invoice-pdf";
+import { saveInvoicePdfToStorage } from "@/lib/invoices-storage"; // <-- NEW
 
 export const config = { api: { bodyParser: true } };
 
@@ -147,14 +148,31 @@ ${process.env.COMPANY_NAME || "FuelFlow"}`;
       ],
     });
 
+    // --- NEW: Save PDF to Supabase Storage (private) as <email>/<YYYY>/<MM>/<INV>.pdf
+    let storagePath: string | null = null;
+    try {
+      const issued = meta.dateISO ? new Date(meta.dateISO) : new Date();
+      const saved = await saveInvoicePdfToStorage({
+        email: c.email,
+        invoiceNumber: invNo,
+        pdfBuffer,
+        issuedAt: isNaN(issued.getTime()) ? new Date() : issued,
+      });
+      storagePath = saved.path;
+    } catch (e: any) {
+      console.error("Failed to save invoice to storage:", e?.message || e);
+      // don't fail the request if storage write fails
+    }
+    // --- END NEW
+
     if (debug) {
       return res.status(200).json({
         ok: true,
         id,
-        debug: { normalized: normItems, invoiceNumber: invNo, pages },
+        debug: { normalized: normItems, invoiceNumber: invNo, pages, storagePath }, // includes path
       });
     }
-    return res.status(200).json({ ok: true, id });
+    return res.status(200).json({ ok: true, id, storagePath });
   } catch (e: any) {
     console.error("invoice/create error", e);
     return bad(res, 500, e?.message || "invoice_error");
