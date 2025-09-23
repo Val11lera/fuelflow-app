@@ -13,12 +13,13 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
 
 function sb() {
   return createClient(
-    process.env.SUPABASE_URL as string,
+    // allow either var to be used
+    (process.env.SUPABASE_URL as string) || (process.env.NEXT_PUBLIC_SUPABASE_URL as string),
     process.env.SUPABASE_SERVICE_ROLE_KEY as string
   );
 }
 
-// ---------- Order typing (fixes your TS error) ----------
+// ---------- Order typing ----------
 type OrderRow = {
   id?: string;
   product?: string | null;
@@ -31,7 +32,8 @@ type OrderRow = {
   address_line2?: string | null;
   city?: string | null;
   postcode?: string | null;
-  delivery_date?: string | null;
+  delivery_date?: string | null; // YYYY-MM-DD
+  user_email?: string | null;
 };
 
 // ---------- Helpers ----------
@@ -44,8 +46,9 @@ function readRawBody(req: any): Promise<Buffer> {
   });
 }
 
-// Always call the same host (where /api/invoices/create lives)
+// Canonical base where /api/invoices/create lives (prefer SELF_BASE_URL)
 const CANONICAL_BASE =
+  (process.env.SELF_BASE_URL || "").replace(/\/+$/, "") ||
   (process.env.SITE_URL || process.env.NEXT_PUBLIC_SITE_URL || "").replace(/\/+$/, "") ||
   (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
 
@@ -59,6 +62,7 @@ async function logRow(row: {
   order_id?: string | null;
   status?: string | null;
   error?: string | null;
+  extra?: any;
 }) {
   try {
     await sb().from("webhook_logs").insert({
@@ -66,7 +70,8 @@ async function logRow(row: {
       order_id: row.order_id ?? null,
       status: row.status ?? null,
       error: row.error ?? null,
-    });
+      extra: row.extra ?? null,
+    } as any);
   } catch {}
 }
 
@@ -79,7 +84,7 @@ async function saveWebhookEvent(e: Stripe.Event) {
   } catch {}
 }
 
-// --- pull the order row so we can get litres/unit_price/total straight from DB ---
+// Source of truth: pull the order
 async function fetchOrder(orderId?: string | null): Promise<OrderRow | null> {
   if (!orderId) return null;
   const { data, error } = await sb()
@@ -98,6 +103,7 @@ async function fetchOrder(orderId?: string | null): Promise<OrderRow | null> {
         "city",
         "postcode",
         "delivery_date",
+        "user_email",
       ].join(",")
     )
     .eq("id", orderId)
@@ -150,7 +156,6 @@ function buildItemsFromOrderOrStripe(args: {
     for (const row of lineItems.data) {
       const qty = row.quantity ?? 1;
 
-      // Try metadata in a few common places
       const metaLitres =
         Number(
           // @ts-ignore
@@ -159,13 +164,10 @@ function buildItemsFromOrderOrStripe(args: {
             ((row.price?.product as any)?.metadata?.litres)
         ) || 0;
 
-      // also try the session metadata as a global litres
       const sessionLitres = Number((session?.metadata as any)?.litres || 0);
 
-      // Choose litres (prefer metadata; else fall back to Stripe "quantity")
       const litres = metaLitres || sessionLitres || qty;
 
-      // Compute a reliable line total in major units
       const totalMajor =
         (typeof row.amount_total === "number"
           ? row.amount_total
@@ -177,16 +179,13 @@ function buildItemsFromOrderOrStripe(args: {
         row.description ||
         ((row.price?.product as Stripe.Product | undefined)?.name ?? "Item");
 
-      // Send litres + total so the invoice route prints litres correctly
       items.push({ description: name, litres, total: totalMajor });
     }
   }
 
-  // If we somehow have no line items, fallback to 1 line with session amount
   if (items.length === 0) {
     const totalMajor =
-      (typeof session?.amount_total === "number" ? session!.amount_total : 0) /
-      100;
+      (typeof session?.amount_total === "number" ? session!.amount_total : 0) / 100;
     items.push({
       description: "Payment",
       litres: Number((session?.metadata as any)?.litres || 1),
@@ -197,12 +196,21 @@ function buildItemsFromOrderOrStripe(args: {
   return items;
 }
 
+function toISODate(dateStr?: string | null): string | undefined {
+  if (!dateStr) return undefined;
+  // if it's already ISO, keep; else assume YYYY-MM-DD and set noon UTC to avoid TZ off-by-one
+  if (/^\d{4}-\d{2}-\d{2}T/.test(dateStr)) return dateStr;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return new Date(`${dateStr}T12:00:00.000Z`).toISOString();
+  const d = new Date(dateStr);
+  return isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
 async function callInvoiceRoute(payload: any) {
   if (!process.env.INVOICE_SECRET) {
     throw new Error("INVOICE_SECRET not set");
   }
   if (!CANONICAL_BASE) {
-    throw new Error("SITE_URL / NEXT_PUBLIC_SITE_URL / VERCEL_URL not set");
+    throw new Error("SELF_BASE_URL / SITE_URL / NEXT_PUBLIC_SITE_URL / VERCEL_URL not set");
   }
 
   const url =
@@ -217,25 +225,39 @@ async function callInvoiceRoute(payload: any) {
     body: JSON.stringify(payload),
   });
 
+  const text = await resp.text();
+  let json: any = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    // not JSON (shouldn't happen)
+  }
+
   if (!resp.ok) {
-    const txt = await resp.text().catch(() => "");
-    console.error(
-      "[invoice] route call failed",
-      JSON.stringify({ url, status: resp.status, body: txt?.slice(0, 1000) })
-    );
+    console.error("[invoice] route call failed", {
+      url,
+      status: resp.status,
+      body: text?.slice(0, 1000),
+    });
     throw new Error(`Invoice route error: ${resp.status}`);
   }
 
-  // Optional debug visibility in logs
-  if (WEBHOOK_DEBUG) {
-    try {
-      const j = await resp.json();
-      console.log("[invoice] debug.normalized:", j?.debug?.normalized);
-      console.log("[invoice] pages:", j?.debug?.pages);
-    } catch {
-      // ignore if not JSON
-    }
+  // Log returned storagePath so you can confirm the save
+  try {
+    await logRow({
+      event_type: "invoice_created",
+      status: "ok",
+      extra: { storagePath: json?.storagePath, id: json?.id },
+    });
+  } catch {}
+
+  if (WEBHOOK_DEBUG && json?.debug) {
+    console.log("[invoice] debug.normalized:", json.debug.normalized);
+    console.log("[invoice] pages:", json.debug.pages);
+    console.log("[invoice] storagePath:", json.debug.storagePath || json.storagePath);
   }
+
+  return json;
 }
 
 // optional reconciliation: keep minimal + safe
@@ -301,7 +323,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
 
-        // Order ID the same way your Checkout create code sets metadata
+        // Our order id (however you set it in checkout create)
         let orderId =
           (session.metadata as any)?.order_id ||
           (typeof session.payment_intent === "string"
@@ -319,7 +341,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           expand: ["data.price.product"],
         });
 
-        // Prefer DB order as source of truth for litres/unit/total
+        // Prefer DB order as source of truth
         const order = await fetchOrder(orderId);
 
         // Mark order paid (minimal update)
@@ -359,22 +381,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         });
 
         // Build invoice payload
-        const items = buildItemsFromOrderOrStripe({
-          order,
-          lineItems: li,
-          session,
-        });
+        const items = buildItemsFromOrderOrStripe({ order, lineItems: li, session });
+
+        // Decide dateISO to place file under correct YYYY/MM
+        const dateISO =
+          toISODate(order?.delivery_date) ||
+          toISODate((session.metadata as any)?.deliveryDate) ||
+          new Date().toISOString();
+
+        // Lowercase email so Storage path matches policy & explorer
+        const emailLower =
+          (order?.user_email ||
+            order?.name /* if you stored email in name by mistake, ignore */ ||
+            session.customer_details?.email ||
+            session.customer_email ||
+            (session.metadata as any)?.email ||
+            "")?.toString()
+            .toLowerCase();
 
         const payload = {
           customer: {
-            name:
-              order?.name ||
-              session.customer_details?.name ||
-              "Customer",
-            email:
-              (session.customer_details?.email ||
-                session.customer_email ||
-                (session.metadata as any)?.email) ?? "",
+            name: order?.name || session.customer_details?.name || "Customer",
+            email: emailLower,
             address_line1: order?.address_line1 ?? null,
             address_line2: order?.address_line2 ?? null,
             city: order?.city ?? null,
@@ -385,13 +413,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           meta: {
             orderId: orderId ?? undefined,
             notes: (session.metadata as any)?.notes ?? undefined,
+            dateISO, // <-- ensures correct YYYY/MM folder
           },
         };
 
-        // Trigger invoice email
-        await callInvoiceRoute(payload);
+        // Trigger invoice (emails + storage save)
+        const resp = await callInvoiceRoute(payload);
 
-        await logRow({ event_type: "invoice_sent", order_id: orderId ?? null, status: "paid" });
+        await logRow({
+          event_type: "invoice_sent",
+          order_id: orderId ?? null,
+          status: "paid",
+          extra: { storagePath: resp?.storagePath },
+        });
         break;
       }
 
@@ -432,7 +466,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           meta: pi.metadata ?? null,
         });
 
-        // Build invoice items (prefer order, else PI metadata)
+        // Items
         let items: Array<{ description: string; litres: number; total?: number; unitPrice?: number }>;
         if (order && (order.litres || order.total_pence || order.unit_price_pence)) {
           const litres = Number(order.litres || 0);
@@ -456,11 +490,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           items = [{ description: desc, litres, total: totalMajor }];
         }
 
+        const dateISO =
+          toISODate(order?.delivery_date) ||
+          toISODate((pi.metadata as any)?.deliveryDate) ||
+          new Date().toISOString();
+
+        const emailLower =
+          (order?.user_email ||
+            pi.receipt_email ||
+            (pi.metadata as any)?.customer_email ||
+            "")?.toString()
+            .toLowerCase();
+
         // Send invoice
-        await callInvoiceRoute({
+        const resp = await callInvoiceRoute({
           customer: {
             name: order?.name || pi.shipping?.name || (pi.metadata as any)?.customer_name || "Customer",
-            email: (pi.receipt_email || (pi.metadata as any)?.customer_email) ?? "",
+            email: emailLower,
             address_line1: order?.address_line1 ?? null,
             address_line2: order?.address_line2 ?? null,
             city: order?.city ?? null,
@@ -468,15 +514,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           },
           items,
           currency: (pi.currency || "gbp").toUpperCase(),
-          meta: { orderId: orderId ?? undefined, notes: (pi.metadata as any)?.notes ?? undefined },
+          meta: { orderId: orderId ?? undefined, notes: (pi.metadata as any)?.notes ?? undefined, dateISO },
         });
 
-        await logRow({ event_type: "invoice_sent", order_id: orderId ?? null, status: "paid" });
+        await logRow({ event_type: "invoice_sent", order_id: orderId ?? null, status: "paid", extra: { storagePath: resp?.storagePath } });
         break;
       }
 
       default:
-        // ignore others
+        // ignore others but still ack
         break;
     }
   } catch (e: any) {
@@ -488,3 +534,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   return res.status(200).json({ received: true });
 }
+
