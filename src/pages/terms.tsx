@@ -5,8 +5,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 
-const VERSION = "v1.2";            // bump when you change terms text
-const LAST_UPDATED = "23 Sep 2025"; // show on the page
+/** Update these for each revision */
+const VERSION = "v1.2";
+const LAST_UPDATED = "23 Sep 2025";
+
+/** Company footer details (shown on web footer and in the print footer) */
+const COMPANY = {
+  name: "FuelFlow Ltd",
+  regOffice: "123 Example Street, London, EC1A 1AA, United Kingdom",
+  companyNo: "12345678",
+  vatNo: "GB 123 4567 89",
+  email: "support@fuelflow.co.uk",
+  phone: "+44 (0)20 1234 5678",
+  web: "https://fuelflow.co.uk",
+};
 
 export default function TermsPage() {
   const [checked, setChecked] = useState(false);
@@ -41,7 +53,7 @@ export default function TermsPage() {
   function onReaderScroll() {
     const el = readerRef.current;
     if (!el) return;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24; // 24px leeway
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
     if (atBottom) setScrolledEnough(true);
   }
 
@@ -77,7 +89,6 @@ export default function TermsPage() {
       setSubmitted(true);
       setCaptchaToken("");
 
-      // Include the acceptance id so the next page can link the contract to this UUID
       const ret =
         `${returnTo}?accepted=1` +
         (email ? `&email=${encodeURIComponent(email)}` : "") +
@@ -95,192 +106,242 @@ export default function TermsPage() {
 
   return (
     <div className="min-h-screen text-white relative overflow-x-hidden">
-      {/* Brand background */}
-      <div className="absolute inset-0 bg-[#041F3E]" />
-      <div className="absolute inset-0 bg-gradient-to-b from-[#0B2344]/50 via-[#041F3E]/20 to-[#041F3E]" />
+      {/* ---- Global print styles ---- */}
+      <PrintStyles />
+
+      {/* Brand background (screen only) */}
+      <div className="absolute inset-0 bg-[#041F3E] print:hidden" />
+      <div className="absolute inset-0 bg-gradient-to-b from-[#0B2344]/50 via-[#041F3E]/20 to-[#041F3E] print:hidden" />
       <div
         aria-hidden
-        className="pointer-events-none absolute -top-24 right-[-10%] opacity-[0.06] rotate-[-10deg]"
+        className="pointer-events-none absolute -top-24 right-[-10%] opacity-[0.06] rotate-[-10deg] print:hidden"
       >
         <img src="/logo-email.png" alt="" className="w-[900px] max-w-none" />
       </div>
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.08),transparent_55%)]" />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.08),transparent_55%)] print:hidden" />
 
-      {/* Header */}
-      <header className="relative z-10 border-b border-white/10 bg-white/[0.02] backdrop-blur-sm">
-        <div className="mx-auto flex max-w-6xl items-center gap-3 px-5 py-4">
-          <img src="/logo-email.png" alt="FuelFlow" className="h-8 w-auto" />
-          <div className="ml-1 text-lg font-semibold">Terms & Conditions</div>
+      {/* ================= SCREEN LAYOUT ================= */}
+      <div className="print:hidden">
+        {/* Header */}
+        <header className="relative z-10 border-b border-white/10 bg-white/[0.02] backdrop-blur-sm">
+          <div className="mx-auto flex max-w-6xl items-center gap-3 px-5 py-4">
+            <img src="/logo-email.png" alt="FuelFlow" className="h-8 w-auto" />
+            <div className="ml-1 text-lg font-semibold">Terms & Conditions</div>
 
-          <div className="ml-auto flex gap-2">
-            <button
-              onClick={() => window.print()}
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-            >
-              Print / Save PDF
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="relative z-10 mx-auto max-w-6xl px-5 py-8 md:py-10">
-        {/* Title Row */}
-        <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h1 className="text-2xl md:text-3xl font-bold">FuelFlow Terms & Conditions</h1>
-            <p className="text-white/70">
-              Version {VERSION} · Last updated {LAST_UPDATED}
-            </p>
-          </div>
-        </div>
-
-        {/* two-column layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Content */}
-          <article className="lg:col-span-8 rounded-2xl border border-white/10 bg-white/[0.05] p-6 md:p-8 shadow-2xl backdrop-blur-sm">
-            <TOC />
-
-            {/* Reader window (small, scrollable) */}
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-sm text-white/70">
-                Please scroll to the end to enable <b>Accept</b>.
-              </div>
+            <div className="ml-auto flex gap-2">
               <button
-                className="rounded-lg bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
-                onClick={() => setShowFullscreen(true)}
-                aria-label="Open fullscreen reader"
+                onClick={() => window.print()}
+                className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
+                aria-label="Print Terms as PDF"
               >
-                Fullscreen
+                Print / Save PDF
               </button>
             </div>
+          </div>
+        </header>
 
-            <div
-              ref={readerRef}
-              onScroll={onReaderScroll}
-              className="rounded-xl border border-white/10 bg-white/[0.04] p-4 max-h-[420px] overflow-y-auto prose prose-invert prose-p:leading-relaxed"
-            >
-              <LegalBody />
-              {/* Spacer so the last paragraph isn't glued to the bottom */}
-              <div className="h-6" />
+        <main className="relative z-10 mx-auto max-w-6xl px-5 py-8 md:py-10">
+          {/* Title Row */}
+          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h1 className="text-2xl md:text-3xl font-bold">FuelFlow Terms & Conditions</h1>
+              <p className="text-white/70">
+                Version {VERSION} · Last updated {LAST_UPDATED}
+              </p>
             </div>
+          </div>
 
-            {/* Progress hint */}
-            {!scrolledEnough && (
-              <div className="mt-3 text-xs text-white/60">
-                Keep scrolling the window above until you reach the end.
+          {/* two-column layout */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Content */}
+            <article className="lg:col-span-8 rounded-2xl border border-white/10 bg-white/[0.05] p-6 md:p-8 shadow-2xl backdrop-blur-sm">
+              <TOC />
+
+              {/* Reader window (small, scrollable) */}
+              <div className="mb-3 flex items-center justify-between">
+                <div className="text-sm text-white/70">
+                  Please scroll to the end to enable <b>Accept</b>.
+                </div>
+                <button
+                  className="rounded-lg bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
+                  onClick={() => setShowFullscreen(true)}
+                  aria-label="Open fullscreen reader"
+                >
+                  Fullscreen
+                </button>
               </div>
-            )}
-          </article>
 
-          {/* Accept Card */}
-          <aside className="lg:col-span-4">
-            <div className="sticky top-6 rounded-2xl border border-white/10 bg-white/[0.06] p-6 shadow-2xl backdrop-blur-sm">
-              {!submitted ? (
-                <>
-                  <h3 className="text-lg font-semibold mb-2">Accept these terms</h3>
-                  <p className="text-sm text-white/80 mb-4">
-                    You’ll need to scroll the terms (left) to the end, pass hCaptcha and tick the box.
-                  </p>
+              <div
+                ref={readerRef}
+                onScroll={onReaderScroll}
+                className="rounded-xl border border-white/10 bg-white/[0.04] p-4 max-h-[420px] overflow-y-auto prose prose-invert prose-p:leading-relaxed"
+              >
+                <LegalBody />
+                <div className="h-6" />
+              </div>
 
-                  <div className="flex gap-2 mb-3">
-                    <input
-                      id="accept"
-                      type="checkbox"
-                      className="accent-yellow-500 mt-1"
-                      checked={checked}
-                      onChange={(e) => setChecked(e.target.checked)}
-                    />
-                    <label htmlFor="accept" className="text-sm">
-                      I confirm I have read and agree to FuelFlow’s Terms & Conditions.
-                    </label>
-                  </div>
-
-                  <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs text-white/70 mb-1">Your name (optional)</label>
-                      <input
-                        className="w-full rounded-lg border border-white/10 bg-white/[0.06] p-2 text-sm placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        placeholder="Jane Smith"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-white/70 mb-1">Email (optional)</label>
-                      <input
-                        type="email"
-                        className="w-full rounded-lg border border-white/10 bg-white/[0.06] p-2 text-sm placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        placeholder="name@company.com"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="mb-3">
-                    <HCaptcha
-                      sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
-                      onVerify={(t) => setCaptchaToken(t)}
-                      onExpire={() => setCaptchaToken("")}
-                      onClose={() => setCaptchaToken("")}
-                      theme="dark"
-                    />
-                  </div>
-
-                  {error && (
-                    <div className="mb-3 rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">
-                      {error}
-                    </div>
-                  )}
-
-                  <button
-                    disabled={!acceptEnabled}
-                    onClick={onAccept}
-                    className="w-full rounded-xl bg-yellow-500 py-2.5 font-semibold text-[#041F3E]
-                               hover:bg-yellow-400 disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    {submitting ? "Saving…" : "Accept Terms"}
-                  </button>
-
-                  <p className="mt-3 text-xs text-white/60">
-                    By accepting, you enter into a binding agreement with FuelFlow. IP and user-agent
-                    are recorded to evidence acceptance.
-                  </p>
-                </>
-              ) : (
-                <AcceptedCard returnTo={returnTo} />
+              {!scrolledEnough && (
+                <div className="mt-3 text-xs text-white/60">
+                  Keep scrolling the window above until you reach the end.
+                </div>
               )}
+            </article>
+
+            {/* Accept Card */}
+            <aside className="lg:col-span-4">
+              <div className="sticky top-6 rounded-2xl border border-white/10 bg-white/[0.06] p-6 shadow-2xl backdrop-blur-sm">
+                {!submitted ? (
+                  <>
+                    <h3 className="text-lg font-semibold mb-2">Accept these terms</h3>
+                    <p className="text-sm text-white/80 mb-4">
+                      You’ll need to scroll the terms (left) to the end, pass hCaptcha and tick the box.
+                    </p>
+
+                    <div className="flex gap-2 mb-3">
+                      <input
+                        id="accept"
+                        type="checkbox"
+                        className="accent-yellow-500 mt-1"
+                        checked={checked}
+                        onChange={(e) => setChecked(e.target.checked)}
+                      />
+                      <label htmlFor="accept" className="text-sm">
+                        I confirm I have read and agree to FuelFlow’s Terms & Conditions.
+                      </label>
+                    </div>
+
+                    <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-white/70 mb-1">Your name (optional)</label>
+                        <input
+                          className="w-full rounded-lg border border-white/10 bg-white/[0.06] p-2 text-sm placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          placeholder="Jane Smith"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-white/70 mb-1">Email (optional)</label>
+                        <input
+                          type="email"
+                          className="w-full rounded-lg border border-white/10 bg-white/[0.06] p-2 text-sm placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          placeholder="name@company.com"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mb-3">
+                      <HCaptcha
+                        sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
+                        onVerify={(t) => setCaptchaToken(t)}
+                        onExpire={() => setCaptchaToken("")}
+                        onClose={() => setCaptchaToken("")}
+                        theme="dark"
+                      />
+                    </div>
+
+                    {error && (
+                      <div className="mb-3 rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">
+                        {error}
+                      </div>
+                    )}
+
+                    <button
+                      disabled={!acceptEnabled}
+                      onClick={onAccept}
+                      className="w-full rounded-xl bg-yellow-500 py-2.5 font-semibold text-[#041F3E]
+                               hover:bg-yellow-400 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {submitting ? "Saving…" : "Accept Terms"}
+                    </button>
+
+                    <p className="mt-3 text-xs text-white/60">
+                      By accepting, you enter into a binding agreement with FuelFlow. IP and user-agent
+                      are recorded to evidence acceptance.
+                    </p>
+                  </>
+                ) : (
+                  <AcceptedCard returnTo={returnTo} />
+                )}
+              </div>
+
+              {/* Quick links */}
+              <div className="mt-4 grid grid-cols-1 gap-2">
+                <a
+                  className="rounded-lg bg-white/10 px-3 py-2 text-center hover:bg-white/15"
+                  href={COMPANY.web}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Back to fuelflow.co.uk
+                </a>
+                <a
+                  className="rounded-lg bg-yellow-500 px-3 py-2 text-center font-semibold text-[#041F3E] hover:bg-yellow-400"
+                  href={returnTo}
+                >
+                  Back to previous page
+                </a>
+              </div>
+            </aside>
+          </div>
+        </main>
+
+        {/* Professional footer (screen) */}
+        <footer className="relative z-10 border-t border-white/10 bg-white/[0.02] backdrop-blur-sm">
+          <div className="mx-auto max-w-6xl px-5 py-6 text-xs text-white/70 grid gap-1 md:grid-cols-3">
+            <div>
+              <div className="font-semibold text-white/80">{COMPANY.name}</div>
+              <div>{COMPANY.regOffice}</div>
+            </div>
+            <div>
+              <div>Company No: {COMPANY.companyNo}</div>
+              <div>VAT No: {COMPANY.vatNo}</div>
+            </div>
+            <div>
+              <div>Email: <a className="underline" href={`mailto:${COMPANY.email}`}>{COMPANY.email}</a></div>
+              <div>Tel: {COMPANY.phone}</div>
+              <div>Web: <a className="underline" href={COMPANY.web} target="_blank" rel="noreferrer">{COMPANY.web}</a></div>
+            </div>
+          </div>
+        </footer>
+      </div>
+
+      {/* ================= PRINT-ONLY LAYOUT ================= */}
+      <div className="hidden print:block text-black">
+        {/* White background for print */}
+        <div className="bg-white text-black">
+          <div className="px-8 pt-8">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h1 className="text-2xl font-bold text-black">FuelFlow Terms & Conditions</h1>
+                <div className="text-sm text-black/80">
+                  Version {VERSION} · Last updated {LAST_UPDATED}
+                </div>
+              </div>
+              {/* Logo on print (optional – comment out if you don’t want it) */}
+              <img src="/logo-email.png" alt="FuelFlow" style={{ height: 36 }} />
             </div>
 
-            {/* Quick links */}
-            <div className="mt-4 grid grid-cols-1 gap-2">
-              <a
-                className="rounded-lg bg-white/10 px-3 py-2 text-center hover:bg-white/15"
-                href="https://fuelflow.co.uk"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Back to fuelflow.co.uk
-              </a>
-              <a
-                className="rounded-lg bg-yellow-500 px-3 py-2 text-center font-semibold text-[#041F3E] hover:bg-yellow-400"
-                href={returnTo}
-              >
-                Back to previous page
-              </a>
+            <TOCPrint />
+
+            <div className="mt-4 text-[0.92rem] leading-6">
+              <LegalBodyPrint />
             </div>
-          </aside>
-        </div>
-      </main>
 
-      {/* Footer — removed the legal-advice note per your request */}
-      <footer className="relative z-10 border-t border-white/10 bg-white/[0.02] backdrop-blur-sm">
-        <div className="mx-auto max-w-6xl px-5 py-4 text-xs text-white/60">
-          © {new Date().getFullYear()} FuelFlow.
+            {/* Print footer (not repeated on each page but rendered last) */}
+            <div className="mt-10 pt-4 border-t border-black/20 text-[0.8rem] text-black/80">
+              <div className="font-semibold text-black">{COMPANY.name}</div>
+              <div>{COMPANY.regOffice}</div>
+              <div>Company No: {COMPANY.companyNo} · VAT No: {COMPANY.vatNo}</div>
+              <div>Email: {COMPANY.email} · Tel: {COMPANY.phone} · Web: {COMPANY.web}</div>
+            </div>
+          </div>
         </div>
-      </footer>
+      </div>
 
-      {/* Fullscreen reader */}
+      {/* Fullscreen reader (screen only) */}
       {showFullscreen && (
         <FullscreenReader onClose={() => setShowFullscreen(false)}>
           <LegalBody />
@@ -290,10 +351,70 @@ export default function TermsPage() {
   );
 }
 
+/* -------------------------- Print CSS -------------------------- */
+
+function PrintStyles() {
+  return (
+    <style jsx global>{`
+      @media print {
+        /* Improve legibility and layout for print */
+        html, body { background: #fff !important; color: #000 !important; }
+        a { color: #000; text-decoration: underline; }
+        img { filter: none !important; }
+      }
+      /* Page margin + default size (A4 portrait) */
+      @page {
+        size: A4;
+        margin: 18mm 16mm 18mm 16mm;
+      }
+      /* Page breaks before H2 to keep sections tidy */
+      @media print {
+        h2 { page-break-before: always; }
+        h2:first-of-type { page-break-before: avoid; }
+        /* Avoid breaking right after headings */
+        h2 + p, h2 + ul, h2 + ol { page-break-before: avoid; }
+      }
+    `}</style>
+  );
+}
+
 /* -------------------------- Components -------------------------- */
 
 function TOC() {
-  const items = [
+  const items = tocItems();
+  return (
+    <nav className="mb-4 rounded-xl border border-white/10 bg-white/[0.04] p-4 text-sm">
+      <div className="mb-2 font-semibold">Contents</div>
+      <ol className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 list-decimal list-inside">
+        {items.map(([id, label]) => (
+          <li key={id}>
+            <a className="text-yellow-300 hover:underline" href={`#${id}`}>
+              {label}
+            </a>
+          </li>
+        ))}
+      </ol>
+    </nav>
+  );
+}
+
+/** Print TOC: black text, simple spacing */
+function TOCPrint() {
+  const items = tocItems();
+  return (
+    <nav>
+      <div className="font-semibold text-black">Contents</div>
+      <ol className="mt-1 grid grid-cols-2 gap-x-8 gap-y-1 text-[0.95rem] text-black list-decimal list-inside">
+        {items.map(([id, label]) => (
+          <li key={id}>{label}</li>
+        ))}
+      </ol>
+    </nav>
+  );
+}
+
+function tocItems(): ReadonlyArray<readonly [string, string]> {
+  return [
     ["scope", "1. Scope & Definitions"],
     ["quotes", "2. Quotes, Pricing & Taxes"],
     ["orders", "3. Orders, Minimums & Credit"],
@@ -311,21 +432,6 @@ function TOC() {
     ["law", "15. Law & Jurisdiction"],
     ["misc", "16. Miscellaneous"],
   ] as const;
-
-  return (
-    <nav className="mb-4 rounded-xl border border-white/10 bg-white/[0.04] p-4 text-sm">
-      <div className="mb-2 font-semibold">Contents</div>
-      <ol className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 list-decimal list-inside">
-        {items.map(([id, label]) => (
-          <li key={id}>
-            <a className="text-yellow-300 hover:underline" href={`#${id}`}>
-              {label}
-            </a>
-          </li>
-        ))}
-      </ol>
-    </nav>
-  );
 }
 
 function Section({
@@ -345,7 +451,7 @@ function Section({
   );
 }
 
-/* ------------------- FULLSCREEN READER ------------------- */
+/* ------------------- FULLSCREEN READER (screen) ------------------- */
 
 function FullscreenReader({
   onClose,
@@ -355,19 +461,12 @@ function FullscreenReader({
   children: React.ReactNode;
 }) {
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm"
-    >
+    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm">
       <div className="absolute inset-0 p-4 md:p-8">
         <div className="mx-auto h-full max-w-5xl rounded-2xl border border-white/10 bg-[#0f172a] shadow-2xl flex flex-col">
           <div className="flex items-center justify-between p-4 border-b border-white/10">
             <div className="text-sm font-semibold text-white/80">Terms — Fullscreen Reader</div>
-            <button
-              onClick={onClose}
-              className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-            >
+            <button onClick={onClose} className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
               Close
             </button>
           </div>
@@ -380,17 +479,12 @@ function FullscreenReader({
   );
 }
 
-/* ------------------- LEGAL BODY (detailed) ------------------- */
+/* ------------------- LEGAL BODY (screen) ------------------- */
 
 function LegalBody() {
   return (
     <div className="space-y-2 text-white/90">
-      <p className="text-sm text-white/70">
-        These Terms & Conditions (the “Terms”) govern the supply of fuel and any ancillary items by
-        FuelFlow (“Supplier”, “we”, “us”) to the customer (“Customer”, “you”). By placing an order,
-        opening an account, accepting delivery or clicking “Accept Terms”, you agree to be bound by
-        these Terms.
-      </p>
+      <IntroP />
 
       <Section id="scope" title="1. Scope & Definitions">
         <ul>
@@ -404,276 +498,293 @@ function LegalBody() {
             <strong>Products</strong> are fuels and any approved ancillary items we sell.{" "}
             <strong>Services</strong> means any services we agree in writing to provide separately.
           </li>
-          <li>
-            These Terms take precedence over your terms unless an authorised FuelFlow signatory
-            agrees otherwise in writing.
-          </li>
+          <li>These Terms take precedence over your terms unless an authorised FuelFlow signatory agrees otherwise in writing.</li>
         </ul>
       </Section>
 
       <Section id="quotes" title="2. Quotes, Pricing & Taxes">
         <ul>
-          <li>
-            Prices are market-linked and may vary by delivery location, volume and credit status.
-            Quotes are invitations to treat and valid only for the period stated.
-          </li>
-          <li>
-            Unless stated otherwise, prices exclude applicable taxes, duties and levies (added at
-            the rate in force at the tax point).
-          </li>
-          <li>
-            Extra charges may apply for timed windows, out-of-hours deliveries, restricted access,
-            waiting time, diversions, aborts, failed access or special compliance requests.
-          </li>
-          <li>
-            If duty/tax rates or mandated fuel components change between order and delivery, the
-            price will be adjusted accordingly.
-          </li>
+          <li>Prices are market-linked and may vary by delivery location, volume and credit status. Quotes are invitations to treat and valid only for the period stated.</li>
+          <li>Unless stated otherwise, prices exclude applicable taxes, duties and levies (added at the rate in force at the tax point).</li>
+          <li>Extra charges may apply for timed windows, out-of-hours deliveries, restricted access, waiting time, diversions, aborts, failed access or special compliance requests.</li>
+          <li>If duty/tax rates or mandated fuel components change between order and delivery, the price will be adjusted accordingly.</li>
         </ul>
       </Section>
 
       <Section id="orders" title="3. Orders, Minimums & Credit">
         <ul>
-          <li>
-            Orders are subject to acceptance, stock availability, credit approval and site safety
-            verification. Minimum order volumes may apply (including where rental equipment is
-            offered).
-          </li>
-          <li>
-            We may require prepayment or security. We may cancel or suspend supply if credit limits
-            are exceeded, details cannot be verified, fraud is suspected or payments are overdue.
-          </li>
-          <li>
-            Cancellation or delivery window changes within 24 hours of the scheduled slot may incur
-            charges (including restocking, haulage and lost time).
-          </li>
+          <li>Orders are subject to acceptance, stock availability, credit approval and site safety verification. Minimum order volumes may apply (including where rental equipment is offered).</li>
+          <li>We may require prepayment or security. We may cancel or suspend supply if credit limits are exceeded, details cannot be verified, fraud is suspected or payments are overdue.</li>
+          <li>Cancellation or delivery window changes within 24 hours of the scheduled slot may incur charges (including restocking, haulage and lost time).</li>
         </ul>
       </Section>
 
       <Section id="delivery" title="4. Delivery, Risk & Title">
         <ul>
-          <li>
-            Delivery dates are estimates. Risk passes upon physical delivery into your tank or agreed
-            point. <strong>Title</strong> passes only on receipt of full cleared payment for that
-            delivery and all other overdue sums (retention of title).
-          </li>
-          <li>
-            You must ensure safe, unobstructed access, correct tank identification and sufficient
-            ullage. Waiting time, diversions and aborts may be chargeable. We may refuse/suspend
-            delivery if the site is unsafe or non-compliant.
-          </li>
-          <li>
-            If you instruct delivery to third-party tanks/locations, you remain liable for the
-            charges and for ensuring authority to deliver.
-          </li>
+          <li>Delivery dates are estimates. Risk passes upon physical delivery into your tank or agreed point. <strong>Title</strong> passes only on receipt of full cleared payment for that delivery and all other overdue sums (retention of title).</li>
+          <li>You must ensure safe, unobstructed access, correct tank identification and sufficient ullage. Waiting time, diversions and aborts may be chargeable. We may refuse/suspend delivery if the site is unsafe or non-compliant.</li>
+          <li>If you instruct delivery to third-party tanks/locations, you remain liable for the charges and for ensuring authority to deliver.</li>
         </ul>
       </Section>
 
-      <Section
-        id="responsibilities"
-        title="5. Client Responsibilities (Services/Works are Customer’s Responsibility)"
-      >
+      <Section id="responsibilities" title="5. Client Responsibilities (Services/Works are Customer’s Responsibility)">
         <ul>
-          <li>
-            Unless a separate signed contract states otherwise, <strong>you</strong> are solely
-            responsible for: tank installation and certification, hardstanding, electrical works,
-            bunding, overfill/alarm/sensor systems, permits, operator training, routine maintenance
-            and periodic inspection.
-          </li>
-          <li>
-            You must ensure competent persons supervise all deliveries and that your site complies
-            with current law, standards and manufacturer guidance.
-          </li>
-          <li>
-            Any advice we give is for general guidance only and does not shift legal responsibility
-            from you as site operator.
-          </li>
+          <li>Unless a separate signed contract states otherwise, <strong>you</strong> are solely responsible for: tank installation and certification, hardstanding, electrical works, bunding, overfill/alarm/sensor systems, permits, operator training, routine maintenance and periodic inspection.</li>
+          <li>You must ensure competent persons supervise all deliveries and that your site complies with current law, standards and manufacturer guidance.</li>
+          <li>Any advice we give is for general guidance only and does not shift legal responsibility from you as site operator.</li>
         </ul>
       </Section>
 
       <Section id="tanks" title="6. Tanks & Site Safety">
         <ul>
-          <li>
-            You are responsible for the integrity and compliance of your tanks, pipework and
-            associated systems unless we supply and maintain equipment under a separate written
-            agreement.
-          </li>
-          <li>
-            You must keep appropriate spill response equipment on site and maintain a current spill
-            plan. We may refuse/suspend delivery if the site is unsafe or non-compliant.
-          </li>
-          <li>
-            You must immediately notify us of leaks, contamination, theft or incidents and cooperate
-            fully with any investigation or remediation.
-          </li>
+          <li>You are responsible for the integrity and compliance of your tanks, pipework and associated systems unless we supply and maintain equipment under a separate written agreement.</li>
+          <li>You must keep appropriate spill response equipment on site and maintain a current spill plan. We may refuse/suspend delivery if the site is unsafe or non-compliant.</li>
+          <li>You must immediately notify us of leaks, contamination, theft or incidents and cooperate fully with any investigation or remediation.</li>
         </ul>
       </Section>
 
       <Section id="quality" title="7. Product Quality & Measurement">
         <ul>
-          <li>
-            Product conforms to the applicable specification when it leaves our custody. We are not
-            responsible for contamination, degradation or loss occurring after delivery.
-          </li>
-          <li>
-            Quantities are determined by tanker meters or calibrated dip; reasonable tolerances
-            apply. If you dispute a quantity, you must notify us in writing within 2 business days,
-            providing meter tickets, dip readings and photo evidence. Absent timely evidence, the
-            delivery note shall be conclusive.
-          </li>
+          <li>Product conforms to the applicable specification when it leaves our custody. We are not responsible for contamination, degradation or loss occurring after delivery.</li>
+          <li>Quantities are determined by tanker meters or calibrated dip; reasonable tolerances apply. If you dispute a quantity, you must notify us in writing within 2 business days, providing meter tickets, dip readings and photo evidence. Absent timely evidence, the delivery note shall be conclusive.</li>
         </ul>
       </Section>
 
       <Section id="payment" title="8. Invoicing, Payment & Remedies">
         <ul>
-          <li>
-            Unless otherwise agreed in writing, payment is due by the date stated on the invoice.
-            Interest accrues daily on overdue sums at 4% per annum above Barclays Bank plc base rate.
-          </li>
-          <li>
-            We may withhold or suspend deliveries, adjust credit limits, charge collection costs and
-            exercise a lien over goods until amounts due are paid in full.
-          </li>
-          <li>
-            You agree to reimburse our reasonable costs (including legal fees) incurred in recovering
-            overdue sums, repossessing rental equipment, or enforcing these Terms.
-          </li>
-          <li>
-            <strong>Chargebacks/Fraud.</strong> Where payment is reversed or disputed after delivery,
-            you remain liable for the full amount, interest and our recovery costs unless the
-            transaction was unauthorised due to our fault proven by competent evidence.
-          </li>
+          <li>Unless otherwise agreed in writing, payment is due by the date stated on the invoice. Interest accrues daily on overdue sums at 4% per annum above Barclays Bank plc base rate.</li>
+          <li>We may withhold or suspend deliveries, adjust credit limits, charge collection costs and exercise a lien over goods until amounts due are paid in full.</li>
+          <li>You agree to reimburse our reasonable costs (including legal fees) incurred in recovering overdue sums, repossessing rental equipment, or enforcing these Terms.</li>
+          <li><strong>Chargebacks/Fraud.</strong> Where payment is reversed or disputed after delivery, you remain liable for the full amount, interest and our recovery costs unless the transaction was unauthorised due to our fault proven by competent evidence.</li>
         </ul>
       </Section>
 
       <Section id="liability" title="9. Liability, Indemnities & Caps">
         <ul>
-          <li>
-            Nothing excludes liability for death/personal injury caused by negligence, fraud, or any
-            liability that cannot lawfully be excluded.
-          </li>
-          <li>
-            Subject to the foregoing, we are not liable for loss of profit, revenue, use, contracts,
-            goodwill, business interruption, or any indirect/consequential loss.
-          </li>
-          <li>
-            Our total aggregate liability arising from or in connection with each order is limited to
-            the price paid for that order.
-          </li>
-          <li>
-            You indemnify us against claims, losses and costs arising from your breach, unsafe or
-            non-compliant site conditions, contamination after delivery, or environmental incidents
-            caused by your acts/omissions.
-          </li>
+          <li>Nothing excludes liability for death/personal injury caused by negligence, fraud, or any liability that cannot lawfully be excluded.</li>
+          <li>Subject to the foregoing, we are not liable for loss of profit, revenue, use, contracts, goodwill, business interruption, or any indirect/consequential loss.</li>
+          <li>Our total aggregate liability arising from or in connection with each order is limited to the price paid for that order.</li>
+          <li>You indemnify us against claims, losses and costs arising from your breach, unsafe or non-compliant site conditions, contamination after delivery, or environmental incidents caused by your acts/omissions.</li>
         </ul>
       </Section>
 
       <Section id="environment" title="10. Environmental & Compliance">
         <ul>
-          <li>
-            You must comply with all laws, permits and industry codes relating to storage and
-            handling, and immediately notify us of incidents. We may suspend supply if we consider a
-            site unsafe.
-          </li>
-          <li>
-            Any sustainability initiatives we run (e.g., tree planting) are discretionary and do not
-            alter your legal responsibilities.
-          </li>
+          <li>You must comply with all laws, permits and industry codes relating to storage and handling, and immediately notify us of incidents. We may suspend supply if we consider a site unsafe.</li>
+          <li>Any sustainability initiatives we run (e.g., tree planting) are discretionary and do not alter your legal responsibilities.</li>
         </ul>
       </Section>
 
       <Section id="rental" title="11. Rental Tanks — Additional Terms">
         <ul>
-          <li>
-            Rental tanks remain our property at all times. You must insure them for full replacement
-            value and follow our usage instructions. You may not move or modify rental equipment
-            without our written consent.
-          </li>
-          <li>
-            Where a “free rental” model is offered, it is conditional on minimum monthly volumes as
-            notified by us. If minimums are not met, we may charge the rental fee, recover our costs
-            and/or remove equipment.
-          </li>
-          <li>
-            On termination or breach, we may enter the site during business hours (or at other safe,
-            agreed times) to repossess rental equipment and any residual product. You shall pay
-            reasonable costs of uplift, cleaning and remediation. Our rights here are in addition to
-            any other remedies (including a claim for damages).
-          </li>
+          <li>Rental tanks remain our property at all times. You must insure them for full replacement value and follow our usage instructions. You may not move or modify rental equipment without our written consent.</li>
+          <li>Where a “free rental” model is offered, it is conditional on minimum monthly volumes as notified by us. If minimums are not met, we may charge the rental fee, recover our costs and/or remove equipment.</li>
+          <li>On termination or breach, we may enter the site during business hours (or at other safe, agreed times) to repossess rental equipment and any residual product. You shall pay reasonable costs of uplift, cleaning and remediation. Our rights here are in addition to any other remedies (including a claim for damages).</li>
         </ul>
       </Section>
 
       <Section id="data" title="12. Data Protection & Communications">
         <ul>
-          <li>
-            We process personal data in accordance with our Privacy Notice. Operational communications
-            (service updates, safety notices) form part of the service.
-          </li>
-          <li>
-            For marketing emails, you can opt-in and unsubscribe at any time.
-          </li>
+          <li>We process personal data in accordance with our Privacy Notice. Operational communications (service updates, safety notices) form part of the service.</li>
+          <li>For marketing emails, you can opt-in and unsubscribe at any time.</li>
         </ul>
       </Section>
 
       <Section id="suspension" title="13. Suspension & Termination">
         <ul>
-          <li>
-            We may suspend or terminate supply immediately for non-payment, credit concerns, safety
-            issues, suspected illegality or material breach. You remain liable for all sums due.
-          </li>
-          <li>
-            Upon termination, accrued rights and remedies survive, including our right to recover
-            equipment and costs.
-          </li>
+          <li>We may suspend or terminate supply immediately for non-payment, credit concerns, safety issues, suspected illegality or material breach. You remain liable for all sums due.</li>
+          <li>Upon termination, accrued rights and remedies survive, including our right to recover equipment and costs.</li>
         </ul>
       </Section>
 
       <Section id="force" title="14. Force Majeure">
-        <p>
-          Neither party is liable for failure or delay caused by events beyond its reasonable control,
-          including but not limited to shortages, strikes, extreme weather, acts of God, war or
-          governmental action. Obligations are suspended for the duration of the event.
-        </p>
+        <p>Neither party is liable for failure or delay caused by events beyond its reasonable control, including but not limited to shortages, strikes, extreme weather, acts of God, war or governmental action. Obligations are suspended for the duration of the event.</p>
       </Section>
 
       <Section id="law" title="15. Law & Jurisdiction">
-        <p>
-          These Terms and any dispute (including non-contractual disputes) are governed by the laws
-          of England and Wales. The courts of England and Wales shall have exclusive jurisdiction.
-        </p>
+        <p>These Terms and any dispute (including non-contractual disputes) are governed by the laws of England and Wales. The courts of England and Wales shall have exclusive jurisdiction.</p>
       </Section>
 
       <Section id="misc" title="16. Miscellaneous">
         <ul>
-          <li>
-            Entire Agreement: these Terms, together with any order confirmation and signed variations,
-            constitute the entire agreement and supersede prior discussions.
-          </li>
-          <li>
-            Variation: effective only if signed by an authorised FuelFlow signatory.
-          </li>
-          <li>
-            Assignment: you may not assign without our consent; we may assign to an affiliate.
-          </li>
-          <li>
-            Severance: if a provision is held invalid, the remainder remains in force.
-          </li>
-          <li>
-            Waiver: a failure to enforce is not a waiver.
-          </li>
-          <li>
-            Third-party Rights: no person other than the parties has rights under the Contracts
-            (Rights of Third Parties) Act 1999.
-          </li>
-          <li>
-            E-sign / Evidence: your electronic acceptance, IP, user-agent, time stamp and version are
-            admissible as evidence of acceptance.
-          </li>
+          <li>Entire Agreement: these Terms, together with any order confirmation and signed variations, constitute the entire agreement and supersede prior discussions.</li>
+          <li>Variation: effective only if signed by an authorised FuelFlow signatory.</li>
+          <li>Assignment: you may not assign without our consent; we may assign to an affiliate.</li>
+          <li>Severance: if a provision is held invalid, the remainder remains in force.</li>
+          <li>Waiver: a failure to enforce is not a waiver.</li>
+          <li>Third-party Rights: no person other than the parties has rights under the Contracts (Rights of Third Parties) Act 1999.</li>
+          <li>E-sign / Evidence: your electronic acceptance, IP, user-agent, time stamp and version are admissible as evidence of acceptance.</li>
         </ul>
       </Section>
     </div>
   );
 }
+
+/* ------------------- LEGAL BODY (print variant) -------------------
+   Identical text, but plain classes for crisp black-on-white output,
+   and section headings naturally trigger page breaks via @media print.
+------------------------------------------------------------------- */
+function LegalBodyPrint() {
+  return (
+    <div className="space-y-2 text-black">
+      <IntroP print />
+
+      <PrintSection title="1. Scope & Definitions">
+        <ul>
+          <li><strong>Supply Scope.</strong> FuelFlow supplies <em>fuel only</em>. Any installation, commissioning, maintenance, repair, electrical or civil works, site preparation, spill response equipment and ongoing site compliance are the Customer’s sole responsibility, unless a separate, signed agreement expressly states FuelFlow will provide such services.</li>
+          <li><strong>Products</strong> are fuels and any approved ancillary items we sell. <strong>Services</strong> means any services we agree in writing to provide separately.</li>
+          <li>These Terms take precedence over your terms unless an authorised FuelFlow signatory agrees otherwise in writing.</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="2. Quotes, Pricing & Taxes">
+        <ul>
+          <li>Prices are market-linked and may vary by delivery location, volume and credit status. Quotes are invitations to treat and valid only for the period stated.</li>
+          <li>Unless stated otherwise, prices exclude applicable taxes, duties and levies (added at the rate in force at the tax point).</li>
+          <li>Extra charges may apply for timed windows, out-of-hours deliveries, restricted access, waiting time, diversions, aborts, failed access or special compliance requests.</li>
+          <li>If duty/tax rates or mandated fuel components change between order and delivery, the price will be adjusted accordingly.</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="3. Orders, Minimums & Credit">
+        <ul>
+          <li>Orders are subject to acceptance, stock availability, credit approval and site safety verification. Minimum order volumes may apply (including where rental equipment is offered).</li>
+          <li>We may require prepayment or security. We may cancel or suspend supply if credit limits are exceeded, details cannot be verified, fraud is suspected or payments are overdue.</li>
+          <li>Cancellation or delivery window changes within 24 hours of the scheduled slot may incur charges (including restocking, haulage and lost time).</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="4. Delivery, Risk & Title">
+        <ul>
+          <li>Delivery dates are estimates. Risk passes upon physical delivery into your tank or agreed point. <strong>Title</strong> passes only on receipt of full cleared payment for that delivery and all other overdue sums (retention of title).</li>
+          <li>You must ensure safe, unobstructed access, correct tank identification and sufficient ullage. Waiting time, diversions and aborts may be chargeable. We may refuse/suspend delivery if the site is unsafe or non-compliant.</li>
+          <li>If you instruct delivery to third-party tanks/locations, you remain liable for the charges and for ensuring authority to deliver.</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="5. Client Responsibilities (Services/Works are Customer’s Responsibility)">
+        <ul>
+          <li>Unless a separate signed contract states otherwise, <strong>you</strong> are solely responsible for: tank installation and certification, hardstanding, electrical works, bunding, overfill/alarm/sensor systems, permits, operator training, routine maintenance and periodic inspection.</li>
+          <li>You must ensure competent persons supervise all deliveries and that your site complies with current law, standards and manufacturer guidance.</li>
+          <li>Any advice we give is for general guidance only and does not shift legal responsibility from you as site operator.</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="6. Tanks & Site Safety">
+        <ul>
+          <li>You are responsible for the integrity and compliance of your tanks, pipework and associated systems unless we supply and maintain equipment under a separate written agreement.</li>
+          <li>You must keep appropriate spill response equipment on site and maintain a current spill plan. We may refuse/suspend delivery if the site is unsafe or non-compliant.</li>
+          <li>You must immediately notify us of leaks, contamination, theft or incidents and cooperate fully with any investigation or remediation.</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="7. Product Quality & Measurement">
+        <ul>
+          <li>Product conforms to the applicable specification when it leaves our custody. We are not responsible for contamination, degradation or loss occurring after delivery.</li>
+          <li>Quantities are determined by tanker meters or calibrated dip; reasonable tolerances apply. If you dispute a quantity, you must notify us in writing within 2 business days, providing meter tickets, dip readings and photo evidence. Absent timely evidence, the delivery note shall be conclusive.</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="8. Invoicing, Payment & Remedies">
+        <ul>
+          <li>Unless otherwise agreed in writing, payment is due by the date stated on the invoice. Interest accrues daily on overdue sums at 4% per annum above Barclays Bank plc base rate.</li>
+          <li>We may withhold or suspend deliveries, adjust credit limits, charge collection costs and exercise a lien over goods until amounts due are paid in full.</li>
+          <li>You agree to reimburse our reasonable costs (including legal fees) incurred in recovering overdue sums, repossessing rental equipment, or enforcing these Terms.</li>
+          <li><strong>Chargebacks/Fraud.</strong> Where payment is reversed or disputed after delivery, you remain liable for the full amount, interest and our recovery costs unless the transaction was unauthorised due to our fault proven by competent evidence.</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="9. Liability, Indemnities & Caps">
+        <ul>
+          <li>Nothing excludes liability for death/personal injury caused by negligence, fraud, or any liability that cannot lawfully be excluded.</li>
+          <li>Subject to the foregoing, we are not liable for loss of profit, revenue, use, contracts, goodwill, business interruption, or any indirect/consequential loss.</li>
+          <li>Our total aggregate liability arising from or in connection with each order is limited to the price paid for that order.</li>
+          <li>You indemnify us against claims, losses and costs arising from your breach, unsafe or non-compliant site conditions, contamination after delivery, or environmental incidents caused by your acts/omissions.</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="10. Environmental & Compliance">
+        <ul>
+          <li>You must comply with all laws, permits and industry codes relating to storage and handling, and immediately notify us of incidents. We may suspend supply if we consider a site unsafe.</li>
+          <li>Any sustainability initiatives we run (e.g., tree planting) are discretionary and do not alter your legal responsibilities.</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="11. Rental Tanks — Additional Terms">
+        <ul>
+          <li>Rental tanks remain our property at all times. You must insure them for full replacement value and follow our usage instructions. You may not move or modify rental equipment without our written consent.</li>
+          <li>Where a “free rental” model is offered, it is conditional on minimum monthly volumes as notified by us. If minimums are not met, we may charge the rental fee, recover our costs and/or remove equipment.</li>
+          <li>On termination or breach, we may enter the site during business hours (or at other safe, agreed times) to repossess rental equipment and any residual product. You shall pay reasonable costs of uplift, cleaning and remediation. Our rights here are in addition to any other remedies (including a claim for damages).</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="12. Data Protection & Communications">
+        <ul>
+          <li>We process personal data in accordance with our Privacy Notice. Operational communications (service updates, safety notices) form part of the service.</li>
+          <li>For marketing emails, you can opt-in and unsubscribe at any time.</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="13. Suspension & Termination">
+        <ul>
+          <li>We may suspend or terminate supply immediately for non-payment, credit concerns, safety issues, suspected illegality or material breach. You remain liable for all sums due.</li>
+          <li>Upon termination, accrued rights and remedies survive, including our right to recover equipment and costs.</li>
+        </ul>
+      </PrintSection>
+
+      <PrintSection title="14. Force Majeure">
+        <p>Neither party is liable for failure or delay caused by events beyond its reasonable control, including but not limited to shortages, strikes, extreme weather, acts of God, war or governmental action. Obligations are suspended for the duration of the event.</p>
+      </PrintSection>
+
+      <PrintSection title="15. Law & Jurisdiction">
+        <p>These Terms and any dispute (including non-contractual disputes) are governed by the laws of England and Wales. The courts of England and Wales shall have exclusive jurisdiction.</p>
+      </PrintSection>
+
+      <PrintSection title="16. Miscellaneous">
+        <ul>
+          <li>Entire Agreement: these Terms, together with any order confirmation and signed variations, constitute the entire agreement and supersede prior discussions.</li>
+          <li>Variation: effective only if signed by an authorised FuelFlow signatory.</li>
+          <li>Assignment: you may not assign without our consent; we may assign to an affiliate.</li>
+          <li>Severance: if a provision is held invalid, the remainder remains in force.</li>
+          <li>Waiver: a failure to enforce is not a waiver.</li>
+          <li>Third-party Rights: no person other than the parties has rights under the Contracts (Rights of Third Parties) Act 1999.</li>
+          <li>E-sign / Evidence: your electronic acceptance, IP, user-agent, time stamp and version are admissible as evidence of acceptance.</li>
+        </ul>
+      </PrintSection>
+    </div>
+  );
+}
+
+/* ------------------- Shared intro paragraph ------------------- */
+
+function IntroP({ print = false }: { print?: boolean }) {
+  return (
+    <p className={print ? "text-black/80" : "text-sm text-white/70"}>
+      These Terms & Conditions (the “Terms”) govern the supply of fuel and any ancillary items by
+      FuelFlow (“Supplier”, “we”, “us”) to the customer (“Customer”, “you”). By placing an order,
+      opening an account, accepting delivery or clicking “Accept Terms”, you agree to be bound by these Terms.
+    </p>
+  );
+}
+
+/* ------------------- Helpers for print sections ------------------- */
+
+function PrintSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="break-before-page">
+      <h2 className="mt-6 mb-1 text-xl font-semibold text-black">{title}</h2>
+      <div className="text-black">{children}</div>
+    </section>
+  );
+}
+
+/* ------------------- Accepted card ------------------- */
 
 function AcceptedCard({ returnTo }: { returnTo: string }) {
   return (
