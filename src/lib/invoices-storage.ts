@@ -1,8 +1,21 @@
 // src/lib/invoices-storage.ts
+// src/lib/invoices-storage.ts
 import { createClient } from "@supabase/supabase-js";
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const url =
+  process.env.SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  "";
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+
+if (!url) {
+  // eslint-disable-next-line no-console
+  console.error("[invoices-storage] Missing SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL");
+}
+if (!serviceKey) {
+  // eslint-disable-next-line no-console
+  console.error("[invoices-storage] Missing SUPABASE_SERVICE_ROLE_KEY");
+}
 
 const supabaseAdmin = createClient(url, serviceKey, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -28,9 +41,10 @@ export async function saveInvoicePdfToStorage(args: {
     .from("invoices")
     .upload(objectPath, args.pdfBuffer, {
       contentType: "application/pdf",
-      upsert: true, // re-issue allowed
+      upsert: true,
     });
 
   if (error) throw error;
   return { bucket: "invoices", path: objectPath, year: yyyy, month: mm };
 }
+
