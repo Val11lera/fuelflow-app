@@ -3,7 +3,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { sendMail } from "@/lib/mailer";
 import { buildInvoicePdf } from "@/lib/invoice-pdf";
-import { saveInvoicePdfToStorage } from "@/lib/invoices-storage"; // <-- NEW
+import { saveInvoicePdfToStorage } from "@/lib/invoices-storage";
 
 export const config = { api: { bodyParser: true } };
 
@@ -42,10 +42,7 @@ function customerTag(email: string | undefined) {
   return tag || "CUS";
 }
 
-/** INV-YYMMDD-CCC-XXXX
- *  CCC = first 3 alnum chars of customer email (uppercased) so you can trace by eye
- *  XXXX = 4-char base36; if orderId present → last 4 chars of orderId instead
- */
+/** INV-YYMMDD-CCC-XXXX */
 function makeInvoiceNumber(meta: { invoiceNumber?: string; orderId?: string } | undefined, customerEmail?: string) {
   if (meta?.invoiceNumber) return meta.invoiceNumber;
   const d = new Date();
@@ -148,7 +145,7 @@ ${process.env.COMPANY_NAME || "FuelFlow"}`;
       ],
     });
 
-    // --- NEW: Save PDF to Supabase Storage (private) as <email>/<YYYY>/<MM>/<INV>.pdf
+    // Save to Storage
     let storagePath: string | null = null;
     try {
       const issued = meta.dateISO ? new Date(meta.dateISO) : new Date();
@@ -161,15 +158,13 @@ ${process.env.COMPANY_NAME || "FuelFlow"}`;
       storagePath = saved.path;
     } catch (e: any) {
       console.error("Failed to save invoice to storage:", e?.message || e);
-      // don't fail the request if storage write fails
     }
-    // --- END NEW
 
     if (debug) {
       return res.status(200).json({
         ok: true,
         id,
-        debug: { normalized: normItems, invoiceNumber: invNo, pages, storagePath }, // includes path
+        debug: { normalized: normItems, invoiceNumber: invNo, pages, storagePath },
       });
     }
     return res.status(200).json({ ok: true, id, storagePath });
@@ -178,4 +173,3 @@ ${process.env.COMPANY_NAME || "FuelFlow"}`;
     return bad(res, 500, e?.message || "invoice_error");
   }
 }
-
