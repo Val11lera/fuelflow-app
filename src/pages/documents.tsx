@@ -69,6 +69,16 @@ type ContractRow = {
 
 type PriceRow = { fuel: string; total_price: number; price_date?: string | null };
 
+/** Minimal shape returned by Storage list() that we rely on */
+type StorageListItem = {
+  name: string;
+  id?: string;
+  created_at?: string;
+  updated_at?: string;
+  last_accessed_at?: string;
+  metadata?: { size?: number } | null;
+};
+
 function cx(...c: (string | false | null | undefined)[]) {
   return c.filter(Boolean).join(" ");
 }
@@ -228,7 +238,7 @@ export default function DocumentsPage() {
           <a href="/client-dashboard" className="rounded-lg bg-white/10 p-2 hover:bg-white/15 md:hidden" aria-label="Back">
             <BackIcon className="h-5 w-5" />
           </a>
-          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto hidden md:block" />
+        <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto hidden md:block" />
           <h1 className="text-xl font-bold sm:text-2xl">Documents</h1>
         </div>
 
@@ -428,29 +438,32 @@ function InvoicesExplorer({ email }: { email: string }) {
 
         const root = email.toLowerCase();
 
-        // List year folders
+        // ---- List year folders ----
         const yearsRes = await supabase.storage
           .from(INVOICES_BUCKET)
           .list(root, { limit: 100, offset: 0, sortBy: { column: "name", order: "asc" } });
         if (yearsRes.error) throw yearsRes.error;
 
-        const years = (yearsRes.data || [])
-          .filter((e) => e.name && /^\d{4}$/.test(e.name))
-          .map((e) => e.name!);
+        const yearsData = (yearsRes.data || []) as StorageListItem[];
+        const years = yearsData
+          .filter((e: StorageListItem) => e.name && /^\d{4}$/.test(e.name))
+          .map((e: StorageListItem) => e.name);
 
         const agg: InvoiceTree = {};
 
         for (const y of years) {
           agg[y] = {};
-          // List months under each year
+
+          // ---- List months ----
           const monthsRes = await supabase.storage
             .from(INVOICES_BUCKET)
             .list(`${root}/${y}`, { limit: 100, offset: 0, sortBy: { column: "name", order: "asc" } });
           if (monthsRes.error) throw monthsRes.error;
 
-          const months = (monthsRes.data || [])
-            .filter((e) => e.name && /^(0[1-9]|1[0-2])$/.test(e.name))
-            .map((e) => e.name!);
+          const monthsData = (monthsRes.data || []) as StorageListItem[];
+          const months = monthsData
+            .filter((e: StorageListItem) => e.name && /^(0[1-9]|1[0-2])$/.test(e.name))
+            .map((e: StorageListItem) => e.name);
 
           for (const m of months) {
             const filesRes = await supabase.storage
@@ -458,9 +471,10 @@ function InvoicesExplorer({ email }: { email: string }) {
               .list(`${root}/${y}/${m}`, { limit: 1000, offset: 0, sortBy: { column: "name", order: "desc" } });
             if (filesRes.error) throw filesRes.error;
 
-            const files = (filesRes.data || [])
-              .filter((f) => (f.name || "").toLowerCase().endsWith(".pdf"))
-              .map<InvoiceFile>((f: any) => ({
+            const filesData = (filesRes.data || []) as StorageListItem[];
+            const files = filesData
+              .filter((f: StorageListItem) => (f.name || "").toLowerCase().endsWith(".pdf"))
+              .map<InvoiceFile>((f: StorageListItem) => ({
                 name: f.name,
                 path: `${root}/${y}/${m}/${f.name}`,
                 size: f?.metadata?.size ?? null,
