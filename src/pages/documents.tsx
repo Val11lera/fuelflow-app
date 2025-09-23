@@ -69,6 +69,19 @@ function cx(...c: (string | false | null | undefined)[]) {
   return c.filter(Boolean).join(" ");
 }
 
+/* ===== Invoices storage view types & constants ===== */
+
+type InvoiceFile = {
+  name: string;
+  path: string; // <email>/<YYYY>/<MM>/<file>.pdf
+  size?: number | null;
+  created_at?: string | null;
+  year: string;
+  month: string; // "01".."12"
+};
+type InvoiceTree = Record<string, Record<string, InvoiceFile[]>>;
+const INVOICES_BUCKET = "invoices";
+
 /* =========================
    Page
    ========================= */
@@ -241,9 +254,9 @@ export default function DocumentsPage() {
         </div>
       </header>
 
-      {/* Subhead checklist (extra top margin on mobile so chips aren't clipped) */}
-     <div className="mx-auto max-w-6xl px-4 mt-6 md:mt-3">
-     <div className="mb-4 pt-1.5 pl-1 flex items-center gap-2 overflow-x-auto pb-1">
+      {/* Subhead checklist */}
+      <div className="mx-auto max-w-6xl px-4 mt-6 md:mt-3">
+        <div className="mb-4 pt-1.5 pl-1 flex items-center gap-2 overflow-x-auto pb-1">
           {checklist.map((c) => (
             <span
               key={c.label}
@@ -295,6 +308,15 @@ export default function DocumentsPage() {
             secondary={{ label: "ROI / Calculator", onClick: () => setShowCalc({ open: true, option: "rent" }) }}
             primary={{ label: rentLatest ? "Update / Resign" : "Start", onClick: () => setShowRent(true) }}
           />
+        </section>
+
+        {/* Invoices Explorer */}
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">Invoices</h2>
+          <p className="text-sm text-white/70">
+            Your invoices are grouped by year and month. Click a folder to expand, then hit <em>View</em> to open a PDF.
+          </p>
+          <InvoicesExplorer email={userEmail} />
         </section>
 
         {docsComplete && (
@@ -560,6 +582,203 @@ function Tile(props: {
             </button>
           ))}
       </div>
+    </div>
+  );
+}
+
+/* ===== Invoices Explorer component ===== */
+
+function InvoicesExplorer({ email }: { email: string }) {
+  const [loading, setLoading] = React.useState(true);
+  const [tree, setTree] = React.useState<InvoiceTree>({});
+  const [openYears, setOpenYears] = React.useState<Record<string, boolean>>({});
+  const [openMonths, setOpenMonths] = React.useState<Record<string, Record<string, boolean>>>({});
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        if (!email) return;
+
+        // List year folders under <email>/
+        const yearsRes = await supabase.storage
+          .from(INVOICES_BUCKET)
+          .list(`${email}`, { limit: 100, offset: 0, sortBy: { column: "name", order: "asc" } });
+
+        if (yearsRes.error) throw yearsRes.error;
+
+        const years = (yearsRes.data || [])
+          .map((e) => e.name)
+          .filter((n) => /^\d{4}$/.test(n)); // "2025", "2026"
+
+        const agg: InvoiceTree = {};
+        for (const y of years) {
+          agg[y] = {};
+
+          // List month folders under <email>/<year>/
+          const monthsRes = await supabase.storage
+            .from(INVOICES_BUCKET)
+            .list(`${email}/${y}`, { limit: 100, offset: 0, sortBy: { column: "name", order: "asc" } });
+          if (monthsRes.error) throw monthsRes.error;
+
+          const months = (monthsRes.data || [])
+            .map((e) => e.name)
+            .filter((n) => /^(0[1-9]|1[0-2])$/.test(n)); // "01".."12"
+
+          for (const m of months) {
+            // List files under <email>/<year>/<month>/
+            const filesRes = await supabase.storage
+              .from(INVOICES_BUCKET)
+              .list(`${email}/${y}/${m}`, { limit: 1000, offset: 0, sortBy: { column: "name", order: "desc" } });
+            if (filesRes.error) throw filesRes.error;
+
+            const files = (filesRes.data || [])
+              .filter((f) => f.name.toLowerCase().endsWith(".pdf"))
+              .map<InvoiceFile>((f: any) => ({
+                name: f.name,
+                path: `${email}/${y}/${m}/${f.name}`,
+                size: f?.metadata?.size ?? null,
+                created_at: f?.created_at ?? null,
+                year: y,
+                month: m,
+              }));
+
+            agg[y][m] = files;
+          }
+        }
+
+        setTree(agg);
+
+        // Expand current year by default
+        const nowY = new Date().getFullYear().toString();
+        setOpenYears((s) => ({ ...s, [nowY]: true }));
+      } catch (e: any) {
+        setError(e?.message || "Failed to load invoices.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [email]);
+
+  async function viewFile(file: InvoiceFile) {
+    const { data, error } = await supabase.storage
+      .from(INVOICES_BUCKET)
+      .createSignedUrl(file.path, 60); // 60 seconds
+    if (error || !data?.signedUrl) {
+      alert("Could not generate a signed link. Please try again.");
+      return;
+    }
+    window.open(data.signedUrl, "_blank");
+  }
+
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-white/70">
+        Loading invoices…
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+        {error}
+      </div>
+    );
+  }
+
+  const years = Object.keys(tree).sort((a, b) => b.localeCompare(a)); // newest first
+  const hasAny = years.some((y) => Object.values(tree[y]).some((arr) => arr.length));
+
+  if (!hasAny) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-white/70">
+        No invoices found yet. Once your first order is invoiced, PDFs will appear here.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-2">
+      {years.map((y) => {
+        const months = Object.keys(tree[y] || {}).sort(); // "01".."12"
+        return (
+          <div key={y} className="border-b border-white/10 last:border-b-0">
+            {/* Year row */}
+            <button
+              className="flex w-full items-center justify-between px-4 py-3 hover:bg-white/5"
+              onClick={() => setOpenYears((s) => ({ ...s, [y]: !s[y] }))}
+              aria-expanded={!!openYears[y]}
+            >
+              <span className="text-base font-semibold">{y}</span>
+              <span className="text-white/60">{openYears[y] ? "▾" : "▸"}</span>
+            </button>
+
+            {/* Months list */}
+            {openYears[y] && (
+              <div className="px-2 pb-2">
+                {months.map((m) => {
+                  const files = tree[y][m] || [];
+                  const any = files.length > 0;
+                  return (
+                    <div key={`${y}-${m}`} className="ml-2 rounded-lg border border-white/10 mb-2">
+                      <button
+                        className="flex w-full items-center justify-between px-3 py-2 hover:bg-white/5"
+                        onClick={() =>
+                          setOpenMonths((s) => ({
+                            ...s,
+                            [y]: { ...(s[y] || {}), [m]: !(s[y]?.[m]) },
+                          }))
+                        }
+                        aria-expanded={!!openMonths[y]?.[m]}
+                      >
+                        <span className="text-sm font-medium">
+                          {y}-{m} <span className="text-white/50">({files.length} file{files.length !== 1 ? "s" : ""})</span>
+                        </span>
+                        <span className="text-white/60">{openMonths[y]?.[m] ? "▾" : "▸"}</span>
+                      </button>
+
+                      {/* Files */}
+                      {openMonths[y]?.[m] && (
+                        <div className="px-3 pb-2">
+                          {any ? (
+                            <ul className="divide-y divide-white/10">
+                              {files.map((f) => (
+                                <li key={f.path} className="flex items-center justify-between py-2">
+                                  <div className="min-w-0">
+                                    <div className="truncate text-sm font-medium">{f.name}</div>
+                                    <div className="text-xs text-white/60">
+                                      {f.created_at ? new Date(f.created_at).toLocaleString("en-GB") : "—"}
+                                      {typeof f.size === "number" ? ` • ${(f.size / 1024).toFixed(0)} KB` : ""}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      className="rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
+                                      onClick={() => viewFile(f)}
+                                      title="Open PDF"
+                                    >
+                                      View
+                                    </button>
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <div className="py-3 text-xs text-white/60">No invoices this month.</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
