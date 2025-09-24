@@ -320,7 +320,6 @@ export default function AdminDashboard() {
      Render
      ========================= */
 
-  // While we check admin
   if (isAdmin === null) {
     return (
       <div className="min-h-screen grid place-items-center bg-[#0b1220] text-white">
@@ -328,7 +327,6 @@ export default function AdminDashboard() {
       </div>
     );
   }
-  // If not admin, we redirect (effect above); render nothing.
   if (isAdmin === false) return null;
 
   return (
@@ -337,11 +335,14 @@ export default function AdminDashboard() {
       <div className="sticky top-0 z-30 border-b border-white/10 bg-[#0b1220]/80 backdrop-blur">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-3">
           <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-          <div className="text-sm text-white/70">
+          <div className="hidden sm:block text-sm text-white/70">
             Signed in as <span className="font-medium">{me}</span>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
+            <a
+              href="/client-dashboard"
+              className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+            >
               Client view
             </a>
             <button
@@ -358,22 +359,23 @@ export default function AdminDashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 py-5 space-y-6">
-        {/* Top: KPIs & controls */}
-        <section className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        {/* KPIs */}
+        <section className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
           <KpiCard label="Revenue" value={gbpFmt.format(sumRevenue)} />
           <KpiCard label="Litres" value={Math.round(sumLitres).toLocaleString()} />
           <KpiCard label="Orders" value={filteredOrders.length.toLocaleString()} />
           <KpiCard label="Paid Orders" value={paidCount.toLocaleString()} />
         </section>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="rounded-lg bg-white/5 p-1">
+        {/* Controls */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="rounded-lg bg-white/5 p-1 w-full sm:w-auto">
             {(["month", "90d", "ytd", "all"] as const).map((r) => (
               <button
                 key={r}
                 onClick={() => setRange(r)}
                 className={cx(
-                  "px-3 py-1.5 text-sm rounded-md",
+                  "px-3 py-1.5 text-sm rounded-md w-1/2 sm:w-auto",
                   range === r ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/10"
                 )}
               >
@@ -381,7 +383,8 @@ export default function AdminDashboard() {
               </button>
             ))}
           </div>
-          <div className="relative ml-auto w-full sm:w-80">
+
+          <div className="relative sm:ml-auto w-full sm:w-80">
             <input
               placeholder="Search email, product, status, order id"
               className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
@@ -389,23 +392,53 @@ export default function AdminDashboard() {
               onChange={(e) => setSearch(e.target.value)}
             />
             {!!search && (
-              <button className="absolute right-2 top-1/2 -translate-y-1/2 text-white/60 text-xs" onClick={() => setSearch("")}>
+              <button
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-white/60 text-xs"
+                onClick={() => setSearch("")}
+              >
                 clear
               </button>
             )}
           </div>
         </div>
 
-        {/* Orders (collapsible) */}
+        {/* Orders */}
         <Accordion
-          title={`Orders`}
+          title="Orders"
           subtitle={`${visibleOrders.length} of ${filteredOrders.length}`}
           open={openOrders}
           onToggle={() => setOpenOrders((s) => !s)}
           loading={loading}
           error={error}
         >
-          <div className="overflow-x-auto">
+          {/* Mobile cards */}
+          <div className="space-y-3 md:hidden">
+            {visibleOrders.map((o) => (
+              <div key={o.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                <div className="flex items-center justify-between">
+                  <div className="font-medium">{(o.fuel || "—").toString().toUpperCase()}</div>
+                  <span
+                    className={cx(
+                      "ml-2 inline-flex items-center rounded px-2 py-0.5 text-[11px]",
+                      (o.status || "").toLowerCase() === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
+                    )}
+                  >
+                    {(o.status || "pending").toLowerCase()}
+                  </span>
+                </div>
+                <div className="mt-1 text-[13px] text-white/80">{o.user_email || "—"}</div>
+                <div className="mt-2 flex flex-wrap gap-3 text-sm">
+                  <Badge label="Litres" value={String(o.litres ?? "—")} />
+                  <Badge label="Amount" value={gbpFmt.format(toGBP(o.total_pence))} />
+                  <Badge label="Date" value={new Date(o.created_at).toLocaleString()} />
+                </div>
+                <div className="mt-2 font-mono text-[11px] text-white/60 break-all">Order: {o.id}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop table */}
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="text-white/70">
                 <tr className="border-b border-white/10">
@@ -455,14 +488,45 @@ export default function AdminDashboard() {
           )}
         </Accordion>
 
-        {/* Payments (collapsible) */}
+        {/* Payments */}
         <Accordion
           title="Payments"
           subtitle={`${payments.length} rows`}
           open={openPayments}
           onToggle={() => setOpenPayments((s) => !s)}
         >
-          <div className="overflow-x-auto">
+          {/* Mobile cards */}
+          <div className="space-y-3 md:hidden">
+            {payments.length === 0 ? (
+              <div className="text-white/60 text-sm">No rows.</div>
+            ) : (
+              payments.map((p, i) => (
+                <div key={i} className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium">{gbpFmt.format(toGBP(p.amount))}</div>
+                    <span
+                      className={cx(
+                        "inline-flex items-center rounded px-2 py-0.5 text-[11px]",
+                        p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
+                      )}
+                    >
+                      {(p.status || "—").toLowerCase()}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[13px] text-white/80">{p.email || "—"}</div>
+                  <div className="mt-2 flex flex-wrap gap-3 text-sm">
+                    <Badge label="Date" value={p.created_at ? new Date(p.created_at).toLocaleString() : "—"} />
+                    <Badge label="Order" value={p.order_id || "—"} mono />
+                    <Badge label="PI" value={p.pi_id || "—"} mono />
+                    <Badge label="Session" value={p.cs_id || "—"} mono />
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Desktop table */}
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="text-white/70">
                 <tr className="border-b border-white/10">
@@ -511,7 +575,7 @@ export default function AdminDashboard() {
           </div>
         </Accordion>
 
-        {/* Invoice browser (collapsible) */}
+        {/* Invoice browser */}
         <Accordion
           title="Invoice Browser"
           subtitle="Pick email → year → month"
@@ -567,50 +631,48 @@ export default function AdminDashboard() {
             </div>
           </div>
 
-          <div className="mt-4">
+          <div className="mt-4 overflow-x-auto">
             {invLoading ? (
               <div className="text-white/70">Loading…</div>
             ) : invFiles.length === 0 ? (
               <div className="text-white/60 text-sm">No invoices to show.</div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="text-white/70">
-                    <tr className="border-b border-white/10">
-                      <th className="py-2 pr-4">Invoice PDF</th>
-                      <th className="py-2 pr-4">Last modified</th>
-                      <th className="py-2 pr-4">Size</th>
-                      <th className="py-2 pr-4">Open</th>
+              <table className="w-full text-left text-sm min-w-[520px]">
+                <thead className="text-white/70">
+                  <tr className="border-b border-white/10">
+                    <th className="py-2 pr-4">Invoice PDF</th>
+                    <th className="py-2 pr-4">Last modified</th>
+                    <th className="py-2 pr-4">Size</th>
+                    <th className="py-2 pr-4">Open</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {invFiles.map((f) => (
+                    <tr key={f.path} className="border-b border-white/5">
+                      <td className="py-2 pr-4">{f.name}</td>
+                      <td className="py-2 pr-4">
+                        {f.last_modified ? new Date(f.last_modified).toLocaleString() : "—"}
+                      </td>
+                      <td className="py-2 pr-4">{f.size ? `${Math.round(f.size / 1024)} KB` : "—"}</td>
+                      <td className="py-2 pr-4">
+                        <button
+                          className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-2 py-1 hover:bg-yellow-400"
+                          onClick={async () => {
+                            try {
+                              const url = await getSignedUrl(f.path);
+                              window.open(url, "_blank");
+                            } catch (e: any) {
+                              setError(e?.message || "Failed to open");
+                            }
+                          }}
+                        >
+                          View
+                        </button>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {invFiles.map((f) => (
-                      <tr key={f.path} className="border-b border-white/5">
-                        <td className="py-2 pr-4">{f.name}</td>
-                        <td className="py-2 pr-4">
-                          {f.last_modified ? new Date(f.last_modified).toLocaleString() : "—"}
-                        </td>
-                        <td className="py-2 pr-4">{f.size ? `${Math.round(f.size / 1024)} KB` : "—"}</td>
-                        <td className="py-2 pr-4">
-                          <button
-                            className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-2 py-1 hover:bg-yellow-400"
-                            onClick={async () => {
-                              try {
-                                const url = await getSignedUrl(f.path);
-                                window.open(url, "_blank");
-                              } catch (e: any) {
-                                setError(e?.message || "Failed to open");
-                              }
-                            }}
-                          >
-                            View
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                  ))}
+                </tbody>
+              </table>
             )}
           </div>
         </Accordion>
@@ -698,11 +760,21 @@ function Accordion({
 
 function KpiCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-      <div className="text-sm text-white/70">{label}</div>
-      <div className="mt-1 text-2xl font-semibold">{value}</div>
+    <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 sm:p-4">
+      <div className="text-xs sm:text-sm text-white/70">{label}</div>
+      <div className="mt-1 text-xl sm:text-2xl font-semibold">{value}</div>
     </div>
   );
 }
+
+function Badge({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="rounded bg-white/5 px-2.5 py-1 text-[12px]">
+      <span className="text-white/60">{label}: </span>
+      <span className={cx(mono && "font-mono")}>{value}</span>
+    </div>
+  );
+}
+
 
 
