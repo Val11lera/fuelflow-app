@@ -17,7 +17,7 @@ type Msg = { type: "error" | "success" | "info"; text: string };
 type FeatureKey = "pricing" | "delivery" | "checkout" | "support";
 
 /* -------------------------------------
-   Feature cards (unchanged content)
+   Feature cards
 -------------------------------------- */
 const FEATURES: Record<
   FeatureKey,
@@ -93,10 +93,9 @@ export default function Login() {
     setCaptchaToken(null);
   }
 
-  // Decide the correct landing page for the signed-in user
+  // Post-login routing (checks admin table)
   async function routeAfterLogin(explicitEmail?: string) {
     try {
-      // Use provided email (from form) if available; else read session
       let lower = (explicitEmail || "").toLowerCase();
 
       if (!lower) {
@@ -133,19 +132,16 @@ export default function Login() {
      Effects
   -------------------------- */
 
-  // Hydrate remembered email
   useEffect(() => {
     const saved = localStorage.getItem("ff_login_email");
     if (saved) setEmail(saved);
   }, []);
 
-  // Remember email as user types
   useEffect(() => {
     if (remember && email) localStorage.setItem("ff_login_email", email);
     if (!remember) localStorage.removeItem("ff_login_email");
   }, [remember, email]);
 
-  // If already signed in and on /login, send them to the right place
   useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
@@ -153,7 +149,6 @@ export default function Login() {
         await routeAfterLogin(auth.user.email);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* -------------------------
@@ -195,8 +190,6 @@ export default function Login() {
     }
   }
 
-  // Works with your API. If SMTP configured, user checks inbox.
-  // If not, we receive actionUrl and open it immediately.
   async function handleMagicLink() {
     try {
       setLoading(true);
@@ -216,7 +209,6 @@ export default function Login() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, captchaToken }),
       });
-
       const data = await r.json();
 
       if (!r.ok || data?.error) {
@@ -228,10 +220,13 @@ export default function Login() {
       resetCaptcha();
 
       if (data.sent) {
-        setMsg({ type: "success", text: "Magic link sent! Check your inbox (and spam)." });
-      } else if (data.actionUrl) {
+        setMsg({ type: "success", text: "Magic link sent! Check your inbox." });
+      } else if (data.consentUrl) {
         setMsg({ type: "success", text: "Opening your sign-in link…" });
-        window.location.href = data.actionUrl; // completes auth, then redirects to /login
+        window.location.href = data.consentUrl;
+      } else if (data.actionUrl) {
+        setMsg({ type: "success", text: "Magic link generated. Opening…" });
+        window.location.href = data.actionUrl;
       } else {
         setMsg({ type: "success", text: "Magic link generated." });
       }
@@ -292,6 +287,14 @@ export default function Login() {
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
           <a href="https://fuelflow.co.uk" className="flex items-center gap-3">
             <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+          </a>
+          <a
+            href="https://fuelflow.co.uk"
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-lg bg-white/10 px-3 py-2 text-xs hover:bg-white/15"
+          >
+            Back to fuelflow.co.uk
           </a>
         </div>
       </header>
@@ -440,7 +443,7 @@ export default function Login() {
                   onClick={handleMagicLink}
                   disabled={loading || !email}
                   className="rounded-lg bg-white/10 px-4 py-2 font-semibold hover:bg-white/15 disabled:opacity-50"
-                  title={!email ? "Enter your email first" : ""}  {/* <-- FIXED */}
+                  title={!email ? "Enter your email first" : ""}
                 >
                   Email me a magic link
                 </button>
@@ -502,8 +505,7 @@ export default function Login() {
           >
             <div className="mb-3 flex items-center gap-3">
               {(() => {
-                const Art =
-                  openFeature ? FEATURES[openFeature].Art : FEATURES.pricing.Art;
+                const Art = openFeature ? FEATURES[openFeature].Art : FEATURES.pricing.Art;
                 return <Art className="h-8 w-8" />;
               })()}
               <div className="text-lg font-semibold">
@@ -545,7 +547,7 @@ function MailIcon({ className }: { className?: string }) {
   );
 }
 
-/* Minimal, elegant SVGs (same as before) */
+/* Minimal, elegant SVGs */
 function ChartArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
@@ -599,5 +601,3 @@ function HeadsetArt({ className }: { className?: string }) {
     </svg>
   );
 }
-
-
