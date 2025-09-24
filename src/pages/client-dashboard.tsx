@@ -81,10 +81,11 @@ export default function ClientDashboard() {
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
-  // orders
+  // orders (we store all fetched, but render a slice)
   const [orders, setOrders] = useState<
     (OrderRow & { amountGBP: number; paymentStatus?: string })[]
   >([]);
+  const [visibleCount, setVisibleCount] = useState<number>(20);
   const [error, setError] = useState<string | null>(null);
 
   // usage UI
@@ -174,7 +175,7 @@ export default function ClientDashboard() {
       )
       .eq("user_email", emailLower)
       .order("created_at", { ascending: false })
-      .limit(50);
+      .limit(200); // fetch plenty, render a slice
 
     if (ordErr) throw ordErr;
 
@@ -214,6 +215,7 @@ export default function ClientDashboard() {
     });
 
     setOrders(withTotals);
+    setVisibleCount(20); // reset the slice on each refresh
   }
 
   // Robust latest-price loader with normalisation (handles GBP or pence)
@@ -320,9 +322,6 @@ export default function ClientDashboard() {
     return base;
   }, [orders, selectedYear]);
 
-  const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
-  const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
-
   const rowsToShow = showAllMonths
     ? usageByMonth
     : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
@@ -331,10 +330,9 @@ export default function ClientDashboard() {
      Render
      ========================= */
 
-  // Make Order CTA available only when data is present
   const canOrder = petrolPrice != null && dieselPrice != null;
 
-  // ----------------- Loading overlay on the first automatic refresh -----------------
+  // ----------------- Loading screen -----------------
   if (!hasRefreshed || loading) {
     return (
       <div className="min-h-screen bg-[#0b1220] text-white">
@@ -376,7 +374,10 @@ export default function ClientDashboard() {
     );
   }
 
-  // ----------------- Main dashboard -----------------
+  // ------------- Derived for "Recent Orders" -------------
+  const visibleOrders = orders.slice(0, visibleCount);
+  const hasMore = visibleCount < orders.length;
+
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
       {/* Sticky mobile CTA */}
@@ -439,17 +440,14 @@ export default function ClientDashboard() {
           </div>
         </div>
 
-        {/* Top cards: Prices + simple Documents button */}
+        {/* Top cards: Prices + Documents */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card title="Petrol (95)">
             <div className="text-3xl font-bold">
               {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            {/* NEW: per-card refreshed stamp */}
-            <div className="mt-1 text-xs text-white/60">
-              Refreshed: {formatShortDMY(refreshedAt)}
-            </div>
+            <div className="mt-1 text-xs text-white/60">Refreshed: {formatShortDMY(refreshedAt)}</div>
           </Card>
 
           <Card title="Diesel">
@@ -457,10 +455,7 @@ export default function ClientDashboard() {
               {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
               <span className="text-base font-normal text-gray-300"> / litre</span>
             </div>
-            {/* NEW: per-card refreshed stamp */}
-            <div className="mt-1 text-xs text-white/60">
-              Refreshed: {formatShortDMY(refreshedAt)}
-            </div>
+            <div className="mt-1 text-xs text-white/60">Refreshed: {formatShortDMY(refreshedAt)}</div>
           </Card>
 
           <div className="bg-gray-800 rounded-xl p-4 md:p-5">
@@ -558,16 +553,39 @@ export default function ClientDashboard() {
           </div>
         )}
 
-        {/* recent orders */}
+        {/* recent orders (collapsible / incremental) */}
         <section className="bg-gray-800 rounded-xl p-4 md:p-6 mb-24 md:mb-0">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl md:text-2xl font-semibold">Recent Orders</h2>
-            <button
-              onClick={loadAll}
-              className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
-            >
-              Refresh
-            </button>
+            <h2 className="text-xl md:text-2xl font-semibold">
+              Recent Orders <span className="text-white/50 text-sm">({orders.length})</span>
+            </h2>
+            <div className="flex items-center gap-2">
+              {orders.length > 20 && (
+                <>
+                  {!hasMore ? (
+                    <button
+                      onClick={() => setVisibleCount(20)}
+                      className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
+                    >
+                      Collapse to last 20
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setVisibleCount((n) => Math.min(n + 20, orders.length))}
+                      className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
+                    >
+                      Show 20 more
+                    </button>
+                  )}
+                </>
+              )}
+              <button
+                onClick={loadAll}
+                className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
+              >
+                Refresh
+              </button>
+            </div>
           </div>
 
           {loading ? (
@@ -576,43 +594,70 @@ export default function ClientDashboard() {
             <div className="text-gray-400">No orders yet.</div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="text-gray-300">
-                  <tr className="border-b border-gray-700">
-                    <th className="py-2 pr-4">Date</th>
-                    <th className="py-2 pr-4">Product</th>
-                    <th className="py-2 pr-4">Litres</th>
-                    <th className="py-2 pr-4">Amount</th>
-                    <th className="py-2 pr-4">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.map((o) => (
-                    <tr key={o.id} className="border-b border-gray-800">
-                      <td className="py-2 pr-4">
-                        {new Date(o.created_at).toLocaleString()}
-                      </td>
-                      <td className="py-2 pr-4 capitalize">
-                        {(o.fuel as string) || "—"}
-                      </td>
-                      <td className="py-2 pr-4">{o.litres ?? "—"}</td>
-                      <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
-                      <td className="py-2 pr-4">
-                        <span
-                          className={cx(
-                            "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                            (o.status || "").toLowerCase() === "paid"
-                              ? "bg-green-600/70"
-                              : "bg-gray-600/70"
-                          )}
-                        >
-                          {(o.status || o.paymentStatus || "pending").toLowerCase()}
-                        </span>
-                      </td>
+              {/* Optional max-height on small screens to avoid super-long pages */}
+              <div className="md:max-h-none max-h-[60vh] overflow-auto rounded-lg">
+                <table className="w-full text-left text-sm">
+                  <thead className="text-gray-300 sticky top-0 bg-gray-800">
+                    <tr className="border-b border-gray-700">
+                      <th className="py-2 pr-4">Date</th>
+                      <th className="py-2 pr-4">Product</th>
+                      <th className="py-2 pr-4">Litres</th>
+                      <th className="py-2 pr-4">Amount</th>
+                      <th className="py-2 pr-4">Status</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {visibleOrders.map((o) => (
+                      <tr key={o.id} className="border-b border-gray-800">
+                        <td className="py-2 pr-4">
+                          {new Date(o.created_at).toLocaleString()}
+                        </td>
+                        <td className="py-2 pr-4 capitalize">
+                          {(o.fuel as string) || "—"}
+                        </td>
+                        <td className="py-2 pr-4">{o.litres ?? "—"}</td>
+                        <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
+                        <td className="py-2 pr-4">
+                          <span
+                            className={cx(
+                              "inline-flex items-center rounded px-2 py-0.5 text-xs",
+                              (o.status || "").toLowerCase() === "paid"
+                                ? "bg-green-600/70"
+                                : "bg-gray-600/70"
+                            )}
+                          >
+                            {(o.status || o.paymentStatus || "pending").toLowerCase()}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Show-more / collapse at bottom for easy reach on long lists */}
+              {orders.length > 20 && (
+                <div className="mt-3 flex items-center justify-center gap-2">
+                  {hasMore ? (
+                    <button
+                      onClick={() => setVisibleCount((n) => Math.min(n + 20, orders.length))}
+                      className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+                    >
+                      Show 20 more
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setVisibleCount(20)}
+                      className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+                    >
+                      Collapse to last 20
+                    </button>
+                  )}
+                  <div className="text-xs text-white/60">
+                    Showing <b>{Math.min(visibleCount, orders.length)}</b> of <b>{orders.length}</b>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </section>
