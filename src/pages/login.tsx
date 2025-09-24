@@ -195,7 +195,7 @@ export default function Login() {
     }
   }
 
-  // >>> UPDATED: Works with your API. If SMTP configured, user checks inbox.
+  // Works with your API. If SMTP configured, user checks inbox.
   // If not, we receive actionUrl and open it immediately.
   async function handleMagicLink() {
     try {
@@ -292,14 +292,6 @@ export default function Login() {
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
           <a href="https://fuelflow.co.uk" className="flex items-center gap-3">
             <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-          </a>
-          <a
-            href="https://fuelflow.co.uk"
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-lg bg-white/10 px-3 py-2 text-xs hover:bg-white/15"
-          >
-            Back to fuelflow.co.uk
           </a>
         </div>
       </header>
@@ -448,7 +440,7 @@ export default function Login() {
                   onClick={handleMagicLink}
                   disabled={loading || !email}
                   className="rounded-lg bg-white/10 px-4 py-2 font-semibold hover:bg-white/15 disabled:opacity-50"
-                  title {!email ? "Enter your email first" : ""}
+                  title={!email ? "Enter your email first" : ""}  {/* <-- FIXED */}
                 >
                   Email me a magic link
                 </button>
