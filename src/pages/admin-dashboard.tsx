@@ -2,7 +2,7 @@
 // src/pages/admin-dashboard.tsx
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 /* ========================================
@@ -39,6 +39,17 @@ type PaymentRow = {
   status: string;
 };
 
+/** What Supabase Storage `list()` returns for each entry */
+type StorageListObject = {
+  name: string;
+  id: string | null; // folders have id === null
+  created_at?: string | null;
+  updated_at?: string | null;
+  last_modified?: string | null;
+  metadata?: { size?: number } | null;
+  size?: number | null; // sometimes present on files
+};
+
 type InvoiceFile = {
   path: string;       // invoices/{email}/{year}/{month}/{file}
   email: string;
@@ -49,7 +60,6 @@ type InvoiceFile = {
   updated_at?: string | null;
   last_modified?: string | null;
   size?: number | null;
-  signedUrl?: string; // populated on click
 };
 
 type CustomerAgg = {
@@ -78,7 +88,7 @@ function shortDT(s?: string | null) {
 function bytes(n?: number | null) {
   if (!n && n !== 0) return "—";
   const units = ["B","KB","MB","GB"];
-  let x = n, i = 0;
+  let x = n as number, i = 0;
   while (x >= 1024 && i < units.length-1) { x /= 1024; i++; }
   return `${x.toFixed(x >= 10 ? 0 : 1)} ${units[i]}`;
 }
@@ -97,28 +107,24 @@ export default function AdminDashboard() {
   const [kpiOrders, setKpiOrders] = useState<number>(0);
   const [kpiPaid, setKpiPaid] = useState<number>(0);
 
-  // Filters
+  // Filters / UI
   type RangeKey = "month" | "qtr" | "ytd" | "all";
   const [range, setRange] = useState<RangeKey>("all");
-
-  // Search (simple contains filter for lists)
-  const [search, setSearch] = useState("");
-
-  // Tabs
   type Tab = "orders" | "payments" | "invoices" | "customers";
   const [tab, setTab] = useState<Tab>("invoices");
+  const [search, setSearch] = useState("");
 
   // Data
   const [orders, setOrders] = useState<(OrderRow & { amountGBP: number; paymentStatus?: string })[]>([]);
   const [invoices, setInvoices] = useState<InvoiceFile[]>([]);
   const [customers, setCustomers] = useState<CustomerAgg[]>([]);
 
-  // Pagination (lazy show)
+  // Pagination
   const [showOrders, setShowOrders] = useState(25);
   const [showInvoices, setShowInvoices] = useState(25);
   const [showCustomers, setShowCustomers] = useState(25);
 
-  // Collapsible sections
+  // Collapsible
   const [openInvoices, setOpenInvoices] = useState(true);
   const [openCustomers, setOpenCustomers] = useState(true);
   const [openOrders, setOpenOrders] = useState(false);
@@ -134,10 +140,8 @@ export default function AdminDashboard() {
           window.location.href = "/login";
           return;
         }
-        const email = (auth.user.email || "").toLowerCase();
-        setAdminEmail(email);
+        setAdminEmail((auth.user.email || "").toLowerCase());
 
-        // load core
         await Promise.all([loadOrdersAgg(), loadInvoicesRecent(), loadCustomersAgg()]);
       } catch (e: any) {
         setError(e?.message || "Failed to load admin dashboard.");
@@ -149,7 +153,6 @@ export default function AdminDashboard() {
 
   /* ---------- load orders (for KPIs + orders tab) ---------- */
   async function loadOrdersAgg() {
-    // Pull last 1000 orders; you can increase if needed
     const { data, error } = await supabase
       .from("orders")
       .select("id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status")
@@ -160,7 +163,6 @@ export default function AdminDashboard() {
 
     const arr = (data || []) as OrderRow[];
 
-    // Compute GBP per row (prefer total_pence; fallback to litres*unit)
     const rows = arr.map((o) => {
       let totalPence =
         o.total_pence ??
@@ -169,7 +171,6 @@ export default function AdminDashboard() {
       return { ...o, amountGBP };
     });
 
-    // KPIs (for current range; we’ll keep “all” for now — you can add date filters if needed)
     setKpiOrders(rows.length);
     setKpiPaid(rows.filter((r) => (r.status || "").toLowerCase() === "paid").length);
     setKpiLitres(rows.reduce((s, r) => s + (r.litres || 0), 0));
@@ -179,52 +180,53 @@ export default function AdminDashboard() {
   }
 
   /* ---------- load invoices (storage) ---------- */
-  async function listFolder(path: string) {
-    // list one level
+  async function listFolder(path: string): Promise<StorageListObject[]> {
     const { data, error } = await supabase.storage
       .from("invoices")
       .list(path, { limit: 1000, sortBy: { column: "name", order: "desc" } });
     if (error) throw error;
-    return data || [];
+    return (data || []) as unknown as StorageListObject[];
   }
 
-  // walk: / -> /{email}/ -> /{email}/{year}/ -> /{email}/{year}/{month}/files
   async function loadInvoicesRecent() {
     const all: InvoiceFile[] = [];
 
-    const top = await listFolder(""); // emails
-    const emailDirs = top.filter((e) => e.name && e.id == null); // folders only (no id => folder)
+    const top: StorageListObject[] = await listFolder(""); // emails level
+    const emailDirs: StorageListObject[] = top.filter((e: StorageListObject) => e.id == null);
 
     for (const e of emailDirs) {
       const email = e.name;
-      const years = await listFolder(email);
-      const yearDirs = years.filter((y) => y.id == null);
+      const years: StorageListObject[] = await listFolder(email);
+      const yearDirs: StorageListObject[] = years.filter((y: StorageListObject) => y.id == null);
+
       for (const y of yearDirs) {
         const year = y.name;
-        const months = await listFolder(`${email}/${year}`);
-        const monthDirs = months.filter((m) => m.id == null);
+        const months: StorageListObject[] = await listFolder(`${email}/${year}`);
+        const monthDirs: StorageListObject[] = months.filter((m: StorageListObject) => m.id == null);
+
         for (const m of monthDirs) {
           const month = m.name; // 01..12
-          const files = await listFolder(`${email}/${year}/${month}`);
+          const files: StorageListObject[] = await listFolder(`${email}/${year}/${month}`);
+
           for (const f of files) {
-            if (!f.name?.toLowerCase().endsWith(".pdf")) continue;
+            const fname = f.name || "";
+            if (!fname.toLowerCase().endsWith(".pdf")) continue;
             all.push({
-              path: `${email}/${year}/${month}/${f.name}`,
+              path: `${email}/${year}/${month}/${fname}`,
               email,
               year,
               month,
-              name: f.name,
-              created_at: (f as any).created_at ?? null,
-              updated_at: (f as any).updated_at ?? null,
-              last_modified: (f as any).last_modified ?? null,
-              size: (f as any).metadata?.size ?? (f as any).size ?? null,
+              name: fname,
+              created_at: f.created_at ?? null,
+              updated_at: f.updated_at ?? null,
+              last_modified: f.last_modified ?? null,
+              size: (f.metadata?.size as number | undefined) ?? (f.size ?? null),
             });
           }
         }
       }
     }
 
-    // sort newest first (by updated/created)
     all.sort((a, b) => {
       const as = Date.parse(a.updated_at || a.created_at || a.last_modified || "1970-01-01");
       const bs = Date.parse(b.updated_at || b.created_at || b.last_modified || "1970-01-01");
@@ -236,7 +238,6 @@ export default function AdminDashboard() {
 
   /* ---------- customers aggregation (from orders) ---------- */
   async function loadCustomersAgg() {
-    // We’ll reuse the last 1000 orders (same fetch as orders aggregate)
     const { data, error } = await supabase
       .from("orders")
       .select("id, created_at, user_email, litres, total_pence, unit_price_pence")
@@ -250,7 +251,7 @@ export default function AdminDashboard() {
       const email = (o.user_email || "").toLowerCase();
       if (!email) continue;
 
-      let totalPence =
+      const totalPence =
         o.total_pence ??
         (o.unit_price_pence != null && o.litres != null ? Math.round(o.unit_price_pence * o.litres) : 0);
 
@@ -307,7 +308,6 @@ export default function AdminDashboard() {
   /* ---------- UI actions ---------- */
   async function openInvoice(i: InvoiceFile) {
     try {
-      // quick signed URL (1 min)
       const { data, error } = await supabase.storage
         .from("invoices")
         .createSignedUrl(i.path, 60);
@@ -334,8 +334,7 @@ export default function AdminDashboard() {
             <img src="/logo-email.png" className="h-7 w-auto" alt="FuelFlow" />
             <span className="text-white/70 hidden sm:inline">Signed in as {adminEmail}</span>
           </a>
-
-        <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex items-center gap-2">
             <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
               Client view
             </a>
@@ -440,11 +439,9 @@ export default function AdminDashboard() {
                     <tr key={f.path} className="border-b border-white/10">
                       <td className="py-2 pr-4">{shortDT(f.updated_at || f.created_at || f.last_modified)}</td>
                       <td className="py-2 pr-4">{f.email}</td>
+                      <td className="py-2 pr-4">{f.name.replace(".pdf", "")}</td>
                       <td className="py-2 pr-4">
-                        {f.name.replace(".pdf", "")}
-                      </td>
-                      <td className="py-2 pr-4">
-                        {`${f.email}/${f.year}/${f.month} (${monthsNames[Number(f.month)-1]})`}
+                        {`${f.email}/${f.year}/${f.month} (${monthsNames[Math.max(0, (parseInt(f.month, 10) || 1) - 1)]})`}
                       </td>
                       <td className="py-2 pr-4">{f.name}</td>
                       <td className="py-2 pr-4">{bytes(f.size)}</td>
@@ -521,7 +518,7 @@ export default function AdminDashboard() {
           </Section>
         )}
 
-        {/* ORDERS (kept compact) */}
+        {/* ORDERS */}
         {tab === "orders" && (
           <Section
             title="Orders"
@@ -633,3 +630,4 @@ function Section({
     </div>
   );
 }
+
