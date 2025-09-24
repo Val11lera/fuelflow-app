@@ -115,7 +115,6 @@ export default function Login() {
         .maybeSingle();
 
       if (error) {
-        // If the admins table errors, don’t block login; fall back to client dashboard
         router.push("/client-dashboard");
         return;
       }
@@ -146,7 +145,7 @@ export default function Login() {
     if (!remember) localStorage.removeItem("ff_login_email");
   }, [remember, email]);
 
-  // If the user is already signed in and lands on /login, send them to the right place
+  // If already signed in and on /login, send them to the right place
   useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
@@ -188,7 +187,7 @@ export default function Login() {
       }
 
       setMsg({ type: "success", text: "Login successful! Redirecting…" });
-      await routeAfterLogin(email); // <<<<<< ADMIN-AWARE REDIRECT
+      await routeAfterLogin(email);
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
     } finally {
@@ -196,6 +195,8 @@ export default function Login() {
     }
   }
 
+  // >>> UPDATED: Works with your API. If SMTP configured, user checks inbox.
+  // If not, we receive actionUrl and open it immediately.
   async function handleMagicLink() {
     try {
       setLoading(true);
@@ -215,6 +216,7 @@ export default function Login() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, captchaToken }),
       });
+
       const data = await r.json();
 
       if (!r.ok || data?.error) {
@@ -226,10 +228,10 @@ export default function Login() {
       resetCaptcha();
 
       if (data.sent) {
-        setMsg({ type: "success", text: "Magic link sent! Check your inbox." });
-      } else if (data.consentUrl) {
+        setMsg({ type: "success", text: "Magic link sent! Check your inbox (and spam)." });
+      } else if (data.actionUrl) {
         setMsg({ type: "success", text: "Opening your sign-in link…" });
-        window.location.href = data.consentUrl;
+        window.location.href = data.actionUrl; // completes auth, then redirects to /login
       } else {
         setMsg({ type: "success", text: "Magic link generated." });
       }
@@ -446,7 +448,7 @@ export default function Login() {
                   onClick={handleMagicLink}
                   disabled={loading || !email}
                   className="rounded-lg bg-white/10 px-4 py-2 font-semibold hover:bg-white/15 disabled:opacity-50"
-                  title={!email ? "Enter your email first" : ""}
+                  title {!email ? "Enter your email first" : ""}
                 >
                   Email me a magic link
                 </button>
