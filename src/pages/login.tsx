@@ -16,6 +16,9 @@ const supabase = createClient(
 type Msg = { type: "error" | "success" | "info"; text: string };
 type FeatureKey = "pricing" | "delivery" | "checkout" | "support";
 
+/* -------------------------------------
+   Feature cards (unchanged content)
+-------------------------------------- */
 const FEATURES: Record<
   FeatureKey,
   {
@@ -78,18 +81,9 @@ export default function Login() {
   // feature modal
   const [openFeature, setOpenFeature] = useState<FeatureKey | null>(null);
 
-  // hydrate remembered email
-  useEffect(() => {
-    const saved = localStorage.getItem("ff_login_email");
-    if (saved) setEmail(saved);
-  }, []);
-
-  // remember email on change
-  useEffect(() => {
-    if (remember && email) localStorage.setItem("ff_login_email", email);
-    if (!remember) localStorage.removeItem("ff_login_email");
-  }, [remember, email]);
-
+  /* -------------------------
+     Helpers
+  -------------------------- */
   function handleCaps(e: React.KeyboardEvent<HTMLInputElement>) {
     setCapsOn(e.getModifierState && e.getModifierState("CapsLock"));
   }
@@ -98,6 +92,74 @@ export default function Login() {
     captchaRef.current?.resetCaptcha();
     setCaptchaToken(null);
   }
+
+  // Decide the correct landing page for the signed-in user
+  async function routeAfterLogin(explicitEmail?: string) {
+    try {
+      // Use provided email (from form) if available; else read session
+      let lower = (explicitEmail || "").toLowerCase();
+
+      if (!lower) {
+        const { data: auth } = await supabase.auth.getUser();
+        lower = (auth?.user?.email || "").toLowerCase();
+      }
+      if (!lower) {
+        router.push("/client-dashboard");
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("admins")
+        .select("email")
+        .eq("email", lower)
+        .maybeSingle();
+
+      if (error) {
+        // If the admins table errors, don’t block login; fall back to client dashboard
+        router.push("/client-dashboard");
+        return;
+      }
+
+      if (data?.email) {
+        router.push("/admin-dashboard");
+      } else {
+        router.push("/client-dashboard");
+      }
+    } catch {
+      router.push("/client-dashboard");
+    }
+  }
+
+  /* -------------------------
+     Effects
+  -------------------------- */
+
+  // Hydrate remembered email
+  useEffect(() => {
+    const saved = localStorage.getItem("ff_login_email");
+    if (saved) setEmail(saved);
+  }, []);
+
+  // Remember email as user types
+  useEffect(() => {
+    if (remember && email) localStorage.setItem("ff_login_email", email);
+    if (!remember) localStorage.removeItem("ff_login_email");
+  }, [remember, email]);
+
+  // If the user is already signed in and lands on /login, send them to the right place
+  useEffect(() => {
+    (async () => {
+      const { data: auth } = await supabase.auth.getUser();
+      if (auth?.user?.email) {
+        await routeAfterLogin(auth.user.email);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* -------------------------
+     Actions
+  -------------------------- */
 
   async function handleLogin() {
     try {
@@ -126,7 +188,7 @@ export default function Login() {
       }
 
       setMsg({ type: "success", text: "Login successful! Redirecting…" });
-      router.push("/client-dashboard");
+      await routeAfterLogin(email); // <<<<<< ADMIN-AWARE REDIRECT
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
     } finally {
@@ -217,6 +279,10 @@ export default function Login() {
     if (e.key === "Enter") handleLogin();
   }
 
+  /* -------------------------
+     Render
+  -------------------------- */
+
   return (
     <div className="relative flex min-h-[100svh] md:min-h-screen flex-col bg-[#0b1220] text-white">
       {/* Header */}
@@ -237,7 +303,6 @@ export default function Login() {
       </header>
 
       <main className="relative flex-1">
-        {/* items-stretch forces equal column heights; each section is flex and inner card flex-1 */}
         <div className="mx-auto grid max-w-6xl grid-cols-1 items-stretch gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
           {/* VISUAL Welcome (left) */}
           <section className="order-2 flex lg:order-1 lg:col-span-7">
@@ -261,9 +326,7 @@ export default function Login() {
                     onClick={() => setOpenFeature(key)}
                     className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 text-left ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20"
                   >
-                    {/* Soft glow */}
                     <span className="pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-yellow-500/10 blur-2xl" />
-                    {/* Illustration */}
                     <div className="mb-3">
                       <f.Art className="h-12 w-12 opacity-90 transition group-hover:scale-105" />
                     </div>
@@ -430,7 +493,7 @@ export default function Login() {
         </div>
       </main>
 
-      {/* Modal */}
+      {/* Feature modal */}
       {openFeature && (
         <div
           aria-modal="true"
@@ -488,7 +551,7 @@ function MailIcon({ className }: { className?: string }) {
   );
 }
 
-/* Minimal, elegant SVGs (no external libs) */
+/* Minimal, elegant SVGs (same as before) */
 function ChartArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
