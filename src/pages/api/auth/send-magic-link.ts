@@ -1,4 +1,5 @@
 // src/pages/api/auth/send-magic-link.ts
+// src/pages/api/auth/send-magic-link.ts
 // @ts-nocheck
 import type { NextApiRequest, NextApiResponse } from "next";
 export const runtime = 'nodejs';
@@ -111,12 +112,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     { auth: { autoRefreshToken: false, persistSession: false } }
   );
 
-  // Build redirect target after the magic link completes auth
+  // IMPORTANT: Redirect back to /login (admin-aware routing happens there)
   const redirectTo = `${
     process.env.NEXT_PUBLIC_SITE_URL || "https://dashboard.fuelflow.co.uk"
-  }/client-dashboard`;
+  }/login`;
 
-  // Create a magic link (server-side) instead of letting Supabase send its default email
+  // Create a magic link (server-side)
   const { data, error } = await supabaseAdmin.auth.admin.generateLink({
     type: "magiclink",
     email,
