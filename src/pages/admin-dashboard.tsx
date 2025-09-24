@@ -1,641 +1,624 @@
 // src/pages/admin-dashboard.tsx
+// src/pages/admin-dashboard.tsx
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { createClient, type User } from "@supabase/supabase-js";
+import React, { useEffect, useMemo, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 
-/* =========================================
-   Setup
-   ========================================= */
-
-const ADMIN_EMAIL = "fuelflow.queries@gmail.com"; // change if needed
+/* =========================
+   Supabase
+   ========================= */
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
-// Shared UI bits
-function cx(...c: (string | false | null | undefined)[]) {
-  return c.filter(Boolean).join(" ");
-}
-const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
+type Fuel = "diesel" | "petrol" | string;
 
-/* =========================================
-   Types
-   ========================================= */
-
-// Orders
 type OrderRow = {
   id: string;
   created_at: string;
   user_email: string | null;
-  fuel: string | null;
+  fuel: Fuel | null;
   litres: number | null;
   unit_price_pence: number | null;
   total_pence: number | null;
   status: string | null;
 };
 
-// Payments (+ join to orders)
 type PaymentRow = {
   id?: string;
-  created_at?: string | null;
-  pi_id?: string | null;
+  order_id: string | null;
+  amount: number | null; // pence
+  currency: string | null;
+  status: string | null;
+  email: string | null;
   cs_id?: string | null;
-  order_id?: string | null;
-  email?: string | null;
-  amount?: number | null;  // pence
-  currency?: string | null;
-  status?: string | null;
-  orders?: {
-    created_at?: string | null;
-    fuel?: string | null;
-    litres?: number | null;
-    user_email?: string | null;
-  } | null;
+  pi_id?: string | null;
+  created_at?: string | null;
 };
 
-// Storage list entry (Supabase Storage JS SDK)
-type StorageEntry = {
-  id?: string;              // present for files, undefined for folders
-  name: string;             // name or folder name
-  created_at?: string;
-  updated_at?: string;
-  last_accessed_at?: string;
-  metadata?: {
-    size?: number;
-    mimetype?: string;
-    cacheControl?: string;
-    eTag?: string;
-    lastModified?: string;
-    contentLength?: number;
-    httpStatusCode?: number;
-  } | null;
-};
+/* =========================
+   Helpers
+   ========================= */
 
-// Canonical invoice record for table
-type InvoiceItem = {
-  path: string;           // full path (email/yyyy/mm/file.pdf)
-  email: string;          // email folder
-  year: string;           // "2025"
-  month: string;          // "01".."12"
-  file: string;           // filename.pdf
-  sizeKB: number;         // approx KB
-  updated_at?: string;    // from storage metadata
-  invoiceNo?: string;     // derived from filename (INV-...*.pdf)
-};
+const gbpFmt = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
 
-/* =========================================
+function cx(...c: (string | false | null | undefined)[]) {
+  return c.filter(Boolean).join(" ");
+}
+function toGBP(pence?: number | null) {
+  if (pence == null) return 0;
+  return pence / 100;
+}
+function startOfYear(d = new Date()) {
+  return new Date(d.getFullYear(), 0, 1);
+}
+function startOfMonth(d = new Date()) {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+function daysAgo(n: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d;
+}
+function labelForRange(r: "month" | "90d" | "ytd" | "all") {
+  switch (r) {
+    case "month":
+      return "This month";
+    case "90d":
+      return "Last 90 days";
+    case "ytd":
+      return "Year to date";
+    default:
+      return "All time";
+  }
+}
+function dateRange(r: "month" | "90d" | "ytd" | "all") {
+  switch (r) {
+    case "month":
+      return { from: startOfMonth(), to: null as Date | null };
+    case "90d":
+      return { from: daysAgo(90), to: null as Date | null };
+    case "ytd":
+      return { from: startOfYear(), to: null as Date | null };
+    case "all":
+    default:
+      return { from: null as Date | null, to: null as Date | null };
+  }
+}
+
+/* =========================
    Page
-   ========================================= */
+   ========================= */
 
 export default function AdminDashboard() {
-  const [user, setUser] = useState<User | null>(null);
-  const [isAdmin, setIsAdmin] = useState<boolean>(false);
-  const [loading, setLoading] = useState(true);
+  const [me, setMe] = useState<string>("");
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+
+  // Filters
+  type Range = "month" | "90d" | "ytd" | "all";
+  const [range, setRange] = useState<Range>("month");
+  const [search, setSearch] = useState<string>("");
+
+  // Orders & Payments
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [payments, setPayments] = useState<PaymentRow[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  // metrics
-  const [metrics, setMetrics] = useState({
-    revenue: 0,
-    litres: 0,
-    orders: 0,
-    paidOrders: 0,
-  });
+  // Collapsible sections
+  const [openOrders, setOpenOrders] = useState(true);
+  const [openPayments, setOpenPayments] = useState(false);
+  const [openInvoices, setOpenInvoices] = useState(false);
 
-  // search (client-side filter)
-  const [q, setQ] = useState("");
+  // Pagination (orders)
+  const ORDERS_STEP = 20;
+  const [ordersShown, setOrdersShown] = useState<number>(ORDERS_STEP);
 
-  // tab
-  type Tab = "orders" | "payments" | "invoices" | "customers";
-  const [tab, setTab] = useState<Tab>("invoices");
+  // Invoice browser (by customer email)
+  const [invEmail, setInvEmail] = useState<string>("");
+  const [invYear, setInvYear] = useState<string>("");
+  const [invMonth, setInvMonth] = useState<string>("");
+  const [invYears, setInvYears] = useState<string[]>([]);
+  const [invMonths, setInvMonths] = useState<string[]>([]);
+  const [invFiles, setInvFiles] = useState<{ name: string; path: string; last_modified?: string; size?: number }[]>([]);
+  const [invLoading, setInvLoading] = useState<boolean>(false);
 
-  // pagination state (very simple page-based)
-  const PAGE_SIZE = 50;
-
-  // data
-  const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [ordersLoadedAll, setOrdersLoadedAll] = useState(false);
-  const ordersPage = useRef(0);
-
-  const [payments, setPayments] = useState<PaymentRow[]>([]);
-  const [paymentsLoadedAll, setPaymentsLoadedAll] = useState(false);
-  const paymentsPage = useRef(0);
-
-  const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
-  const [invoicesLoadedAll, setInvoicesLoadedAll] = useState(false);
-  const invoicesCursor = useRef<{ stage: "emails" | "years" | "months" | "files"; emailIdx: number; yearIdx: number; monthIdx: number; fileOffset: number; emailList: string[]; yearList: string[]; monthList: string[] }>({
-    stage: "emails",
-    emailIdx: 0,
-    yearIdx: 0,
-    monthIdx: 0,
-    fileOffset: 0,
-    emailList: [],
-    yearList: [],
-    monthList: [],
-  });
-
-  // customers aggregation (derived from orders/payments)
-  const customersAgg = useMemo(() => {
-    const map = new Map<
-      string,
-      { orders: number; litres: number; spendPence: number; lastOrder?: Date }
-    >();
-    orders.forEach((o) => {
-      const email = (o.user_email || "").toLowerCase();
-      if (!email) return;
-      const cur = map.get(email) || { orders: 0, litres: 0, spendPence: 0, lastOrder: undefined };
-      cur.orders += 1;
-      cur.litres += o.litres || 0;
-      cur.spendPence += o.total_pence || 0;
-      const d = new Date(o.created_at);
-      if (!cur.lastOrder || d > cur.lastOrder) cur.lastOrder = d;
-      map.set(email, cur);
-    });
-    return Array.from(map.entries()).map(([email, v]) => ({
-      email,
-      ...v,
-    }));
-  }, [orders]);
-
-  // ---------- init ----------
+  // ---------- Auth + admin check ----------
   useEffect(() => {
+    (async () => {
+      const { data: auth } = await supabase.auth.getUser();
+      const email = (auth?.user?.email || "").toLowerCase();
+      if (!email) {
+        window.location.href = "/login";
+        return;
+      }
+      setMe(email);
+
+      const { data, error } = await supabase
+        .from("admins")
+        .select("email")
+        .eq("email", email)
+        .maybeSingle();
+
+      if (error) {
+        setError(error.message);
+        setIsAdmin(false);
+        return;
+      }
+      setIsAdmin(!!data?.email);
+    })();
+  }, []);
+
+  // Redirect non-admins cleanly
+  useEffect(() => {
+    if (isAdmin === false && typeof window !== "undefined") {
+      window.location.replace("/client-dashboard");
+    }
+  }, [isAdmin]);
+
+  // ---------- Load business data ----------
+  useEffect(() => {
+    if (isAdmin !== true) return;
+
     (async () => {
       try {
         setLoading(true);
-        const { data: auth } = await supabase.auth.getUser();
-        const u = auth?.user || null;
-        setUser(u);
-        const email = (u?.email || "").toLowerCase();
-        const admin = email === ADMIN_EMAIL;
-        setIsAdmin(admin);
-        if (!admin) {
-          setLoading(false);
-          return;
-        }
+        setError(null);
 
-        await Promise.all([loadMetrics(), resetOrders(), resetPayments(), resetInvoices()]);
+        const { from, to } = dateRange(range);
+
+        // Orders
+        let oq = supabase
+          .from("orders")
+          .select("id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status")
+          .order("created_at", { ascending: false })
+          .limit(1000);
+        if (from) oq = oq.gte("created_at", from.toISOString());
+        if (to) oq = oq.lte("created_at", to.toISOString());
+        const { data: od, error: oe } = await oq;
+        if (oe) throw oe;
+
+        // Payments
+        let pq = supabase
+          .from("payments")
+          .select("order_id, amount, currency, status, email, cs_id, pi_id, created_at")
+          .order("created_at", { ascending: false })
+          .limit(1000);
+        if (from) pq = pq.gte("created_at", from.toISOString());
+        if (to) pq = pq.lte("created_at", to.toISOString());
+        const { data: pd, error: pe } = await pq;
+        if (pe) throw pe;
+
+        setOrders((od || []) as OrderRow[]);
+        setPayments((pd || []) as PaymentRow[]);
+        setOrdersShown(ORDERS_STEP);
       } catch (e: any) {
-        setError(e?.message || "Failed to load admin dashboard.");
+        setError(e?.message || "Failed to load admin data");
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [isAdmin, range]);
 
-  /* =========================================
-     Loaders
-     ========================================= */
-
-  async function loadMetrics() {
-    // Revenue/litres/orders/paidOrders from DB (simple approximate)
-    // We’ll read many rows anyway for tables; but fetch lightweight aggregates to display fast.
-    const { data: ord } = await supabase
-      .from("orders")
-      .select("total_pence, litres, status")
-      .limit(10000); // generous cap; if you need larger, move metrics to a SQL view
-
-    let revenue = 0;
-    let litres = 0;
-    let orders = 0;
-    let paidOrders = 0;
-
-    (ord || []).forEach((o: any) => {
-      orders += 1;
-      litres += Number(o.litres || 0);
-      if ((o.status || "").toLowerCase() === "paid") {
-        paidOrders += 1;
-        revenue += Number(o.total_pence || 0) / 100;
-      }
-    });
-
-    setMetrics({ revenue, litres, orders, paidOrders });
-  }
-
-  // ----- Orders -----
-  async function resetOrders() {
-    ordersPage.current = 0;
-    setOrders([]);
-    setOrdersLoadedAll(false);
-    await loadMoreOrders();
-  }
-  async function loadMoreOrders() {
-    if (ordersLoadedAll) return;
-    const from = ordersPage.current * PAGE_SIZE;
-    const to = from + PAGE_SIZE - 1;
-    const { data, error } = await supabase
-      .from("orders")
-      .select("id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status")
-      .order("created_at", { ascending: false })
-      .range(from, to);
-    if (error) {
-      setError(error.message);
-      return;
-    }
-    const rows = (data || []) as OrderRow[];
-    setOrders((cur) => cur.concat(rows));
-    if (rows.length < PAGE_SIZE) setOrdersLoadedAll(true);
-    ordersPage.current += 1;
-  }
-
-  // ----- Payments -----
-  async function resetPayments() {
-    paymentsPage.current = 0;
-    setPayments([]);
-    setPaymentsLoadedAll(false);
-    await loadMorePayments();
-  }
-  async function loadMorePayments() {
-    if (paymentsLoadedAll) return;
-    const from = paymentsPage.current * PAGE_SIZE;
-    const to = from + PAGE_SIZE - 1;
-
-    const { data, error } = await supabase
-      .from("payments")
-      .select("id, created_at, pi_id, cs_id, order_id, email, amount, currency, status, orders:order_id(created_at, fuel, litres, user_email)")
-      .order("created_at", { ascending: false })
-      .range(from, to);
-
-    if (error) {
-      setError(error.message);
-      return;
-    }
-    const rows = (data || []) as PaymentRow[];
-    setPayments((cur) => cur.concat(rows));
-    if (rows.length < PAGE_SIZE) setPaymentsLoadedAll(true);
-    paymentsPage.current += 1;
-  }
-
-  // ----- Invoices (Storage) -----
-  async function resetInvoices() {
-    invoicesCursor.current = {
-      stage: "emails",
-      emailIdx: 0,
-      yearIdx: 0,
-      monthIdx: 0,
-      fileOffset: 0,
-      emailList: [],
-      yearList: [],
-      monthList: [],
-    };
-    setInvoices([]);
-    setInvoicesLoadedAll(false);
-    await loadMoreInvoices();
-  }
-
-  // list folder utility
-  async function listFolder(path: string, limit = 100, offset = 0): Promise<StorageEntry[]> {
-    const { data, error } = await supabase
-      .storage
-      .from("invoices")
-      .list(path, { limit, offset, sortBy: { column: "name", order: "desc" } });
-
-    if (error) throw error;
-    return (data || []) as StorageEntry[];
-  }
-
-  function isFolder(e: StorageEntry) {
-    // Supabase storage folders have no id (id undefined)
-    return !e.id;
-  }
-
-  async function ensureEmailList() {
-    if (invoicesCursor.current.emailList.length) return;
-    const root = await listFolder(""); // emails
-    const emailDirs = root.filter((e) => isFolder(e)).map((e) => e.name).sort((a, b) => a.localeCompare(b));
-    invoicesCursor.current.emailList = emailDirs;
-  }
-
-  async function ensureYearList(email: string) {
-    const ys = await listFolder(`${email}`);
-    const years = ys.filter((e) => isFolder(e) && /^\d{4}$/.test(e.name)).map((e) => e.name).sort().reverse();
-    invoicesCursor.current.yearList = years;
-  }
-
-  async function ensureMonthList(email: string, year: string) {
-    const ms = await listFolder(`${email}/${year}`);
-    const months = ms
-      .filter((e) => isFolder(e))
-      .map((e) => e.name)
-      .sort()
-      .reverse();
-    invoicesCursor.current.monthList = months;
-  }
-
-  async function loadMoreInvoices() {
-    if (invoicesLoadedAll) return;
-
-    const CUR_FETCH_TARGET = 50; // number of files to fetch per "load more"
-    const out: InvoiceItem[] = [];
-
-    await ensureEmailList();
-
-    const cur = invoicesCursor.current;
-    const emails = cur.emailList;
-
-    while (cur.emailIdx < emails.length && out.length < CUR_FETCH_TARGET) {
-      const email = emails[cur.emailIdx];
-
-      // years
-      if (cur.stage === "emails") {
-        await ensureYearList(email);
-        cur.stage = "years";
-        cur.yearIdx = 0;
-      }
-
-      while (cur.yearIdx < cur.yearList.length && out.length < CUR_FETCH_TARGET) {
-        const year = cur.yearList[cur.yearIdx];
-
-        if (cur.stage === "years") {
-          await ensureMonthList(email, year);
-          cur.stage = "months";
-          cur.monthIdx = 0;
-        }
-
-        while (cur.monthIdx < cur.monthList.length && out.length < CUR_FETCH_TARGET) {
-          const month = cur.monthList[cur.monthIdx];
-
-          // files
-          const path = `${email}/${year}/${month}`;
-          const files = await listFolder(path, CUR_FETCH_TARGET, 0);
-          const pdfs = files.filter((e) => !isFolder(e) && e.name.toLowerCase().endsWith(".pdf"));
-
-          pdfs.forEach((f) => {
-            const sizeBytes = f.metadata?.size ?? f.metadata?.contentLength ?? 0;
-            const sizeKB = Math.round((Number(sizeBytes) / 1024) * 10) / 10;
-            const item: InvoiceItem = {
-              path: `${path}/${f.name}`,
-              email,
-              year,
-              month,
-              file: f.name,
-              sizeKB,
-              updated_at: f.updated_at,
-              invoiceNo: f.name.replace(/\.pdf$/i, ""),
-            };
-            out.push(item);
-          });
-
-          cur.monthIdx += 1;
-        }
-
-        if (cur.monthIdx >= cur.monthList.length) {
-          cur.yearIdx += 1;
-          cur.stage = "years";
-        }
-      }
-
-      if (cur.yearIdx >= cur.yearList.length) {
-        cur.emailIdx += 1;
-        cur.stage = "emails";
-      }
-    }
-
-    setInvoices((curList) => curList.concat(out));
-    if (out.length < CUR_FETCH_TARGET && invoicesCursor.current.emailIdx >= invoicesCursor.current.emailList.length) {
-      setInvoicesLoadedAll(true);
-    }
-  }
-
-  /* =========================================
-     Filters / derived
-     ========================================= */
-
-  const qNorm = q.trim().toLowerCase();
-
+  // ---------- Derived KPIs ----------
   const filteredOrders = useMemo(() => {
-    if (!qNorm) return orders;
+    const s = search.trim().toLowerCase();
+    if (!s) return orders;
     return orders.filter((o) => {
-      const parts = [
-        o.id,
-        o.user_email,
-        o.fuel,
-        o.status,
-        new Date(o.created_at).toLocaleDateString(),
-      ]
-        .join(" ")
-        .toLowerCase();
-      return parts.includes(qNorm);
+      return (
+        (o.user_email || "").toLowerCase().includes(s) ||
+        (o.fuel || "").toLowerCase().includes(s) ||
+        (o.status || "").toLowerCase().includes(s) ||
+        (o.id || "").toLowerCase().includes(s)
+      );
     });
-  }, [orders, qNorm]);
+  }, [orders, search]);
+  const visibleOrders = useMemo(
+    () => filteredOrders.slice(0, ordersShown),
+    [filteredOrders, ordersShown]
+  );
 
-  const filteredPayments = useMemo(() => {
-    if (!qNorm) return payments;
-    return payments.filter((p) => {
-      const parts = [
-        p.email,
-        p.order_id,
-        p.status,
-        p.pi_id,
-        p.cs_id,
-        p.orders?.fuel,
-        p.orders?.user_email,
-        p.orders?.litres?.toString() || "",
-        p.created_at ? new Date(p.created_at).toLocaleString() : "",
-      ]
-        .join(" ")
-        .toLowerCase();
-      return parts.includes(qNorm);
-    });
-  }, [payments, qNorm]);
+  const sumLitres = filteredOrders.reduce((a, b) => a + (b.litres || 0), 0);
+  const sumRevenue = filteredOrders.reduce((a, b) => a + toGBP(b.total_pence), 0);
+  const paidCount = filteredOrders.filter((o) => (o.status || "").toLowerCase() === "paid").length;
 
-  const filteredInvoices = useMemo(() => {
-    if (!qNorm) return invoices;
-    return invoices.filter((i) => {
-      const parts = [i.email, i.year, i.month, i.file, i.invoiceNo, i.path].join(" ").toLowerCase();
-      return parts.includes(qNorm);
-    });
-  }, [invoices, qNorm]);
+  // ---------- Invoice browser helpers ----------
+  function resetInvoiceBrowser() {
+    setInvYears([]);
+    setInvMonths([]);
+    setInvFiles([]);
+    setInvYear("");
+    setInvMonth("");
+  }
 
-  /* =========================================
-     UI
-     ========================================= */
+  async function loadYears() {
+    resetInvoiceBrowser();
+    if (!invEmail) return;
+    setInvLoading(true);
+    try {
+      const email = invEmail.toLowerCase();
+      const { data, error } = await supabase.storage.from("invoices").list(`${email}`, {
+        limit: 1000,
+        sortBy: { column: "name", order: "asc" },
+      });
+      if (error) throw error;
+      const years = (data || [])
+        .filter((x) => x.name.match(/^\d{4}$/))
+        .map((x) => x.name);
+      setInvYears(years);
+    } catch (e: any) {
+      setError(e?.message || "Failed to list years");
+    } finally {
+      setInvLoading(false);
+    }
+  }
 
-  if (loading) {
+  async function loadMonths(year: string) {
+    setInvYear(year);
+    setInvMonths([]);
+    setInvFiles([]);
+    if (!invEmail || !year) return;
+    setInvLoading(true);
+    try {
+      const email = invEmail.toLowerCase();
+      const { data, error } = await supabase.storage.from("invoices").list(`${email}/${year}`, {
+        limit: 1000,
+        sortBy: { column: "name", order: "asc" },
+      });
+      if (error) throw error;
+      const months = (data || [])
+        .filter((x) => x.name.match(/^(0[1-9]|1[0-2])$/))
+        .map((x) => x.name);
+      setInvMonths(months);
+    } catch (e: any) {
+      setError(e?.message || "Failed to list months");
+    } finally {
+      setInvLoading(false);
+    }
+  }
+
+  async function loadFiles(month: string) {
+    setInvMonth(month);
+    setInvFiles([]);
+    if (!invEmail || !invYear || !month) return;
+    setInvLoading(true);
+    try {
+      const email = invEmail.toLowerCase();
+      const prefix = `${email}/${invYear}/${month}`;
+      const { data, error } = await supabase.storage.from("invoices").list(prefix, {
+        limit: 1000,
+        sortBy: { column: "name", order: "desc" },
+      });
+      if (error) throw error;
+      const files =
+        (data || [])
+          .filter((x) => x.name.toLowerCase().endsWith(".pdf"))
+          .map((x) => ({
+            name: x.name,
+            path: `${prefix}/${x.name}`,
+            last_modified: (x as any).updated_at || undefined,
+            size: x.metadata?.size,
+          })) || [];
+      setInvFiles(files);
+    } catch (e: any) {
+      setError(e?.message || "Failed to list invoices");
+    } finally {
+      setInvLoading(false);
+    }
+  }
+
+  async function getSignedUrl(path: string) {
+    const { data, error } = await supabase.storage.from("invoices").createSignedUrl(path, 60 * 10);
+    if (error) throw error;
+    return data.signedUrl;
+  }
+
+  /* =========================
+     Render
+     ========================= */
+
+  // While we check admin
+  if (isAdmin === null) {
     return (
-      <div className="min-h-screen bg-[#0b1220] text-white grid place-items-center">
-        <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">Loading…</div>
+      <div className="min-h-screen grid place-items-center bg-[#0b1220] text-white">
+        <div className="rounded-xl border border-white/10 bg-white/[0.03] px-6 py-4 text-white/80">Checking admin…</div>
       </div>
     );
   }
-
-  if (!isAdmin) {
-    return (
-      <div className="min-h-screen bg-[#0b1220] text-white grid place-items-center">
-        <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">
-          You don’t have access to the admin dashboard.
-        </div>
-      </div>
-    );
-  }
+  // If not admin, we redirect (effect above); render nothing.
+  if (isAdmin === false) return null;
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
-      {/* Top bar */}
-      <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
-        <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-        <div className="text-white/80">Signed in as {user?.email}</div>
-        <div className="ml-auto flex items-center gap-2">
-          <a href="/client-dashboard" className="rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm">Client view</a>
-          <button
-            className="rounded-lg bg-yellow-500 hover:bg-yellow-400 px-3 py-1.5 text-sm font-semibold text-[#041F3E]"
-            onClick={async () => {
-              await supabase.auth.signOut();
-              window.location.href = "https://fuelflow.co.uk";
-            }}
-          >
-            Log out
-          </button>
+      {/* Header */}
+      <div className="sticky top-0 z-30 border-b border-white/10 bg-[#0b1220]/80 backdrop-blur">
+        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-3">
+          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+          <div className="text-sm text-white/70">
+            Signed in as <span className="font-medium">{me}</span>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
+              Client view
+            </a>
+            <button
+              onClick={async () => {
+                await supabase.auth.signOut();
+                window.location.href = "/login";
+              }}
+              className="rounded-lg bg-yellow-500 px-3 py-1.5 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
+            >
+              Log out
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Metrics */}
-      <div className="max-w-6xl mx-auto px-4 grid grid-cols-1 md:grid-cols-4 gap-4">
-        <MetricCard label="REVENUE" value={gbp.format(metrics.revenue)} />
-        <MetricCard label="LITRES" value={metrics.litres.toLocaleString()} />
-        <MetricCard label="ORDERS" value={metrics.orders.toLocaleString()} />
-        <MetricCard label="PAID ORDERS" value={metrics.paidOrders.toLocaleString()} />
-      </div>
+      <div className="max-w-7xl mx-auto px-4 py-5 space-y-6">
+        {/* Top: KPIs & controls */}
+        <section className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+          <KpiCard label="Revenue" value={gbpFmt.format(sumRevenue)} />
+          <KpiCard label="Litres" value={Math.round(sumLitres).toLocaleString()} />
+          <KpiCard label="Orders" value={filteredOrders.length.toLocaleString()} />
+          <KpiCard label="Paid Orders" value={paidCount.toLocaleString()} />
+        </section>
 
-      {/* Tabs & Search */}
-      <div className="max-w-6xl mx-auto px-4 mt-4 flex flex-wrap items-center gap-2">
-        <button className={tabBtn(tab === "orders")} onClick={() => setTab("orders")}>Orders</button>
-        <button className={tabBtn(tab === "payments")} onClick={() => setTab("payments")}>Payments</button>
-        <button className={tabBtn(tab === "invoices")} onClick={() => setTab("invoices")}>Invoices</button>
-        <button className={tabBtn(tab === "customers")} onClick={() => setTab("customers")}>Customers</button>
-
-        <div className="ml-auto w-full sm:w-96">
-          <input
-            placeholder="Search email, product, status, order id, invoice…"
-            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm placeholder-white/40 outline-none focus:ring-2 focus:ring-yellow-400"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-        </div>
-      </div>
-
-      {/* Body */}
-      <div className="max-w-6xl mx-auto px-4 pb-24 mt-4 space-y-4">
-        {tab === "orders" && (
-          <Section
-            title="Orders"
-            right={
-              ordersLoadedAll ? (
-                <Badge>All loaded</Badge>
-              ) : (
-                <button className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15" onClick={loadMoreOrders}>
-                  Load more
-                </button>
-              )
-            }
-          >
-            <Table
-              head={["Date", "Email", "Product", "Litres", "Amount", "Status"]}
-              rows={filteredOrders.map((o) => [
-                new Date(o.created_at).toLocaleString(),
-                o.user_email || "—",
-                (o.fuel || "—").toString(),
-                (o.litres ?? 0).toLocaleString(),
-                gbp.format((o.total_pence ?? 0) / 100),
-                (o.status || "—").toString(),
-              ])}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="rounded-lg bg-white/5 p-1">
+            {(["month", "90d", "ytd", "all"] as const).map((r) => (
+              <button
+                key={r}
+                onClick={() => setRange(r)}
+                className={cx(
+                  "px-3 py-1.5 text-sm rounded-md",
+                  range === r ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/10"
+                )}
+              >
+                {labelForRange(r)}
+              </button>
+            ))}
+          </div>
+          <div className="relative ml-auto w-full sm:w-80">
+            <input
+              placeholder="Search email, product, status, order id"
+              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
             />
-          </Section>
-        )}
-
-        {tab === "payments" && (
-          <Section
-            title="Payments"
-            right={
-              paymentsLoadedAll ? (
-                <Badge>All loaded</Badge>
-              ) : (
-                <button className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15" onClick={loadMorePayments}>
-                  Load more
-                </button>
-              )
-            }
-          >
-            <Table
-              head={["Date", "Email", "Fuel", "Litres", "Amount", "Status", "Order #", "PI", "Session"]}
-              rows={filteredPayments.map((p) => [
-                p.created_at ? new Date(p.created_at).toLocaleString() : "—",
-                p.orders?.user_email || p.email || "—",
-                p.orders?.fuel || "—",
-                p.orders?.litres ?? "—",
-                p.amount != null ? gbp.format((p.amount as number) / 100) : "—",
-                p.status || "—",
-                p.order_id || "—",
-                p.pi_id || "—",
-                p.cs_id || "—",
-              ])}
-            />
-          </Section>
-        )}
-
-        {tab === "invoices" && (
-          <Section
-            title="Invoices"
-            right={
-              invoicesLoadedAll ? (
-                <Badge>All loaded</Badge>
-              ) : (
-                <button className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15" onClick={loadMoreInvoices}>
-                  Load more
-                </button>
-              )
-            }
-          >
-            <Table
-              head={["Date", "Email", "Invoice #", "Folder", "File", "Size", "Open"]}
-              rows={filteredInvoices.map((i) => [
-                i.updated_at ? new Date(i.updated_at).toLocaleString() : "—",
-                i.email,
-                i.invoiceNo || i.file.replace(/\.pdf$/i, ""),
-                `${i.email}/${i.year}/${i.month}`,
-                i.file,
-                `${i.sizeKB.toLocaleString()} KB`,
-                <a
-                  key={i.path}
-                  className="inline-flex items-center rounded bg-yellow-500 px-2 py-1 text-xs font-semibold text-[#041F3E] hover:bg-yellow-400"
-                  href={supabase.storage.from("invoices").getPublicUrl(i.path).data.publicUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  View
-                </a>,
-              ])}
-            />
-          </Section>
-        )}
-
-        {tab === "customers" && (
-          <Section
-            title="Customers"
-            right={<Badge>{customersAgg.length.toLocaleString()} total</Badge>}
-          >
-            <Table
-              head={["Customer", "Orders", "Litres", "Spend", "Last order"]}
-              rows={customersAgg
-                .sort((a, b) => (b.spendPence - a.spendPence))
-                .map((c) => [
-                  c.email,
-                  c.orders.toLocaleString(),
-                  Math.round(c.litres).toLocaleString(),
-                  gbp.format(c.spendPence / 100),
-                  c.lastOrder ? c.lastOrder.toLocaleString() : "—",
-                ])}
-            />
-          </Section>
-        )}
-
-        {/* Footer stamp */}
-        <div className="text-center text-xs text-white/50">
-          Admin · Refreshed {new Date().toLocaleString()}
+            {!!search && (
+              <button className="absolute right-2 top-1/2 -translate-y-1/2 text-white/60 text-xs" onClick={() => setSearch("")}>
+                clear
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Error */}
+        {/* Orders (collapsible) */}
+        <Accordion
+          title={`Orders`}
+          subtitle={`${visibleOrders.length} of ${filteredOrders.length}`}
+          open={openOrders}
+          onToggle={() => setOpenOrders((s) => !s)}
+          loading={loading}
+          error={error}
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-white/70">
+                <tr className="border-b border-white/10">
+                  <th className="py-2 pr-4">Date</th>
+                  <th className="py-2 pr-4">Email</th>
+                  <th className="py-2 pr-4">Product</th>
+                  <th className="py-2 pr-4">Litres</th>
+                  <th className="py-2 pr-4">Amount</th>
+                  <th className="py-2 pr-4">Status</th>
+                  <th className="py-2 pr-4">Order ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleOrders.map((o) => (
+                  <tr key={o.id} className="border-b border-white/5">
+                    <td className="py-2 pr-4 whitespace-nowrap">{new Date(o.created_at).toLocaleString()}</td>
+                    <td className="py-2 pr-4">{o.user_email}</td>
+                    <td className="py-2 pr-4 capitalize">{o.fuel || "—"}</td>
+                    <td className="py-2 pr-4">{o.litres ?? "—"}</td>
+                    <td className="py-2 pr-4">{gbpFmt.format(toGBP(o.total_pence))}</td>
+                    <td className="py-2 pr-4">
+                      <span
+                        className={cx(
+                          "inline-flex items-center rounded px-2 py-0.5 text-xs",
+                          (o.status || "").toLowerCase() === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
+                        )}
+                      >
+                        {(o.status || "pending").toLowerCase()}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-4 font-mono text-[11px]">{o.id}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {visibleOrders.length < filteredOrders.length && (
+            <div className="mt-3 text-center">
+              <button
+                onClick={() => setOrdersShown((n) => n + ORDERS_STEP)}
+                className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+              >
+                Load 20 more
+              </button>
+            </div>
+          )}
+        </Accordion>
+
+        {/* Payments (collapsible) */}
+        <Accordion
+          title="Payments"
+          subtitle={`${payments.length} rows`}
+          open={openPayments}
+          onToggle={() => setOpenPayments((s) => !s)}
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-white/70">
+                <tr className="border-b border-white/10">
+                  <th className="py-2 pr-4">Date</th>
+                  <th className="py-2 pr-4">Email</th>
+                  <th className="py-2 pr-4">Amount</th>
+                  <th className="py-2 pr-4">Status</th>
+                  <th className="py-2 pr-4">Order ID</th>
+                  <th className="py-2 pr-4">PI</th>
+                  <th className="py-2 pr-4">Session</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payments.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-3 text-white/60">
+                      No rows.
+                    </td>
+                  </tr>
+                ) : (
+                  payments.map((p, i) => (
+                    <tr key={i} className="border-b border-white/5">
+                      <td className="py-2 pr-4 whitespace-nowrap">
+                        {p.created_at ? new Date(p.created_at).toLocaleString() : "—"}
+                      </td>
+                      <td className="py-2 pr-4">{p.email || "—"}</td>
+                      <td className="py-2 pr-4">{gbpFmt.format(toGBP(p.amount))}</td>
+                      <td className="py-2 pr-4">
+                        <span
+                          className={cx(
+                            "inline-flex items-center rounded px-2 py-0.5 text-xs",
+                            p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
+                          )}
+                        >
+                          {(p.status || "—").toLowerCase()}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-4 font-mono text-[11px]">{p.order_id || "—"}</td>
+                      <td className="py-2 pr-4 font-mono text-[11px]">{p.pi_id || "—"}</td>
+                      <td className="py-2 pr-4 font-mono text-[11px]">{p.cs_id || "—"}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Accordion>
+
+        {/* Invoice browser (collapsible) */}
+        <Accordion
+          title="Invoice Browser"
+          subtitle="Pick email → year → month"
+          open={openInvoices}
+          onToggle={() => setOpenInvoices((s) => !s)}
+        >
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs text-white/70 mb-1">Customer email</label>
+              <div className="flex gap-2">
+                <input
+                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                  placeholder="name@company.com"
+                  value={invEmail}
+                  onChange={(e) => setInvEmail(e.target.value)}
+                />
+                <button onClick={loadYears} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
+                  Load
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs text-white/70 mb-1">Year</label>
+              <select
+                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm"
+                value={invYear}
+                onChange={(e) => loadMonths(e.target.value)}
+              >
+                <option value="">—</option>
+                {invYears.map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs text-white/70 mb-1">Month</label>
+              <select
+                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm"
+                value={invMonth}
+                onChange={(e) => loadFiles(e.target.value)}
+              >
+                <option value="">—</option>
+                {invMonths.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            {invLoading ? (
+              <div className="text-white/70">Loading…</div>
+            ) : invFiles.length === 0 ? (
+              <div className="text-white/60 text-sm">No invoices to show.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="text-white/70">
+                    <tr className="border-b border-white/10">
+                      <th className="py-2 pr-4">Invoice PDF</th>
+                      <th className="py-2 pr-4">Last modified</th>
+                      <th className="py-2 pr-4">Size</th>
+                      <th className="py-2 pr-4">Open</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invFiles.map((f) => (
+                      <tr key={f.path} className="border-b border-white/5">
+                        <td className="py-2 pr-4">{f.name}</td>
+                        <td className="py-2 pr-4">
+                          {f.last_modified ? new Date(f.last_modified).toLocaleString() : "—"}
+                        </td>
+                        <td className="py-2 pr-4">{f.size ? `${Math.round(f.size / 1024)} KB` : "—"}</td>
+                        <td className="py-2 pr-4">
+                          <button
+                            className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-2 py-1 hover:bg-yellow-400"
+                            onClick={async () => {
+                              try {
+                                const url = await getSignedUrl(f.path);
+                                window.open(url, "_blank");
+                              } catch (e: any) {
+                                setError(e?.message || "Failed to open");
+                              }
+                            }}
+                          >
+                            View
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </Accordion>
+
+        <footer className="py-6 text-center text-xs text-white/50">
+          FuelFlow Admin • {new Date().getFullYear()}
+        </footer>
+
         {error && (
           <div className="rounded-lg border border-rose-400/40 bg-rose-500/10 p-2 text-sm text-rose-200">
             {error}
@@ -646,82 +629,80 @@ export default function AdminDashboard() {
   );
 }
 
-/* =========================================
-   Small components
-   ========================================= */
+/* =========================
+   Components
+   ========================= */
 
-function MetricCard({ label, value }: { label: string; value: string }) {
+function Chevron({ open }: { open: boolean }) {
   return (
-    <div className="rounded-xl bg-white/5 border border-white/10 p-4">
-      <div className="text-sm text-white/60">{label}</div>
-      <div className="mt-1 text-3xl font-bold">{value}</div>
-    </div>
+    <svg
+      viewBox="0 0 24 24"
+      className={cx("h-5 w-5 transition-transform", open ? "rotate-90" : "rotate-0")}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
+      <path d="M8 5l8 7-8 7" />
+    </svg>
   );
 }
 
-function Section({
+function Accordion({
   title,
-  right,
+  subtitle,
+  open,
+  onToggle,
+  loading,
+  error,
   children,
 }: {
   title: string;
-  right?: React.ReactNode;
+  subtitle?: string;
+  open: boolean;
+  onToggle: () => void;
+  loading?: boolean;
+  error?: string | null;
   children: React.ReactNode;
 }) {
   return (
     <section className="rounded-xl border border-white/10 bg-white/[0.03]">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-        <div className="font-semibold">{title}</div>
-        <div>{right}</div>
-      </div>
-      <div className="p-3">{children}</div>
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-3 text-left"
+      >
+        <div className="flex items-center gap-3">
+          <Chevron open={open} />
+          <div className="font-semibold">{title}</div>
+          {subtitle && (
+            <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/80">{subtitle}</span>
+          )}
+        </div>
+        <div className="text-xs text-white/60">{open ? "Collapse" : "Expand"}</div>
+      </button>
+      {open && (
+        <div className="px-3 pb-3">
+          {loading ? (
+            <div className="px-1 py-2 text-white/70">Loading…</div>
+          ) : error ? (
+            <div className="mx-1 rounded border border-rose-400/40 bg-rose-500/10 p-3 text-rose-200 text-sm">
+              {error}
+            </div>
+          ) : (
+            children
+          )}
+        </div>
+      )}
     </section>
   );
 }
 
-function Table({ head, rows }: { head: (string | React.ReactNode)[]; rows: (React.ReactNode[])[] }) {
+function KpiCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-sm">
-        <thead className="text-white/70">
-          <tr className="border-b border-white/10">
-            {head.map((h, i) => (
-              <th key={i} className="py-2 pr-4">{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={head.length} className="py-4 text-white/60">No rows.</td>
-            </tr>
-          ) : (
-            rows.map((r, i) => (
-              <tr key={i} className="border-b border-white/5">
-                {r.map((c, j) => (
-                  <td key={j} className="py-2 pr-4 align-middle">{c}</td>
-                ))}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+    <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+      <div className="text-sm text-white/70">{label}</div>
+      <div className="mt-1 text-2xl font-semibold">{value}</div>
     </div>
   );
 }
 
-function Badge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-1 text-xs text-white/80">
-      {children}
-    </span>
-  );
-}
-
-function tabBtn(active: boolean) {
-  return cx(
-    "rounded-lg px-3 py-1.5 text-sm",
-    active ? "bg-yellow-500 text-[#041F3E] font-semibold" : "bg-white/10 hover:bg-white/15"
-  );
-}
 
