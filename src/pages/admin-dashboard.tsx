@@ -102,7 +102,7 @@ export default function AdminDashboard() {
   const [range, setRange] = useState<Range>("month");
   const [search, setSearch] = useState<string>("");
 
-  // NEW: customer filter (email)
+  // Customer filter
   const [customerFilter, setCustomerFilter] = useState<string>("all");
 
   // Orders & Payments
@@ -288,7 +288,7 @@ export default function AdminDashboard() {
   const sumRevenue = filteredOrders.reduce((a, b) => a + toGBP(b.total_pence), 0);
   const paidCount = filteredOrders.filter((o) => (o.status || "").toLowerCase() === "paid").length;
 
-  /* ===== Usage & Spend (yearly view with progress bars) ===== */
+  /* ===== Usage & Spend (yearly view) ===== */
 
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
   const currentYear = new Date().getFullYear();
@@ -456,78 +456,92 @@ export default function AdminDashboard() {
           <KpiCard label="Paid Orders" value={paidCount.toLocaleString()} />
         </section>
 
-        {/* Controls */}
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="rounded-lg bg-white/5 p-1 w-full sm:w-auto">
-            {(["month", "90d", "ytd", "all"] as const).map((r) => (
+        {/* Controls (mobile-first layout) */}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-12 sm:items-end">
+          {/* Date range group */}
+          <div className="sm:col-span-5 xl:col-span-4">
+            <div className="rounded-lg bg-white/5 p-1 flex flex-wrap gap-1">
+              {(["month", "90d", "ytd", "all"] as const).map((r) => (
+                <button
+                  key={r}
+                  onClick={() => setRange(r)}
+                  className={cx(
+                    "flex-1 min-w-[8rem] px-3 py-1.5 text-sm rounded-md",
+                    range === r ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/10"
+                  )}
+                >
+                  {labelForRange(r)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Customer picker */}
+          <div className="sm:col-span-7 xl:col-span-8">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <label className="flex-1 inline-flex items-center gap-2 text-sm">
+                <span className="text-white/70 shrink-0">Customer:</span>
+                <select
+                  value={customerFilter}
+                  onChange={(e) => setCustomerFilter(e.target.value)}
+                  className="min-w-[12rem] flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                >
+                  {customerOptions.map((email) => (
+                    <option key={email} value={email}>
+                      {email === "all" ? "All customers" : email}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {/* Use in Invoice Browser — mobile: full width button below; desktop: inline */}
               <button
-                key={r}
-                onClick={() => setRange(r)}
+                type="button"
+                disabled={customerFilter === "all"}
+                onClick={() => {
+                  if (customerFilter !== "all") {
+                    setInvEmail(customerFilter);
+                    loadYears();
+                    setOpenInvoices(true);
+                    // Scroll to invoices on mobile for clarity
+                    setTimeout(() => {
+                      const el = document.getElementById("invoices-accordion");
+                      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }, 10);
+                  }
+                }}
                 className={cx(
-                  "px-3 py-1.5 text-sm rounded-md w-1/2 sm:w-auto",
-                  range === r ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/10"
+                  "w-full sm:w-auto whitespace-nowrap rounded-lg px-3 py-2 text-sm",
+                  customerFilter === "all"
+                    ? "bg-white/10 text-white/60 cursor-not-allowed"
+                    : "bg-white/10 hover:bg-white/15"
                 )}
+                aria-label="Open the invoice browser for the selected customer"
+                title="Opens the invoice list for this customer"
               >
-                {labelForRange(r)}
+                Use in invoice browser
               </button>
-            ))}
+            </div>
           </div>
 
-          {/* NEW: Customer dropdown */}
-          <div className="flex gap-2 w-full sm:w-auto">
-            <label className="flex-1 sm:flex-none inline-flex items-center gap-2 text-sm">
-              <span className="text-white/70">Customer:</span>
-              <select
-                value={customerFilter}
-                onChange={(e) => setCustomerFilter(e.target.value)}
-                className="min-w-[12rem] max-w-[18rem] flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
-              >
-                {customerOptions.map((email) => (
-                  <option key={email} value={email}>
-                    {email === "all" ? "All customers" : email}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            {/* Convenience: push selected customer into the invoice browser */}
-            <button
-              type="button"
-              disabled={customerFilter === "all"}
-              onClick={() => {
-                if (customerFilter !== "all") {
-                  setInvEmail(customerFilter);
-                  loadYears();
-                  setOpenInvoices(true);
-                }
-              }}
-              className={cx(
-                "rounded-lg px-3 py-1.5 text-sm",
-                customerFilter === "all"
-                  ? "bg-white/10 text-white/60 cursor-not-allowed"
-                  : "bg-white/10 hover:bg-white/15"
+          {/* Search */}
+          <div className="sm:col-span-12 xl:col-span-12">
+            <div className="relative w-full">
+              <input
+                placeholder="Search email, product, status, order id, PI, session"
+                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              {!!search && (
+                <button
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-white/60 text-xs"
+                  onClick={() => setSearch("")}
+                >
+                  clear
+                </button>
               )}
-              title="Open the invoice browser for this customer"
-            >
-              Use in Invoice Browser
-            </button>
-          </div>
-
-          <div className="relative sm:ml-auto w-full sm:w-80">
-            <input
-              placeholder="Search email, product, status, order id"
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            {!!search && (
-              <button
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-white/60 text-xs"
-                onClick={() => setSearch("")}
-              >
-                clear
-              </button>
-            )}
+            </div>
           </div>
         </div>
 
@@ -633,11 +647,11 @@ export default function AdminDashboard() {
           <div className="space-y-3 md:hidden">
             {visibleOrders.map((o) => (
               <div key={o.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <div className="font-medium">{(o.fuel || "—").toString().toUpperCase()}</div>
                   <span
                     className={cx(
-                      "ml-2 inline-flex items-center rounded px-2 py-0.5 text-[11px]",
+                      "inline-flex items-center rounded px-2 py-0.5 text-[11px]",
                       (o.status || "").toLowerCase() === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
                     )}
                   >
@@ -645,7 +659,7 @@ export default function AdminDashboard() {
                   </span>
                 </div>
                 <div className="mt-1 text-[13px] text-white/80">{o.user_email || "—"}</div>
-                <div className="mt-2 flex flex-wrap gap-3 text-sm">
+                <div className="mt-2 flex flex-wrap gap-2 text-sm">
                   <Badge label="Litres" value={String(o.litres ?? "—")} />
                   <Badge label="Amount" value={gbpFmt.format(toGBP(o.total_pence))} />
                   <Badge label="Date" value={new Date(o.created_at).toLocaleString()} />
@@ -730,7 +744,7 @@ export default function AdminDashboard() {
             ) : (
               filteredPayments.map((p, i) => (
                 <div key={i} className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <div className="font-medium">{gbpFmt.format(toGBP(p.amount))}</div>
                     <span
                       className={cx(
@@ -743,12 +757,13 @@ export default function AdminDashboard() {
                   </div>
                   <div className="mt-1 text-[13px] text-white/80">{p.email || "—"}</div>
 
-                  <div className="mt-2 flex flex-wrap gap-3 text-sm">
+                  <div className="mt-2 flex flex-wrap gap-2 text-sm">
                     <Badge label="Date" value={p.created_at ? new Date(p.created_at).toLocaleString() : "—"} />
                     <Badge label="Order" value={p.order_id || "—"} />
                   </div>
 
                   <div className="mt-2 grid grid-cols-1 gap-1">
+                    {/* These wrap and don't resize the viewport */}
                     <CodeRow label="PI" value={p.pi_id || "—"} />
                     <CodeRow label="Session" value={p.cs_id || "—"} />
                   </div>
@@ -814,6 +829,7 @@ export default function AdminDashboard() {
           open={openInvoices}
           onToggle={() => setOpenInvoices((s) => !s)}
         >
+          <div id="invoices-accordion" />
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
               <label className="block text-xs text-white/70 mb-1">Customer email</label>
@@ -1072,4 +1088,3 @@ function CodeRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-
