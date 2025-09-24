@@ -34,8 +34,8 @@ type PaymentRow = {
   currency: string | null;
   status: string | null;
   email: string | null;
-  cs_id?: string | null;
-  pi_id?: string | null;
+  cs_id?: string | null; // checkout session
+  pi_id?: string | null; // payment intent
   created_at?: string | null;
 };
 
@@ -116,6 +116,10 @@ export default function AdminDashboard() {
   // Pagination (orders)
   const ORDERS_STEP = 20;
   const [ordersShown, setOrdersShown] = useState<number>(ORDERS_STEP);
+
+  // NEW: status filters
+  const [orderStatusFilter, setOrderStatusFilter] = useState<string>("all");
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("all");
 
   // Invoice browser (by customer email)
   const [invEmail, setInvEmail] = useState<string>("");
@@ -203,11 +207,32 @@ export default function AdminDashboard() {
     })();
   }, [isAdmin, range]);
 
-  // ---------- Derived KPIs ----------
+  // ---------- Derived KPIs + status options ----------
+  const orderStatusOptions = useMemo(() => {
+    const set = new Set<string>();
+    orders.forEach((o) => {
+      const s = (o.status || "").toLowerCase();
+      if (s) set.add(s);
+    });
+    return ["all", ...Array.from(set).sort()];
+  }, [orders]);
+
+  const paymentStatusOptions = useMemo(() => {
+    const set = new Set<string>();
+    payments.forEach((p) => {
+      const s = (p.status || "").toLowerCase();
+      if (s) set.add(s);
+    });
+    return ["all", ...Array.from(set).sort()];
+  }, [payments]);
+
+  // Apply global search + status filters to Orders
   const filteredOrders = useMemo(() => {
     const s = search.trim().toLowerCase();
-    if (!s) return orders;
     return orders.filter((o) => {
+      const statusOk = orderStatusFilter === "all" || (o.status || "").toLowerCase() === orderStatusFilter;
+      if (!statusOk) return false;
+      if (!s) return true;
       return (
         (o.user_email || "").toLowerCase().includes(s) ||
         (o.fuel || "").toLowerCase().includes(s) ||
@@ -215,11 +240,27 @@ export default function AdminDashboard() {
         (o.id || "").toLowerCase().includes(s)
       );
     });
-  }, [orders, search]);
+  }, [orders, search, orderStatusFilter]);
   const visibleOrders = useMemo(
     () => filteredOrders.slice(0, ordersShown),
     [filteredOrders, ordersShown]
   );
+
+  // Apply search + status filters to Payments
+  const filteredPayments = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    return payments.filter((p) => {
+      const statusOk = paymentStatusFilter === "all" || (p.status || "").toLowerCase() === paymentStatusFilter;
+      if (!statusOk) return false;
+      if (!s) return true;
+      return (
+        (p.email || "").toLowerCase().includes(s) ||
+        (p.order_id || "").toLowerCase().includes(s) ||
+        (p.pi_id || "").toLowerCase().includes(s) ||
+        (p.cs_id || "").toLowerCase().includes(s)
+      );
+    });
+  }, [payments, search, paymentStatusFilter]);
 
   const sumLitres = filteredOrders.reduce((a, b) => a + (b.litres || 0), 0);
   const sumRevenue = filteredOrders.reduce((a, b) => a + toGBP(b.total_pence), 0);
@@ -359,7 +400,7 @@ export default function AdminDashboard() {
   if (isAdmin === false) return null;
 
   return (
-    <div className="min-h-screen bg-[#0b1220] text-white">
+    <div className="min-h-screen bg-[#0b1220] text-white overflow-x-hidden">
       {/* Header */}
       <div className="sticky top-0 z-30 border-b border-white/10 bg-[#0b1220]/80 backdrop-blur">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-3">
@@ -517,6 +558,14 @@ export default function AdminDashboard() {
           onToggle={() => setOpenOrders((s) => !s)}
           loading={loading}
           error={error}
+          right={
+            <StatusSelect
+              value={orderStatusFilter}
+              onChange={setOrderStatusFilter}
+              options={orderStatusOptions}
+              label="Status"
+            />
+          }
         >
           {/* Mobile cards */}
           <div className="space-y-3 md:hidden">
@@ -539,7 +588,9 @@ export default function AdminDashboard() {
                   <Badge label="Amount" value={gbpFmt.format(toGBP(o.total_pence))} />
                   <Badge label="Date" value={new Date(o.created_at).toLocaleString()} />
                 </div>
-                <div className="mt-2 font-mono text-[11px] text-white/60 break-all">Order: {o.id}</div>
+                <div className="mt-2 grid grid-cols-1 gap-1">
+                  <CodeRow label="Order" value={o.id} />
+                </div>
               </div>
             ))}
           </div>
@@ -576,7 +627,7 @@ export default function AdminDashboard() {
                         {(o.status || "pending").toLowerCase()}
                       </span>
                     </td>
-                    <td className="py-2 pr-4 font-mono text-[11px]">{o.id}</td>
+                    <td className="py-2 pr-4 font-mono text-[11px] break-all">{o.id}</td>
                   </tr>
                 ))}
               </tbody>
@@ -598,16 +649,24 @@ export default function AdminDashboard() {
         {/* Payments */}
         <Accordion
           title="Payments"
-          subtitle={`${payments.length} rows`}
+          subtitle={`${filteredPayments.length} rows`}
           open={openPayments}
           onToggle={() => setOpenPayments((s) => !s)}
+          right={
+            <StatusSelect
+              value={paymentStatusFilter}
+              onChange={setPaymentStatusFilter}
+              options={paymentStatusOptions}
+              label="Status"
+            />
+          }
         >
-          {/* Mobile cards */}
+          {/* Mobile cards (overflow-safe) */}
           <div className="space-y-3 md:hidden">
-            {payments.length === 0 ? (
+            {filteredPayments.length === 0 ? (
               <div className="text-white/60 text-sm">No rows.</div>
             ) : (
-              payments.map((p, i) => (
+              filteredPayments.map((p, i) => (
                 <div key={i} className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
                   <div className="flex items-center justify-between">
                     <div className="font-medium">{gbpFmt.format(toGBP(p.amount))}</div>
@@ -621,11 +680,16 @@ export default function AdminDashboard() {
                     </span>
                   </div>
                   <div className="mt-1 text-[13px] text-white/80">{p.email || "—"}</div>
+
                   <div className="mt-2 flex flex-wrap gap-3 text-sm">
                     <Badge label="Date" value={p.created_at ? new Date(p.created_at).toLocaleString() : "—"} />
-                    <Badge label="Order" value={p.order_id || "—"} mono />
-                    <Badge label="PI" value={p.pi_id || "—"} mono />
-                    <Badge label="Session" value={p.cs_id || "—"} mono />
+                    <Badge label="Order" value={p.order_id || "—"} />
+                  </div>
+
+                  {/* Codes wrap safely and won’t expand viewport */}
+                  <div className="mt-2 grid grid-cols-1 gap-1">
+                    <CodeRow label="PI" value={p.pi_id || "—"} />
+                    <CodeRow label="Session" value={p.cs_id || "—"} />
                   </div>
                 </div>
               ))
@@ -647,14 +711,14 @@ export default function AdminDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {payments.length === 0 ? (
+                {filteredPayments.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="py-3 text-white/60">
                       No rows.
                     </td>
                   </tr>
                 ) : (
-                  payments.map((p, i) => (
+                  filteredPayments.map((p, i) => (
                     <tr key={i} className="border-b border-white/5">
                       <td className="py-2 pr-4 whitespace-nowrap">
                         {p.created_at ? new Date(p.created_at).toLocaleString() : "—"}
@@ -671,9 +735,9 @@ export default function AdminDashboard() {
                           {(p.status || "—").toLowerCase()}
                         </span>
                       </td>
-                      <td className="py-2 pr-4 font-mono text-[11px]">{p.order_id || "—"}</td>
-                      <td className="py-2 pr-4 font-mono text-[11px]">{p.pi_id || "—"}</td>
-                      <td className="py-2 pr-4 font-mono text-[11px]">{p.cs_id || "—"}</td>
+                      <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.order_id || "—"}</td>
+                      <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.pi_id || "—"}</td>
+                      <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.cs_id || "—"}</td>
                     </tr>
                   ))
                 )}
@@ -819,6 +883,7 @@ function Chevron({ open }: { open: boolean }) {
 function Accordion({
   title,
   subtitle,
+  right,
   open,
   onToggle,
   loading,
@@ -827,6 +892,7 @@ function Accordion({
 }: {
   title: string;
   subtitle?: string;
+  right?: React.ReactNode;
   open: boolean;
   onToggle: () => void;
   loading?: boolean;
@@ -835,19 +901,20 @@ function Accordion({
 }) {
   return (
     <section className="rounded-xl border border-white/10 bg-white/[0.03]">
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center justify-between px-4 py-3 text-left"
-      >
-        <div className="flex items-center gap-3">
+      <div className="w-full flex flex-col gap-2 px-4 pt-3 sm:flex-row sm:items-center sm:justify-between">
+        <button
+          onClick={onToggle}
+          className="flex items-center gap-3 text-left"
+          aria-expanded={open}
+        >
           <Chevron open={open} />
           <div className="font-semibold">{title}</div>
           {subtitle && (
             <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/80">{subtitle}</span>
           )}
-        </div>
-        <div className="text-xs text-white/60">{open ? "Collapse" : "Expand"}</div>
-      </button>
+        </button>
+        {right && <div className="pb-3 sm:pb-0">{right}</div>}
+      </div>
       {open && (
         <div className="px-3 pb-3">
           {loading ? (
@@ -874,12 +941,69 @@ function KpiCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Badge({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Badge({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded bg-white/5 px-2.5 py-1 text-[12px]">
       <span className="text-white/60">{label}: </span>
-      <span className={cx(mono && "font-mono")}>{value}</span>
+      <span>{value}</span>
     </div>
   );
 }
 
+/** Small select used for status filters */
+function StatusSelect({
+  value,
+  onChange,
+  options,
+  label,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  label: string;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <span className="text-white/70">{label}:</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+      >
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** A mobile-friendly code line with copy button that wraps safely */
+function CodeRow({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {}
+  }
+  return (
+    <div className="flex items-start gap-2">
+      <span className="mt-0.5 shrink-0 text-xs text-white/60">{label}:</span>
+      <div className="min-w-0 flex-1 rounded bg-white/5 px-2 py-1">
+        <code className="block font-mono text-[11px] break-all leading-5">{value}</code>
+      </div>
+      <button
+        onClick={copy}
+        className="shrink-0 rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/15"
+        aria-label={`Copy ${label}`}
+        title={`Copy ${label}`}
+      >
+        {copied ? "✓" : "Copy"}
+      </button>
+    </div>
+  );
+}
