@@ -1,148 +1,181 @@
 // src/pages/admin-dashboard.tsx
-// src/pages/admin-dashboard.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createClient, type User } from "@supabase/supabase-js";
 
-/* ========================================
-   Supabase
-======================================== */
-const supabase =
-  typeof window !== "undefined"
-    ? createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
-      )
-    : (null as any);
+/* =========================================
+   Setup
+   ========================================= */
 
-/* ========================================
+const ADMIN_EMAIL = "fuelflow.queries@gmail.com"; // change if needed
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
+);
+
+// Shared UI bits
+function cx(...c: (string | false | null | undefined)[]) {
+  return c.filter(Boolean).join(" ");
+}
+const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
+
+/* =========================================
    Types
-======================================== */
-type Fuel = "petrol" | "diesel";
+   ========================================= */
 
+// Orders
 type OrderRow = {
   id: string;
   created_at: string;
-  user_email: string;
-  fuel: Fuel | string | null;
+  user_email: string | null;
+  fuel: string | null;
   litres: number | null;
   unit_price_pence: number | null;
   total_pence: number | null;
   status: string | null;
 };
 
+// Payments (+ join to orders)
 type PaymentRow = {
-  order_id: string | null;
-  amount: number; // pence
-  currency: string;
-  status: string;
-};
-
-/** What Supabase Storage `list()` returns for each entry */
-type StorageListObject = {
-  name: string;
-  id: string | null; // folders have id === null
+  id?: string;
   created_at?: string | null;
-  updated_at?: string | null;
-  last_modified?: string | null;
-  metadata?: { size?: number } | null;
-  size?: number | null; // sometimes present on files
+  pi_id?: string | null;
+  cs_id?: string | null;
+  order_id?: string | null;
+  email?: string | null;
+  amount?: number | null;  // pence
+  currency?: string | null;
+  status?: string | null;
+  orders?: {
+    created_at?: string | null;
+    fuel?: string | null;
+    litres?: number | null;
+    user_email?: string | null;
+  } | null;
 };
 
-type InvoiceFile = {
-  path: string;       // invoices/{email}/{year}/{month}/{file}
-  email: string;
-  year: string;
-  month: string;      // 01..12
-  name: string;       // INV-XXXX.pdf
-  created_at?: string | null;
-  updated_at?: string | null;
-  last_modified?: string | null;
-  size?: number | null;
+// Storage list entry (Supabase Storage JS SDK)
+type StorageEntry = {
+  id?: string;              // present for files, undefined for folders
+  name: string;             // name or folder name
+  created_at?: string;
+  updated_at?: string;
+  last_accessed_at?: string;
+  metadata?: {
+    size?: number;
+    mimetype?: string;
+    cacheControl?: string;
+    eTag?: string;
+    lastModified?: string;
+    contentLength?: number;
+    httpStatusCode?: number;
+  } | null;
 };
 
-type CustomerAgg = {
-  email: string;
-  orders: number;
-  litres: number;
-  spend: number;      // GBP
-  lastOrderAt: string | null;
+// Canonical invoice record for table
+type InvoiceItem = {
+  path: string;           // full path (email/yyyy/mm/file.pdf)
+  email: string;          // email folder
+  year: string;           // "2025"
+  month: string;          // "01".."12"
+  file: string;           // filename.pdf
+  sizeKB: number;         // approx KB
+  updated_at?: string;    // from storage metadata
+  invoiceNo?: string;     // derived from filename (INV-...*.pdf)
 };
 
-/* ========================================
-   Helpers
-======================================== */
-const gbpFmt = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
-const monthsNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-
-function cx(...c: (string | false | null | undefined)[]) {
-  return c.filter(Boolean).join(" ");
-}
-function shortDT(s?: string | null) {
-  if (!s) return "—";
-  const d = new Date(s);
-  if (isNaN(d.getTime())) return "—";
-  return d.toLocaleString();
-}
-function bytes(n?: number | null) {
-  if (!n && n !== 0) return "—";
-  const units = ["B","KB","MB","GB"];
-  let x = n as number, i = 0;
-  while (x >= 1024 && i < units.length-1) { x /= 1024; i++; }
-  return `${x.toFixed(x >= 10 ? 0 : 1)} ${units[i]}`;
-}
-
-/* ========================================
+/* =========================================
    Page
-======================================== */
+   ========================================= */
+
 export default function AdminDashboard() {
-  const [adminEmail, setAdminEmail] = useState<string>("");
+  const [user, setUser] = useState<User | null>(null);
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // KPIs
-  const [kpiRevenue, setKpiRevenue] = useState<number>(0);
-  const [kpiLitres, setKpiLitres] = useState<number>(0);
-  const [kpiOrders, setKpiOrders] = useState<number>(0);
-  const [kpiPaid, setKpiPaid] = useState<number>(0);
+  // metrics
+  const [metrics, setMetrics] = useState({
+    revenue: 0,
+    litres: 0,
+    orders: 0,
+    paidOrders: 0,
+  });
 
-  // Filters / UI
-  type RangeKey = "month" | "qtr" | "ytd" | "all";
-  const [range, setRange] = useState<RangeKey>("all");
+  // search (client-side filter)
+  const [q, setQ] = useState("");
+
+  // tab
   type Tab = "orders" | "payments" | "invoices" | "customers";
   const [tab, setTab] = useState<Tab>("invoices");
-  const [search, setSearch] = useState("");
 
-  // Data
-  const [orders, setOrders] = useState<(OrderRow & { amountGBP: number; paymentStatus?: string })[]>([]);
-  const [invoices, setInvoices] = useState<InvoiceFile[]>([]);
-  const [customers, setCustomers] = useState<CustomerAgg[]>([]);
+  // pagination state (very simple page-based)
+  const PAGE_SIZE = 50;
 
-  // Pagination
-  const [showOrders, setShowOrders] = useState(25);
-  const [showInvoices, setShowInvoices] = useState(25);
-  const [showCustomers, setShowCustomers] = useState(25);
+  // data
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [ordersLoadedAll, setOrdersLoadedAll] = useState(false);
+  const ordersPage = useRef(0);
 
-  // Collapsible
-  const [openInvoices, setOpenInvoices] = useState(true);
-  const [openCustomers, setOpenCustomers] = useState(true);
-  const [openOrders, setOpenOrders] = useState(false);
+  const [payments, setPayments] = useState<PaymentRow[]>([]);
+  const [paymentsLoadedAll, setPaymentsLoadedAll] = useState(false);
+  const paymentsPage = useRef(0);
 
-  /* ---------- bootstrap ---------- */
+  const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
+  const [invoicesLoadedAll, setInvoicesLoadedAll] = useState(false);
+  const invoicesCursor = useRef<{ stage: "emails" | "years" | "months" | "files"; emailIdx: number; yearIdx: number; monthIdx: number; fileOffset: number; emailList: string[]; yearList: string[]; monthList: string[] }>({
+    stage: "emails",
+    emailIdx: 0,
+    yearIdx: 0,
+    monthIdx: 0,
+    fileOffset: 0,
+    emailList: [],
+    yearList: [],
+    monthList: [],
+  });
+
+  // customers aggregation (derived from orders/payments)
+  const customersAgg = useMemo(() => {
+    const map = new Map<
+      string,
+      { orders: number; litres: number; spendPence: number; lastOrder?: Date }
+    >();
+    orders.forEach((o) => {
+      const email = (o.user_email || "").toLowerCase();
+      if (!email) return;
+      const cur = map.get(email) || { orders: 0, litres: 0, spendPence: 0, lastOrder: undefined };
+      cur.orders += 1;
+      cur.litres += o.litres || 0;
+      cur.spendPence += o.total_pence || 0;
+      const d = new Date(o.created_at);
+      if (!cur.lastOrder || d > cur.lastOrder) cur.lastOrder = d;
+      map.set(email, cur);
+    });
+    return Array.from(map.entries()).map(([email, v]) => ({
+      email,
+      ...v,
+    }));
+  }, [orders]);
+
+  // ---------- init ----------
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
-
         const { data: auth } = await supabase.auth.getUser();
-        if (!auth?.user?.email) {
-          window.location.href = "/login";
+        const u = auth?.user || null;
+        setUser(u);
+        const email = (u?.email || "").toLowerCase();
+        const admin = email === ADMIN_EMAIL;
+        setIsAdmin(admin);
+        if (!admin) {
+          setLoading(false);
           return;
         }
-        setAdminEmail((auth.user.email || "").toLowerCase());
 
-        await Promise.all([loadOrdersAgg(), loadInvoicesRecent(), loadCustomersAgg()]);
+        await Promise.all([loadMetrics(), resetOrders(), resetPayments(), resetInvoices()]);
       } catch (e: any) {
         setError(e?.message || "Failed to load admin dashboard.");
       } finally {
@@ -151,449 +184,476 @@ export default function AdminDashboard() {
     })();
   }, []);
 
-  /* ---------- load orders (for KPIs + orders tab) ---------- */
-  async function loadOrdersAgg() {
+  /* =========================================
+     Loaders
+     ========================================= */
+
+  async function loadMetrics() {
+    // Revenue/litres/orders/paidOrders from DB (simple approximate)
+    // We’ll read many rows anyway for tables; but fetch lightweight aggregates to display fast.
+    const { data: ord } = await supabase
+      .from("orders")
+      .select("total_pence, litres, status")
+      .limit(10000); // generous cap; if you need larger, move metrics to a SQL view
+
+    let revenue = 0;
+    let litres = 0;
+    let orders = 0;
+    let paidOrders = 0;
+
+    (ord || []).forEach((o: any) => {
+      orders += 1;
+      litres += Number(o.litres || 0);
+      if ((o.status || "").toLowerCase() === "paid") {
+        paidOrders += 1;
+        revenue += Number(o.total_pence || 0) / 100;
+      }
+    });
+
+    setMetrics({ revenue, litres, orders, paidOrders });
+  }
+
+  // ----- Orders -----
+  async function resetOrders() {
+    ordersPage.current = 0;
+    setOrders([]);
+    setOrdersLoadedAll(false);
+    await loadMoreOrders();
+  }
+  async function loadMoreOrders() {
+    if (ordersLoadedAll) return;
+    const from = ordersPage.current * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
     const { data, error } = await supabase
       .from("orders")
       .select("id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status")
       .order("created_at", { ascending: false })
-      .limit(1000);
-
-    if (error) throw error;
-
-    const arr = (data || []) as OrderRow[];
-
-    const rows = arr.map((o) => {
-      let totalPence =
-        o.total_pence ??
-        (o.unit_price_pence != null && o.litres != null ? Math.round(o.unit_price_pence * o.litres) : null);
-      const amountGBP = totalPence != null ? totalPence / 100 : 0;
-      return { ...o, amountGBP };
-    });
-
-    setKpiOrders(rows.length);
-    setKpiPaid(rows.filter((r) => (r.status || "").toLowerCase() === "paid").length);
-    setKpiLitres(rows.reduce((s, r) => s + (r.litres || 0), 0));
-    setKpiRevenue(rows.reduce((s, r) => s + (r.amountGBP || 0), 0));
-
-    setOrders(rows);
+      .range(from, to);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    const rows = (data || []) as OrderRow[];
+    setOrders((cur) => cur.concat(rows));
+    if (rows.length < PAGE_SIZE) setOrdersLoadedAll(true);
+    ordersPage.current += 1;
   }
 
-  /* ---------- load invoices (storage) ---------- */
-  async function listFolder(path: string): Promise<StorageListObject[]> {
-    const { data, error } = await supabase.storage
+  // ----- Payments -----
+  async function resetPayments() {
+    paymentsPage.current = 0;
+    setPayments([]);
+    setPaymentsLoadedAll(false);
+    await loadMorePayments();
+  }
+  async function loadMorePayments() {
+    if (paymentsLoadedAll) return;
+    const from = paymentsPage.current * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+
+    const { data, error } = await supabase
+      .from("payments")
+      .select("id, created_at, pi_id, cs_id, order_id, email, amount, currency, status, orders:order_id(created_at, fuel, litres, user_email)")
+      .order("created_at", { ascending: false })
+      .range(from, to);
+
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    const rows = (data || []) as PaymentRow[];
+    setPayments((cur) => cur.concat(rows));
+    if (rows.length < PAGE_SIZE) setPaymentsLoadedAll(true);
+    paymentsPage.current += 1;
+  }
+
+  // ----- Invoices (Storage) -----
+  async function resetInvoices() {
+    invoicesCursor.current = {
+      stage: "emails",
+      emailIdx: 0,
+      yearIdx: 0,
+      monthIdx: 0,
+      fileOffset: 0,
+      emailList: [],
+      yearList: [],
+      monthList: [],
+    };
+    setInvoices([]);
+    setInvoicesLoadedAll(false);
+    await loadMoreInvoices();
+  }
+
+  // list folder utility
+  async function listFolder(path: string, limit = 100, offset = 0): Promise<StorageEntry[]> {
+    const { data, error } = await supabase
+      .storage
       .from("invoices")
-      .list(path, { limit: 1000, sortBy: { column: "name", order: "desc" } });
+      .list(path, { limit, offset, sortBy: { column: "name", order: "desc" } });
+
     if (error) throw error;
-    return (data || []) as unknown as StorageListObject[];
+    return (data || []) as StorageEntry[];
   }
 
-  async function loadInvoicesRecent() {
-    const all: InvoiceFile[] = [];
+  function isFolder(e: StorageEntry) {
+    // Supabase storage folders have no id (id undefined)
+    return !e.id;
+  }
 
-    const top: StorageListObject[] = await listFolder(""); // emails level
-    const emailDirs: StorageListObject[] = top.filter((e: StorageListObject) => e.id == null);
+  async function ensureEmailList() {
+    if (invoicesCursor.current.emailList.length) return;
+    const root = await listFolder(""); // emails
+    const emailDirs = root.filter((e) => isFolder(e)).map((e) => e.name).sort((a, b) => a.localeCompare(b));
+    invoicesCursor.current.emailList = emailDirs;
+  }
 
-    for (const e of emailDirs) {
-      const email = e.name;
-      const years: StorageListObject[] = await listFolder(email);
-      const yearDirs: StorageListObject[] = years.filter((y: StorageListObject) => y.id == null);
+  async function ensureYearList(email: string) {
+    const ys = await listFolder(`${email}`);
+    const years = ys.filter((e) => isFolder(e) && /^\d{4}$/.test(e.name)).map((e) => e.name).sort().reverse();
+    invoicesCursor.current.yearList = years;
+  }
 
-      for (const y of yearDirs) {
-        const year = y.name;
-        const months: StorageListObject[] = await listFolder(`${email}/${year}`);
-        const monthDirs: StorageListObject[] = months.filter((m: StorageListObject) => m.id == null);
+  async function ensureMonthList(email: string, year: string) {
+    const ms = await listFolder(`${email}/${year}`);
+    const months = ms
+      .filter((e) => isFolder(e))
+      .map((e) => e.name)
+      .sort()
+      .reverse();
+    invoicesCursor.current.monthList = months;
+  }
 
-        for (const m of monthDirs) {
-          const month = m.name; // 01..12
-          const files: StorageListObject[] = await listFolder(`${email}/${year}/${month}`);
+  async function loadMoreInvoices() {
+    if (invoicesLoadedAll) return;
 
-          for (const f of files) {
-            const fname = f.name || "";
-            if (!fname.toLowerCase().endsWith(".pdf")) continue;
-            all.push({
-              path: `${email}/${year}/${month}/${fname}`,
+    const CUR_FETCH_TARGET = 50; // number of files to fetch per "load more"
+    const out: InvoiceItem[] = [];
+
+    await ensureEmailList();
+
+    const cur = invoicesCursor.current;
+    const emails = cur.emailList;
+
+    while (cur.emailIdx < emails.length && out.length < CUR_FETCH_TARGET) {
+      const email = emails[cur.emailIdx];
+
+      // years
+      if (cur.stage === "emails") {
+        await ensureYearList(email);
+        cur.stage = "years";
+        cur.yearIdx = 0;
+      }
+
+      while (cur.yearIdx < cur.yearList.length && out.length < CUR_FETCH_TARGET) {
+        const year = cur.yearList[cur.yearIdx];
+
+        if (cur.stage === "years") {
+          await ensureMonthList(email, year);
+          cur.stage = "months";
+          cur.monthIdx = 0;
+        }
+
+        while (cur.monthIdx < cur.monthList.length && out.length < CUR_FETCH_TARGET) {
+          const month = cur.monthList[cur.monthIdx];
+
+          // files
+          const path = `${email}/${year}/${month}`;
+          const files = await listFolder(path, CUR_FETCH_TARGET, 0);
+          const pdfs = files.filter((e) => !isFolder(e) && e.name.toLowerCase().endsWith(".pdf"));
+
+          pdfs.forEach((f) => {
+            const sizeBytes = f.metadata?.size ?? f.metadata?.contentLength ?? 0;
+            const sizeKB = Math.round((Number(sizeBytes) / 1024) * 10) / 10;
+            const item: InvoiceItem = {
+              path: `${path}/${f.name}`,
               email,
               year,
               month,
-              name: fname,
-              created_at: f.created_at ?? null,
-              updated_at: f.updated_at ?? null,
-              last_modified: f.last_modified ?? null,
-              size: (f.metadata?.size as number | undefined) ?? (f.size ?? null),
-            });
-          }
+              file: f.name,
+              sizeKB,
+              updated_at: f.updated_at,
+              invoiceNo: f.name.replace(/\.pdf$/i, ""),
+            };
+            out.push(item);
+          });
+
+          cur.monthIdx += 1;
         }
+
+        if (cur.monthIdx >= cur.monthList.length) {
+          cur.yearIdx += 1;
+          cur.stage = "years";
+        }
+      }
+
+      if (cur.yearIdx >= cur.yearList.length) {
+        cur.emailIdx += 1;
+        cur.stage = "emails";
       }
     }
 
-    all.sort((a, b) => {
-      const as = Date.parse(a.updated_at || a.created_at || a.last_modified || "1970-01-01");
-      const bs = Date.parse(b.updated_at || b.created_at || b.last_modified || "1970-01-01");
-      return bs - as;
-    });
-
-    setInvoices(all);
-  }
-
-  /* ---------- customers aggregation (from orders) ---------- */
-  async function loadCustomersAgg() {
-    const { data, error } = await supabase
-      .from("orders")
-      .select("id, created_at, user_email, litres, total_pence, unit_price_pence")
-      .order("created_at", { ascending: false })
-      .limit(1000);
-
-    if (error) throw error;
-
-    const map = new Map<string, CustomerAgg>();
-    for (const o of (data || []) as OrderRow[]) {
-      const email = (o.user_email || "").toLowerCase();
-      if (!email) continue;
-
-      const totalPence =
-        o.total_pence ??
-        (o.unit_price_pence != null && o.litres != null ? Math.round(o.unit_price_pence * o.litres) : 0);
-
-      const cur = map.get(email) || {
-        email,
-        orders: 0,
-        litres: 0,
-        spend: 0,
-        lastOrderAt: null as string | null,
-      };
-      cur.orders += 1;
-      cur.litres += o.litres || 0;
-      cur.spend += (totalPence || 0) / 100;
-      if (!cur.lastOrderAt || new Date(o.created_at) > new Date(cur.lastOrderAt)) cur.lastOrderAt = o.created_at;
-
-      map.set(email, cur);
+    setInvoices((curList) => curList.concat(out));
+    if (out.length < CUR_FETCH_TARGET && invoicesCursor.current.emailIdx >= invoicesCursor.current.emailList.length) {
+      setInvoicesLoadedAll(true);
     }
-
-    const list = Array.from(map.values()).sort((a, b) => (b.spend || 0) - (a.spend || 0));
-    setCustomers(list);
   }
 
-  /* ---------- filters ---------- */
-  const queryLower = search.trim().toLowerCase();
-  const filteredInvoices = useMemo(() => {
-    if (!queryLower) return invoices;
-    return invoices.filter((i) =>
-      [i.email, i.year, i.month, i.name, i.path].some((f) => f.toLowerCase().includes(queryLower))
-    );
-  }, [invoices, queryLower]);
+  /* =========================================
+     Filters / derived
+     ========================================= */
 
-  const filteredCustomers = useMemo(() => {
-    if (!queryLower) return customers;
-    return customers.filter((c) => c.email.toLowerCase().includes(queryLower));
-  }, [customers, queryLower]);
+  const qNorm = q.trim().toLowerCase();
 
   const filteredOrders = useMemo(() => {
-    if (!queryLower) return orders;
-    return orders.filter((o) =>
-      [
-        o.user_email,
-        o.fuel || "",
-        o.status || "",
+    if (!qNorm) return orders;
+    return orders.filter((o) => {
+      const parts = [
         o.id,
+        o.user_email,
+        o.fuel,
+        o.status,
         new Date(o.created_at).toLocaleDateString(),
-        new Date(o.created_at).toLocaleString(),
       ]
         .join(" ")
-        .toLowerCase()
-        .includes(queryLower)
+        .toLowerCase();
+      return parts.includes(qNorm);
+    });
+  }, [orders, qNorm]);
+
+  const filteredPayments = useMemo(() => {
+    if (!qNorm) return payments;
+    return payments.filter((p) => {
+      const parts = [
+        p.email,
+        p.order_id,
+        p.status,
+        p.pi_id,
+        p.cs_id,
+        p.orders?.fuel,
+        p.orders?.user_email,
+        p.orders?.litres?.toString() || "",
+        p.created_at ? new Date(p.created_at).toLocaleString() : "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return parts.includes(qNorm);
+    });
+  }, [payments, qNorm]);
+
+  const filteredInvoices = useMemo(() => {
+    if (!qNorm) return invoices;
+    return invoices.filter((i) => {
+      const parts = [i.email, i.year, i.month, i.file, i.invoiceNo, i.path].join(" ").toLowerCase();
+      return parts.includes(qNorm);
+    });
+  }, [invoices, qNorm]);
+
+  /* =========================================
+     UI
+     ========================================= */
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#0b1220] text-white grid place-items-center">
+        <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">Loading…</div>
+      </div>
     );
-  }, [orders, queryLower]);
-
-  /* ---------- UI actions ---------- */
-  async function openInvoice(i: InvoiceFile) {
-    try {
-      const { data, error } = await supabase.storage
-        .from("invoices")
-        .createSignedUrl(i.path, 60);
-      if (error) throw error;
-      window.open(data.signedUrl, "_blank");
-    } catch (e: any) {
-      alert("Could not open invoice: " + (e?.message || "Unknown"));
-    }
   }
 
-  function logout() {
-    supabase.auth.signOut().finally(() => (window.location.href = "/login"));
+  if (!isAdmin) {
+    return (
+      <div className="min-h-screen bg-[#0b1220] text-white grid place-items-center">
+        <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">
+          You don’t have access to the admin dashboard.
+        </div>
+      </div>
+    );
   }
 
-  /* ========================================
-     Render
-  ======================================== */
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
       {/* Top bar */}
-      <div className="mx-auto max-w-7xl px-4 py-4">
-        <div className="flex items-center gap-3">
-          <a href="/client-dashboard" className="inline-flex items-center gap-2">
-            <img src="/logo-email.png" className="h-7 w-auto" alt="FuelFlow" />
-            <span className="text-white/70 hidden sm:inline">Signed in as {adminEmail}</span>
-          </a>
-          <div className="ml-auto flex items-center gap-2">
-            <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
-              Client view
-            </a>
-            <button
-              onClick={logout}
-              className="rounded-lg bg-yellow-500 px-3 py-1.5 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
-            >
-              Log out
-            </button>
-          </div>
+      <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
+        <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+        <div className="text-white/80">Signed in as {user?.email}</div>
+        <div className="ml-auto flex items-center gap-2">
+          <a href="/client-dashboard" className="rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm">Client view</a>
+          <button
+            className="rounded-lg bg-yellow-500 hover:bg-yellow-400 px-3 py-1.5 text-sm font-semibold text-[#041F3E]"
+            onClick={async () => {
+              await supabase.auth.signOut();
+              window.location.href = "https://fuelflow.co.uk";
+            }}
+          >
+            Log out
+          </button>
         </div>
       </div>
 
-      {/* KPIs */}
-      <div className="mx-auto max-w-7xl px-4 grid grid-cols-1 md:grid-cols-4 gap-4">
-        <KpiCard label="REVENUE" value={gbpFmt.format(kpiRevenue)} />
-        <KpiCard label="LITRES" value={kpiLitres.toLocaleString()} />
-        <KpiCard label="ORDERS" value={kpiOrders.toLocaleString()} />
-        <KpiCard label="PAID ORDERS" value={kpiPaid.toLocaleString()} />
+      {/* Metrics */}
+      <div className="max-w-6xl mx-auto px-4 grid grid-cols-1 md:grid-cols-4 gap-4">
+        <MetricCard label="REVENUE" value={gbp.format(metrics.revenue)} />
+        <MetricCard label="LITRES" value={metrics.litres.toLocaleString()} />
+        <MetricCard label="ORDERS" value={metrics.orders.toLocaleString()} />
+        <MetricCard label="PAID ORDERS" value={metrics.paidOrders.toLocaleString()} />
       </div>
 
-      {/* Range + Tabs + Search */}
-      <div className="mx-auto max-w-7xl px-4 mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="flex items-center gap-2">
-          {([
-            ["This month", "month"],
-            ["Last 90 days", "qtr"],
-            ["Year to date", "ytd"],
-            ["All time", "all"],
-          ] as [string, RangeKey][]).map(([label, key]) => (
-            <button
-              key={key}
-              onClick={() => setRange(key)}
-              className={cx(
-                "rounded-lg px-3 py-1.5 text-sm",
-                range === key ? "bg-yellow-500 text-[#041F3E] font-semibold" : "bg-white/10 hover:bg-white/15"
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+      {/* Tabs & Search */}
+      <div className="max-w-6xl mx-auto px-4 mt-4 flex flex-wrap items-center gap-2">
+        <button className={tabBtn(tab === "orders")} onClick={() => setTab("orders")}>Orders</button>
+        <button className={tabBtn(tab === "payments")} onClick={() => setTab("payments")}>Payments</button>
+        <button className={tabBtn(tab === "invoices")} onClick={() => setTab("invoices")}>Invoices</button>
+        <button className={tabBtn(tab === "customers")} onClick={() => setTab("customers")}>Customers</button>
 
-        <div className="flex items-center gap-2">
-          {(["orders", "payments", "invoices", "customers"] as Tab[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={cx(
-                "rounded-lg px-3 py-1.5 text-sm capitalize",
-                tab === t ? "bg-white/20" : "bg-white/10 hover:bg-white/15"
-              )}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex-1 md:max-w-md md:ml-auto">
+        <div className="ml-auto w-full sm:w-96">
           <input
-            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm placeholder-white/40 outline-none focus:ring focus:ring-yellow-500/30"
             placeholder="Search email, product, status, order id, invoice…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm placeholder-white/40 outline-none focus:ring-2 focus:ring-yellow-400"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
           />
         </div>
       </div>
 
-      {/* Content */}
-      <div className="mx-auto max-w-7xl px-4 py-5 space-y-6">
-        {/* INVOICES */}
-        {tab === "invoices" && (
-          <Section
-            title="Invoices"
-            open={openInvoices}
-            onToggle={() => setOpenInvoices((s) => !s)}
-            actionRight={
-              <button
-                className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-                onClick={() => setShowInvoices((n) => n + 25)}
-                disabled={showInvoices >= filteredInvoices.length}
-              >
-                {showInvoices >= filteredInvoices.length ? "All loaded" : "Load more"}
-              </button>
-            }
-          >
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="text-white/70">
-                  <tr className="border-b border-white/10">
-                    <th className="py-2 pr-4 text-left">Date</th>
-                    <th className="py-2 pr-4 text-left">Email</th>
-                    <th className="py-2 pr-4 text-left">Invoice #</th>
-                    <th className="py-2 pr-4 text-left">Folder</th>
-                    <th className="py-2 pr-4 text-left">File</th>
-                    <th className="py-2 pr-4 text-left">Size</th>
-                    <th className="py-2 pr-4 text-left">Open</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredInvoices.slice(0, showInvoices).map((f) => (
-                    <tr key={f.path} className="border-b border-white/10">
-                      <td className="py-2 pr-4">{shortDT(f.updated_at || f.created_at || f.last_modified)}</td>
-                      <td className="py-2 pr-4">{f.email}</td>
-                      <td className="py-2 pr-4">{f.name.replace(".pdf", "")}</td>
-                      <td className="py-2 pr-4">
-                        {`${f.email}/${f.year}/${f.month} (${monthsNames[Math.max(0, (parseInt(f.month, 10) || 1) - 1)]})`}
-                      </td>
-                      <td className="py-2 pr-4">{f.name}</td>
-                      <td className="py-2 pr-4">{bytes(f.size)}</td>
-                      <td className="py-2 pr-4">
-                        <button
-                          onClick={() => openInvoice(f)}
-                          className="rounded bg-yellow-500/90 px-2 py-1 text-xs font-semibold text-[#041F3E] hover:bg-yellow-400"
-                        >
-                          View
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {filteredInvoices.length === 0 && (
-                    <tr>
-                      <td colSpan={7} className="py-4 text-white/60">
-                        No invoices found.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </Section>
-        )}
-
-        {/* CUSTOMERS */}
-        {tab === "customers" && (
-          <Section
-            title="Customers"
-            open={openCustomers}
-            onToggle={() => setOpenCustomers((s) => !s)}
-            actionRight={
-              <button
-                className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-                onClick={() => setShowCustomers((n) => n + 25)}
-                disabled={showCustomers >= filteredCustomers.length}
-              >
-                {showCustomers >= filteredCustomers.length ? "All loaded" : "Load more"}
-              </button>
-            }
-          >
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="text-white/70">
-                  <tr className="border-b border-white/10">
-                    <th className="py-2 pr-4 text-left">Customer</th>
-                    <th className="py-2 pr-4 text-left">Orders</th>
-                    <th className="py-2 pr-4 text-left">Litres</th>
-                    <th className="py-2 pr-4 text-left">Spend</th>
-                    <th className="py-2 pr-4 text-left">Last order</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredCustomers.slice(0, showCustomers).map((c) => (
-                    <tr key={c.email} className="border-b border-white/10">
-                      <td className="py-2 pr-4">{c.email}</td>
-                      <td className="py-2 pr-4">{c.orders.toLocaleString()}</td>
-                      <td className="py-2 pr-4">{Math.round(c.litres).toLocaleString()}</td>
-                      <td className="py-2 pr-4">{gbpFmt.format(c.spend)}</td>
-                      <td className="py-2 pr-4">{shortDT(c.lastOrderAt)}</td>
-                    </tr>
-                  ))}
-                  {filteredCustomers.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="py-4 text-white/60">
-                        No customers yet.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </Section>
-        )}
-
-        {/* ORDERS */}
+      {/* Body */}
+      <div className="max-w-6xl mx-auto px-4 pb-24 mt-4 space-y-4">
         {tab === "orders" && (
           <Section
             title="Orders"
-            open={openOrders}
-            onToggle={() => setOpenOrders((s) => !s)}
-            actionRight={
-              <button
-                className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-                onClick={() => setShowOrders((n) => n + 25)}
-                disabled={showOrders >= filteredOrders.length}
-              >
-                {showOrders >= filteredOrders.length ? "All loaded" : "Load more"}
-              </button>
+            right={
+              ordersLoadedAll ? (
+                <Badge>All loaded</Badge>
+              ) : (
+                <button className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15" onClick={loadMoreOrders}>
+                  Load more
+                </button>
+              )
             }
           >
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="text-white/70">
-                  <tr className="border-b border-white/10">
-                    <th className="py-2 pr-4 text-left">Date</th>
-                    <th className="py-2 pr-4 text-left">Email</th>
-                    <th className="py-2 pr-4 text-left">Product</th>
-                    <th className="py-2 pr-4 text-left">Litres</th>
-                    <th className="py-2 pr-4 text-left">Amount</th>
-                    <th className="py-2 pr-4 text-left">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredOrders.slice(0, showOrders).map((o) => (
-                    <tr key={o.id} className="border-b border-white/10">
-                      <td className="py-2 pr-4">{shortDT(o.created_at)}</td>
-                      <td className="py-2 pr-4">{o.user_email}</td>
-                      <td className="py-2 pr-4 capitalize">{o.fuel || "—"}</td>
-                      <td className="py-2 pr-4">{o.litres ?? "—"}</td>
-                      <td className="py-2 pr-4">{gbpFmt.format(o.amountGBP)}</td>
-                      <td className="py-2 pr-4">
-                        <span
-                          className={cx(
-                            "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                            (o.status || "").toLowerCase() === "paid" ? "bg-emerald-600/70" : "bg-gray-600/70"
-                          )}
-                        >
-                          {(o.status || o.paymentStatus || "pending").toLowerCase()}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                  {filteredOrders.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="py-4 text-white/60">
-                        No orders in range.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <Table
+              head={["Date", "Email", "Product", "Litres", "Amount", "Status"]}
+              rows={filteredOrders.map((o) => [
+                new Date(o.created_at).toLocaleString(),
+                o.user_email || "—",
+                (o.fuel || "—").toString(),
+                (o.litres ?? 0).toLocaleString(),
+                gbp.format((o.total_pence ?? 0) / 100),
+                (o.status || "—").toString(),
+              ])}
+            />
           </Section>
         )}
 
+        {tab === "payments" && (
+          <Section
+            title="Payments"
+            right={
+              paymentsLoadedAll ? (
+                <Badge>All loaded</Badge>
+              ) : (
+                <button className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15" onClick={loadMorePayments}>
+                  Load more
+                </button>
+              )
+            }
+          >
+            <Table
+              head={["Date", "Email", "Fuel", "Litres", "Amount", "Status", "Order #", "PI", "Session"]}
+              rows={filteredPayments.map((p) => [
+                p.created_at ? new Date(p.created_at).toLocaleString() : "—",
+                p.orders?.user_email || p.email || "—",
+                p.orders?.fuel || "—",
+                p.orders?.litres ?? "—",
+                p.amount != null ? gbp.format((p.amount as number) / 100) : "—",
+                p.status || "—",
+                p.order_id || "—",
+                p.pi_id || "—",
+                p.cs_id || "—",
+              ])}
+            />
+          </Section>
+        )}
+
+        {tab === "invoices" && (
+          <Section
+            title="Invoices"
+            right={
+              invoicesLoadedAll ? (
+                <Badge>All loaded</Badge>
+              ) : (
+                <button className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15" onClick={loadMoreInvoices}>
+                  Load more
+                </button>
+              )
+            }
+          >
+            <Table
+              head={["Date", "Email", "Invoice #", "Folder", "File", "Size", "Open"]}
+              rows={filteredInvoices.map((i) => [
+                i.updated_at ? new Date(i.updated_at).toLocaleString() : "—",
+                i.email,
+                i.invoiceNo || i.file.replace(/\.pdf$/i, ""),
+                `${i.email}/${i.year}/${i.month}`,
+                i.file,
+                `${i.sizeKB.toLocaleString()} KB`,
+                <a
+                  key={i.path}
+                  className="inline-flex items-center rounded bg-yellow-500 px-2 py-1 text-xs font-semibold text-[#041F3E] hover:bg-yellow-400"
+                  href={supabase.storage.from("invoices").getPublicUrl(i.path).data.publicUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  View
+                </a>,
+              ])}
+            />
+          </Section>
+        )}
+
+        {tab === "customers" && (
+          <Section
+            title="Customers"
+            right={<Badge>{customersAgg.length.toLocaleString()} total</Badge>}
+          >
+            <Table
+              head={["Customer", "Orders", "Litres", "Spend", "Last order"]}
+              rows={customersAgg
+                .sort((a, b) => (b.spendPence - a.spendPence))
+                .map((c) => [
+                  c.email,
+                  c.orders.toLocaleString(),
+                  Math.round(c.litres).toLocaleString(),
+                  gbp.format(c.spendPence / 100),
+                  c.lastOrder ? c.lastOrder.toLocaleString() : "—",
+                ])}
+            />
+          </Section>
+        )}
+
+        {/* Footer stamp */}
         <div className="text-center text-xs text-white/50">
           Admin · Refreshed {new Date().toLocaleString()}
         </div>
+
+        {/* Error */}
+        {error && (
+          <div className="rounded-lg border border-rose-400/40 bg-rose-500/10 p-2 text-sm text-rose-200">
+            {error}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-/* ========================================
+/* =========================================
    Small components
-======================================== */
-function KpiCard({ label, value }: { label: string; value: string }) {
+   ========================================= */
+
+function MetricCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl bg-white/[0.06] p-4 ring-1 ring-inset ring-white/10">
-      <div className="text-xs text-white/60">{label}</div>
+    <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+      <div className="text-sm text-white/60">{label}</div>
       <div className="mt-1 text-3xl font-bold">{value}</div>
     </div>
   );
@@ -601,33 +661,67 @@ function KpiCard({ label, value }: { label: string; value: string }) {
 
 function Section({
   title,
+  right,
   children,
-  open,
-  onToggle,
-  actionRight,
 }: {
   title: string;
+  right?: React.ReactNode;
   children: React.ReactNode;
-  open: boolean;
-  onToggle: () => void;
-  actionRight?: React.ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04]">
-      <div className="flex items-center justify-between px-4 py-3">
-        <button
-          onClick={onToggle}
-          className="inline-flex items-center gap-2 rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" className={cx("transition", open ? "rotate-90" : "")}>
-            <path d="M9 18l6-6-6-6" fill="none" stroke="currentColor" strokeWidth="2" />
-          </svg>
-          <span className="font-semibold">{title}</span>
-        </button>
-        <div>{actionRight}</div>
+    <section className="rounded-xl border border-white/10 bg-white/[0.03]">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+        <div className="font-semibold">{title}</div>
+        <div>{right}</div>
       </div>
-      {open && <div className="px-4 pb-4">{children}</div>}
+      <div className="p-3">{children}</div>
+    </section>
+  );
+}
+
+function Table({ head, rows }: { head: (string | React.ReactNode)[]; rows: (React.ReactNode[])[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-sm">
+        <thead className="text-white/70">
+          <tr className="border-b border-white/10">
+            {head.map((h, i) => (
+              <th key={i} className="py-2 pr-4">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={head.length} className="py-4 text-white/60">No rows.</td>
+            </tr>
+          ) : (
+            rows.map((r, i) => (
+              <tr key={i} className="border-b border-white/5">
+                {r.map((c, j) => (
+                  <td key={j} className="py-2 pr-4 align-middle">{c}</td>
+                ))}
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
     </div>
+  );
+}
+
+function Badge({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-1 text-xs text-white/80">
+      {children}
+    </span>
+  );
+}
+
+function tabBtn(active: boolean) {
+  return cx(
+    "rounded-lg px-3 py-1.5 text-sm",
+    active ? "bg-yellow-500 text-[#041F3E] font-semibold" : "bg-white/10 hover:bg-white/15"
   );
 }
 
