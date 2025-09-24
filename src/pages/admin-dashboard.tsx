@@ -225,6 +225,39 @@ export default function AdminDashboard() {
   const sumRevenue = filteredOrders.reduce((a, b) => a + toGBP(b.total_pence), 0);
   const paidCount = filteredOrders.filter((o) => (o.status || "").toLowerCase() === "paid").length;
 
+  /* ===== Usage & Spend (yearly view with progress bars) ===== */
+
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
+  const currentYear = new Date().getFullYear();
+  const currentMonthIdx = new Date().getMonth();
+  const [selectedYear, setSelectedYear] = useState<number>(currentYear);
+  const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
+
+  type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
+  const usageByMonth: MonthAgg[] = useMemo(() => {
+    const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({
+      monthIdx: i,
+      monthLabel: months[i],
+      litres: 0,
+      spend: 0,
+    }));
+    orders.forEach((o) => {
+      const d = new Date(o.created_at);
+      if (d.getFullYear() !== selectedYear) return;
+      const m = d.getMonth();
+      base[m].litres += o.litres ?? 0;
+      base[m].spend += toGBP(o.total_pence);
+    });
+    return base;
+  }, [orders, selectedYear]);
+
+  const rowsToShow = showAllMonths
+    ? usageByMonth
+    : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
+
+  const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
+  const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
+
   // ---------- Invoice browser helpers ----------
   function resetInvoiceBrowser() {
     setInvYears([]);
@@ -233,7 +266,6 @@ export default function AdminDashboard() {
     setInvYear("");
     setInvMonth("");
   }
-
   async function loadYears() {
     resetInvoiceBrowser();
     if (!invEmail) return;
@@ -255,7 +287,6 @@ export default function AdminDashboard() {
       setInvLoading(false);
     }
   }
-
   async function loadMonths(year: string) {
     setInvYear(year);
     setInvMonths([]);
@@ -269,17 +300,16 @@ export default function AdminDashboard() {
         sortBy: { column: "name", order: "asc" },
       });
       if (error) throw error;
-      const months = (data || [])
+      const monthsList = (data || [])
         .filter((x) => x.name.match(/^(0[1-9]|1[0-2])$/))
         .map((x) => x.name);
-      setInvMonths(months);
+      setInvMonths(monthsList);
     } catch (e: any) {
       setError(e?.message || "Failed to list months");
     } finally {
       setInvLoading(false);
     }
   }
-
   async function loadFiles(month: string) {
     setInvMonth(month);
     setInvFiles([]);
@@ -309,7 +339,6 @@ export default function AdminDashboard() {
       setInvLoading(false);
     }
   }
-
   async function getSignedUrl(path: string) {
     const { data, error } = await supabase.storage.from("invoices").createSignedUrl(path, 60 * 10);
     if (error) throw error;
@@ -339,10 +368,7 @@ export default function AdminDashboard() {
             Signed in as <span className="font-medium">{me}</span>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <a
-              href="/client-dashboard"
-              className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-            >
+            <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
               Client view
             </a>
             <button
@@ -401,6 +427,87 @@ export default function AdminDashboard() {
             )}
           </div>
         </div>
+
+        {/* Usage & Spend */}
+        <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 md:p-6">
+          <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <h2 className="text-2xl font-semibold">Usage &amp; Spend</h2>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-white/70">Year:</span>
+              <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
+                <button
+                  onClick={() => setSelectedYear(currentYear - 1)}
+                  disabled={selectedYear === currentYear - 1}
+                  className={cx(
+                    "px-3 py-1.5",
+                    selectedYear === currentYear - 1
+                      ? "bg-yellow-500 text-[#041F3E] font-semibold"
+                      : "hover:bg-white/15"
+                  )}
+                >
+                  {currentYear - 1}
+                </button>
+                <button
+                  onClick={() => setSelectedYear(currentYear)}
+                  disabled={selectedYear === currentYear}
+                  className={cx(
+                    "px-3 py-1.5",
+                    selectedYear === currentYear
+                      ? "bg-yellow-500 text-[#041F3E] font-semibold"
+                      : "hover:bg-white/15"
+                  )}
+                >
+                  {currentYear}
+                </button>
+              </div>
+              <button
+                onClick={() => setShowAllMonths((s) => !s)}
+                className="ml-2 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+              >
+                {showAllMonths ? "Show current month" : "Show 12 months"}
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-gray-300">
+                <tr className="border-b border-gray-700/60">
+                  <th className="py-2 pr-4">Month</th>
+                  <th className="py-2 pr-4">Litres</th>
+                  <th className="py-2 pr-4">Spend</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
+                  <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
+                    <td className="py-2 pr-4">
+                      {months[r.monthIdx]} {String(selectedYear).slice(2)}
+                    </td>
+                    <td className="py-2 pr-4 align-middle">
+                      {Math.round(r.litres).toLocaleString()}
+                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                        <div
+                          className="h-1.5 rounded bg-yellow-500/80"
+                          style={{ width: `${(r.litres / maxL) * 100}%` }}
+                        />
+                      </div>
+                    </td>
+                    <td className="py-2 pr-4 align-middle">
+                      {gbpFmt.format(r.spend)}
+                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                        <div
+                          className="h-1.5 rounded bg-white/40"
+                          style={{ width: `${(r.spend / maxS) * 100}%` }}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
 
         {/* Orders */}
         <Accordion
@@ -775,6 +882,4 @@ function Badge({ label, value, mono }: { label: string; value: string; mono?: bo
     </div>
   );
 }
-
-
 
