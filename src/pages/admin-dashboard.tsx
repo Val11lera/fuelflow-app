@@ -97,10 +97,13 @@ export default function AdminDashboard() {
   const [me, setMe] = useState<string>("");
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
 
-  // Filters
+  // Date/search filters
   type Range = "month" | "90d" | "ytd" | "all";
   const [range, setRange] = useState<Range>("month");
   const [search, setSearch] = useState<string>("");
+
+  // NEW: customer filter (email)
+  const [customerFilter, setCustomerFilter] = useState<string>("all");
 
   // Orders & Payments
   const [orders, setOrders] = useState<OrderRow[]>([]);
@@ -117,7 +120,7 @@ export default function AdminDashboard() {
   const ORDERS_STEP = 20;
   const [ordersShown, setOrdersShown] = useState<number>(ORDERS_STEP);
 
-  // NEW: status filters
+  // Status filters
   const [orderStatusFilter, setOrderStatusFilter] = useState<string>("all");
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("all");
 
@@ -207,6 +210,14 @@ export default function AdminDashboard() {
     })();
   }, [isAdmin, range]);
 
+  // ---------- Customer list for dropdown ----------
+  const customerOptions = useMemo(() => {
+    const s = new Set<string>();
+    orders.forEach((o) => (o.user_email ? s.add(o.user_email.toLowerCase()) : null));
+    payments.forEach((p) => (p.email ? s.add(p.email.toLowerCase()) : null));
+    return ["all", ...Array.from(s).sort((a, b) => a.localeCompare(b))];
+  }, [orders, payments]);
+
   // ---------- Derived KPIs + status options ----------
   const orderStatusOptions = useMemo(() => {
     const set = new Set<string>();
@@ -226,12 +237,19 @@ export default function AdminDashboard() {
     return ["all", ...Array.from(set).sort()];
   }, [payments]);
 
-  // Apply global search + status filters to Orders
+  // Apply filters to Orders
   const filteredOrders = useMemo(() => {
     const s = search.trim().toLowerCase();
     return orders.filter((o) => {
       const statusOk = orderStatusFilter === "all" || (o.status || "").toLowerCase() === orderStatusFilter;
       if (!statusOk) return false;
+
+      const customerOk =
+        customerFilter === "all" ||
+        (o.user_email || "").toLowerCase() === customerFilter;
+
+      if (!customerOk) return false;
+
       if (!s) return true;
       return (
         (o.user_email || "").toLowerCase().includes(s) ||
@@ -240,18 +258,22 @@ export default function AdminDashboard() {
         (o.id || "").toLowerCase().includes(s)
       );
     });
-  }, [orders, search, orderStatusFilter]);
+  }, [orders, search, orderStatusFilter, customerFilter]);
   const visibleOrders = useMemo(
     () => filteredOrders.slice(0, ordersShown),
     [filteredOrders, ordersShown]
   );
 
-  // Apply search + status filters to Payments
+  // Apply filters to Payments
   const filteredPayments = useMemo(() => {
     const s = search.trim().toLowerCase();
     return payments.filter((p) => {
       const statusOk = paymentStatusFilter === "all" || (p.status || "").toLowerCase() === paymentStatusFilter;
       if (!statusOk) return false;
+
+      const customerOk = customerFilter === "all" || (p.email || "").toLowerCase() === customerFilter;
+      if (!customerOk) return false;
+
       if (!s) return true;
       return (
         (p.email || "").toLowerCase().includes(s) ||
@@ -260,7 +282,7 @@ export default function AdminDashboard() {
         (p.cs_id || "").toLowerCase().includes(s)
       );
     });
-  }, [payments, search, paymentStatusFilter]);
+  }, [payments, search, paymentStatusFilter, customerFilter]);
 
   const sumLitres = filteredOrders.reduce((a, b) => a + (b.litres || 0), 0);
   const sumRevenue = filteredOrders.reduce((a, b) => a + toGBP(b.total_pence), 0);
@@ -449,6 +471,46 @@ export default function AdminDashboard() {
                 {labelForRange(r)}
               </button>
             ))}
+          </div>
+
+          {/* NEW: Customer dropdown */}
+          <div className="flex gap-2 w-full sm:w-auto">
+            <label className="flex-1 sm:flex-none inline-flex items-center gap-2 text-sm">
+              <span className="text-white/70">Customer:</span>
+              <select
+                value={customerFilter}
+                onChange={(e) => setCustomerFilter(e.target.value)}
+                className="min-w-[12rem] max-w-[18rem] flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+              >
+                {customerOptions.map((email) => (
+                  <option key={email} value={email}>
+                    {email === "all" ? "All customers" : email}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {/* Convenience: push selected customer into the invoice browser */}
+            <button
+              type="button"
+              disabled={customerFilter === "all"}
+              onClick={() => {
+                if (customerFilter !== "all") {
+                  setInvEmail(customerFilter);
+                  loadYears();
+                  setOpenInvoices(true);
+                }
+              }}
+              className={cx(
+                "rounded-lg px-3 py-1.5 text-sm",
+                customerFilter === "all"
+                  ? "bg-white/10 text-white/60 cursor-not-allowed"
+                  : "bg-white/10 hover:bg-white/15"
+              )}
+              title="Open the invoice browser for this customer"
+            >
+              Use in Invoice Browser
+            </button>
           </div>
 
           <div className="relative sm:ml-auto w-full sm:w-80">
@@ -661,7 +723,7 @@ export default function AdminDashboard() {
             />
           }
         >
-          {/* Mobile cards (overflow-safe) */}
+          {/* Mobile cards */}
           <div className="space-y-3 md:hidden">
             {filteredPayments.length === 0 ? (
               <div className="text-white/60 text-sm">No rows.</div>
@@ -686,7 +748,6 @@ export default function AdminDashboard() {
                     <Badge label="Order" value={p.order_id || "—"} />
                   </div>
 
-                  {/* Codes wrap safely and won’t expand viewport */}
                   <div className="mt-2 grid grid-cols-1 gap-1">
                     <CodeRow label="PI" value={p.pi_id || "—"} />
                     <CodeRow label="Session" value={p.cs_id || "—"} />
@@ -762,7 +823,15 @@ export default function AdminDashboard() {
                   placeholder="name@company.com"
                   value={invEmail}
                   onChange={(e) => setInvEmail(e.target.value)}
+                  list="all-customers"
                 />
+                <datalist id="all-customers">
+                  {customerOptions
+                    .filter((e) => e !== "all")
+                    .map((email) => (
+                      <option key={email} value={email} />
+                    ))}
+                </datalist>
                 <button onClick={loadYears} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
                   Load
                 </button>
@@ -902,11 +971,7 @@ function Accordion({
   return (
     <section className="rounded-xl border border-white/10 bg-white/[0.03]">
       <div className="w-full flex flex-col gap-2 px-4 pt-3 sm:flex-row sm:items-center sm:justify-between">
-        <button
-          onClick={onToggle}
-          className="flex items-center gap-3 text-left"
-          aria-expanded={open}
-        >
+        <button onClick={onToggle} className="flex items-center gap-3 text-left" aria-expanded={open}>
           <Chevron open={open} />
           <div className="font-semibold">{title}</div>
           {subtitle && (
@@ -1007,3 +1072,4 @@ function CodeRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
