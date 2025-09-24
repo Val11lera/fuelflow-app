@@ -1,26 +1,39 @@
 // src/pages/client-dashboard.tsx
-// src/pages/admin-dashboard.tsx
+// src/pages/client-dashboard.tsx
+// src/pages/client-dashboard.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 /* =========================
-   Supabase
+   Setup
    ========================= */
+
+type Fuel = "petrol" | "diesel";
+
+const INACTIVITY_MS =
+  Number(process.env.NEXT_PUBLIC_IDLE_LOGOUT_MS ?? "") || 10 * 60 * 1000; // 10 minutes default
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
-type Fuel = "diesel" | "petrol" | string;
+const gbp = new Intl.NumberFormat("en-GB", {
+  style: "currency",
+  currency: "GBP",
+});
+
+/* =========================
+   Types
+   ========================= */
 
 type OrderRow = {
   id: string;
   created_at: string;
-  user_email: string | null;
-  fuel: Fuel | null;
+  user_email: string;
+  fuel: Fuel | string | null;
   litres: number | null;
   unit_price_pence: number | null;
   total_pence: number | null;
@@ -28,442 +41,505 @@ type OrderRow = {
 };
 
 type PaymentRow = {
-  id?: string;
   order_id: string | null;
-  amount: number | null; // pence
-  currency: string | null;
-  status: string | null;
-  email: string | null;
-  cs_id?: string | null;
-  pi_id?: string | null;
-  created_at?: string | null;
+  amount: number; // pence
+  currency: string;
+  status: string;
 };
-
-type AdminRow = { email: string };
 
 /* =========================
    Helpers
    ========================= */
 
-const gbpFmt = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
-
-function cx(...c: (string | false | null | undefined)[]) {
-  return c.filter(Boolean).join(" ");
+function cx(...classes: (string | false | null | undefined)[]) {
+  return classes.filter(Boolean).join(" ");
 }
 
-function toGBP(pence?: number | null) {
-  if (pence == null) return 0;
-  return pence / 100;
-}
-
-function startOfYear(d = new Date()) {
-  return new Date(d.getFullYear(), 0, 1);
-}
-function startOfMonth(d = new Date()) {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-function daysAgo(n: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d;
-}
-
-function ymd(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+// dd/mm/yy
+function formatShortDMY(value?: string | Date | null) {
+  if (!value) return "—";
+  const d = typeof value === "string" ? new Date(value) : value;
+  if (isNaN(d.getTime())) return "—";
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${dd}/${mm}/${yy}`;
 }
 
 /* =========================
    Page
    ========================= */
 
-export default function AdminDashboard() {
-  const [me, setMe] = useState<string>("");
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+export default function ClientDashboard() {
+  const [userEmail, setUserEmail] = useState<string>("");
 
-  // Filters
-  type Range = "month" | "90d" | "ytd" | "all";
-  const [range, setRange] = useState<Range>("month");
-  const [search, setSearch] = useState<string>("");
+  // screen / loading
+  const [hasRefreshed, setHasRefreshed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [refreshedAt, setRefreshedAt] = useState<Date | null>(null);
 
-  // Orders & Payments
-  const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [payments, setPayments] = useState<PaymentRow[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
+  // prices
+  const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
+  const [dieselPrice, setDieselPrice] = useState<number | null>(null);
+
+  // orders (we store all fetched, but render a slice)
+  const [orders, setOrders] = useState<
+    (OrderRow & { amountGBP: number; paymentStatus?: string })[]
+  >([]);
+  const [visibleCount, setVisibleCount] = useState<number>(20);
   const [error, setError] = useState<string | null>(null);
 
-  // Pagination (orders)
-  const PAGE = 50;
-  const [page, setPage] = useState<number>(1);
-  const visibleOrders = useMemo(() => orders.slice(0, page * PAGE), [orders, page]);
+  // usage UI
+  const currentYear = new Date().getFullYear();
+  const currentMonthIdx = new Date().getMonth();
+  const [selectedYear, setSelectedYear] = useState<number>(currentYear);
+  const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
-  // Invoice browser (by customer email)
-  const [invEmail, setInvEmail] = useState<string>("");
-  const [invYear, setInvYear] = useState<string>("");
-  const [invMonth, setInvMonth] = useState<string>("");
-  const [invYears, setInvYears] = useState<string[]>([]);
-  const [invMonths, setInvMonths] = useState<string[]>([]);
-  const [invFiles, setInvFiles] = useState<{ name: string; path: string; last_modified?: string; size?: number }[]>([]);
-  const [invLoading, setInvLoading] = useState<boolean>(false);
-
-  // ------------- Auth + admin check -------------
+  // ----------------- Auth + automatic refresh on mount -----------------
   useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
-      const email = (auth?.user?.email || "").toLowerCase();
-      if (!email) {
+      if (!auth?.user) {
         window.location.href = "/login";
         return;
       }
-      setMe(email);
-
-      // Check admin table
-      const { data, error } = await supabase
-        .from("admins")
-        .select("email")
-        .eq("email", email)
-        .maybeSingle();
-
-      if (error) {
-        setError(error.message);
-        setIsAdmin(false);
-        return;
-      }
-      setIsAdmin(!!data?.email);
+      setUserEmail((auth.user.email || "").toLowerCase());
+      // AUTO REFRESH right away
+      await loadAll();
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ------------- Load business data -------------
+  // ----------------- Auto logout on inactivity -----------------
+  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (isAdmin !== true) return;
+    const reset = () => {
+      if (idleTimer.current) clearTimeout(idleTimer.current);
+      idleTimer.current = setTimeout(async () => {
+        try {
+          await supabase.auth.signOut();
+        } finally {
+          window.location.href = "https://fuelflow.co.uk"; // go to main site on logout
+        }
+      }, INACTIVITY_MS);
+    };
 
-    (async () => {
-      try {
-        setLoading(true);
-        setError(null);
+    const events: (keyof WindowEventMap)[] = [
+      "mousemove",
+      "mousedown",
+      "keydown",
+      "scroll",
+      "touchstart",
+    ];
+    events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+    const onVisibility = () => reset();
+    document.addEventListener("visibilitychange", onVisibility, { passive: true });
 
-        const { from, to } = dateRange(range);
+    reset();
+    return () => {
+      if (idleTimer.current) clearTimeout(idleTimer.current);
+      events.forEach((e) => window.removeEventListener(e, reset));
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
 
-        // Orders
-        let oq = supabase
-          .from("orders")
-          .select("id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status")
-          .order("created_at", { ascending: false })
-          .limit(1000);
-        if (from) oq = oq.gte("created_at", from.toISOString());
-        if (to) oq = oq.lte("created_at", to.toISOString());
-        const { data: od, error: oe } = await oq;
-        if (oe) throw oe;
+  // ----------------- Refresh (loads all dashboard data) -----------------
+  async function loadAll() {
+    try {
+      setLoading(true);
+      setError(null);
 
-        // Payments
-        let pq = supabase
-          .from("payments")
-          .select("order_id, amount, currency, status, email, cs_id, pi_id, created_at")
-          .order("created_at", { ascending: false })
-          .limit(1000);
-        if (from) pq = pq.gte("created_at", from.toISOString());
-        if (to) pq = pq.lte("created_at", to.toISOString());
-        const { data: pd, error: pe } = await pq;
-        if (pe) throw pe;
-
-        setOrders((od || []) as OrderRow[]);
-        setPayments((pd || []) as PaymentRow[]);
-        setPage(1);
-      } catch (e: any) {
-        setError(e?.message || "Failed to load admin data");
-      } finally {
-        setLoading(false);
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth?.user) {
+        window.location.href = "/login";
+        return;
       }
-    })();
-  }, [isAdmin, range]);
+      const emailLower = (auth.user.email || "").toLowerCase();
+      setUserEmail(emailLower);
 
-  // ------------- Derived KPIs -------------
-  const filteredOrders = useMemo(() => {
-    const s = search.trim().toLowerCase();
-    if (!s) return orders;
-    return orders.filter((o) => {
-      return (
-        (o.user_email || "").toLowerCase().includes(s) ||
-        (o.fuel || "").toLowerCase().includes(s) ||
-        (o.status || "").toLowerCase().includes(s) ||
-        (o.id || "").toLowerCase().includes(s)
-      );
+      await Promise.all([loadLatestPrices(), loadOrders(emailLower)]);
+
+      setHasRefreshed(true);
+      setRefreshedAt(new Date());
+    } catch (e: any) {
+      setError(e?.message || "Failed to refresh dashboard.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadOrders(emailLower: string) {
+    const { data: rawOrders, error: ordErr } = await supabase
+      .from("orders")
+      .select(
+        "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status"
+      )
+      .eq("user_email", emailLower)
+      .order("created_at", { ascending: false })
+      .limit(200); // fetch plenty, render a slice
+
+    if (ordErr) throw ordErr;
+
+    const ordersArr = (rawOrders || []) as OrderRow[];
+    const ids = ordersArr.map((o) => o.id).filter(Boolean);
+
+    let payMap = new Map<string, PaymentRow>();
+    if (ids.length) {
+      const { data: pays } = await supabase
+        .from("payments")
+        .select("order_id, amount, currency, status")
+        .in("order_id", ids);
+      (pays || []).forEach((p: any) => {
+        if (p.order_id) payMap.set(p.order_id, p);
+      });
+    }
+
+    const withTotals = ordersArr.map((o) => {
+      const fromOrders = o.total_pence ?? null;
+      const fromPayments = payMap.get(o.id || "")?.amount ?? null;
+
+      let totalPence: number | null =
+        fromOrders ?? (fromPayments as number | null) ?? null;
+
+      if (totalPence == null) {
+        if (o.unit_price_pence != null && o.litres != null) {
+          totalPence = Math.round(o.unit_price_pence * o.litres);
+        }
+      }
+
+      const amountGBP = totalPence != null ? totalPence / 100 : 0;
+      return {
+        ...o,
+        amountGBP,
+        paymentStatus: payMap.get(o.id || "")?.status,
+      };
     });
-  }, [orders, search]);
 
-  const sumLitres = filteredOrders.reduce((a, b) => a + (b.litres || 0), 0);
-  const sumRevenue = filteredOrders.reduce((a, b) => a + toGBP(b.total_pence), 0);
-  const paidCount = filteredOrders.filter((o) => (o.status || "").toLowerCase() === "paid").length;
-
-  // ------------- Invoice browser helpers -------------
-  function resetInvoiceBrowser() {
-    setInvYears([]);
-    setInvMonths([]);
-    setInvFiles([]);
-    setInvYear("");
-    setInvMonth("");
+    setOrders(withTotals);
+    setVisibleCount(20); // reset the slice on each refresh
   }
 
-  async function loadYears() {
-    resetInvoiceBrowser();
-    if (!invEmail) return;
-    setInvLoading(true);
-    try {
-      const email = invEmail.toLowerCase();
-      // List e.g. "customer@email/" -> returns year "folders" as prefixes via names that have "/" inside
-      const { data, error } = await supabase.storage.from("invoices").list(`${email}`, {
-        limit: 1000,
-        sortBy: { column: "name", order: "asc" },
+  // Robust latest-price loader with normalisation (handles GBP or pence)
+  async function loadLatestPrices() {
+    setPetrolPrice(null);
+    setDieselPrice(null);
+
+    type Row = {
+      fuel?: string;
+      total_price?: number;
+      price?: number;
+      latest_price?: number;
+      unit_price?: number;
+      price_date?: string | null;
+      updated_at?: string | null;
+      created_at?: string | null;
+    };
+
+    const toGbp = (raw: number | undefined | null) => {
+      if (!Number.isFinite(raw as number)) return null;
+      const n = Number(raw);
+      const v = n > 10 ? n / 100 : n; // if stored in pence, convert
+      return Math.round(v * 1000) / 1000;
+    };
+
+    const apply = (rows: Row[]) => {
+      rows.forEach((r) => {
+        const f = String(r.fuel || "").toLowerCase();
+        const v =
+          toGbp(r.total_price) ??
+          toGbp(r.price) ??
+          toGbp(r.latest_price) ??
+          toGbp(r.unit_price);
+        if (v == null) return;
+        if (f === "petrol") setPetrolPrice(v);
+        if (f === "diesel") setDieselPrice(v);
       });
-      if (error) throw error;
-      const years = (data || [])
-        .filter((x) => x.name.match(/^\d{4}$/)) // 2025
-        .map((x) => x.name);
-      setInvYears(years);
-    } catch (e: any) {
-      setError(e?.message || "Failed to list years");
+    };
+
+    const tryTable = async (table: string) => {
+      try {
+        const { data } = await supabase.from(table).select("*").limit(10);
+        if (data && data.length) {
+          apply(data as Row[]);
+          return true;
+        }
+      } catch {}
+      return false;
+    };
+
+    if (await tryTable("latest_prices")) return;
+    if (await tryTable("latest_fuel_prices_view")) return;
+    if (await tryTable("latest_prices_view")) return;
+
+    try {
+      const { data } = await supabase
+        .from("daily_prices")
+        .select("*")
+        .order("price_date", { ascending: false })
+        .limit(200);
+
+      if (data && data.length) {
+        const seen = new Map<string, Row>();
+        for (const r of data as Row[]) {
+          const key = String(r.fuel || "").toLowerCase();
+          if (!seen.has(key)) seen.set(key, r);
+        }
+        apply(Array.from(seen.values()));
+      }
+    } catch {}
+  }
+
+  // ---------- simple UI helpers ----------
+  function refresh() {
+    loadAll();
+  }
+
+  async function logout() {
+    try {
+      await supabase.auth.signOut();
     } finally {
-      setInvLoading(false);
+      window.location.href = "https://fuelflow.co.uk"; // go to main site after logout
     }
   }
 
-  async function loadMonths(year: string) {
-    setInvYear(year);
-    setInvMonths([]);
-    setInvFiles([]);
-    if (!invEmail || !year) return;
-    setInvLoading(true);
-    try {
-      const email = invEmail.toLowerCase();
-      const { data, error } = await supabase.storage.from("invoices").list(`${email}/${year}`, {
-        limit: 1000,
-        sortBy: { column: "name", order: "asc" },
-      });
-      if (error) throw error;
-      const months = (data || [])
-        .filter((x) => x.name.match(/^(0[1-9]|1[0-2])$/))
-        .map((x) => x.name);
-      setInvMonths(months);
-    } catch (e: any) {
-      setError(e?.message || "Failed to list months");
-    } finally {
-      setInvLoading(false);
-    }
-  }
+  // ---------- Usage & Spend (by month, year) ----------
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
 
-  async function loadFiles(month: string) {
-    setInvMonth(month);
-    setInvFiles([]);
-    if (!invEmail || !invYear || !month) return;
-    setInvLoading(true);
-    try {
-      const email = invEmail.toLowerCase();
-      const prefix = `${email}/${invYear}/${month}`;
-      const { data, error } = await supabase.storage.from("invoices").list(prefix, {
-        limit: 1000,
-        sortBy: { column: "name", order: "desc" },
-      });
-      if (error) throw error;
-      const files =
-        (data || [])
-          .filter((x) => x.name.toLowerCase().endsWith(".pdf"))
-          .map((x) => ({
-            name: x.name,
-            path: `${prefix}/${x.name}`,
-            last_modified: (x as any).updated_at || undefined,
-            size: x.metadata?.size,
-          })) || [];
-      setInvFiles(files);
-    } catch (e: any) {
-      setError(e?.message || "Failed to list invoices");
-    } finally {
-      setInvLoading(false);
-    }
-  }
+  type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
+  const usageByMonth: MonthAgg[] = useMemo(() => {
+    const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({
+      monthIdx: i,
+      monthLabel: months[i],
+      litres: 0,
+      spend: 0,
+    }));
+    orders.forEach((o) => {
+      const d = new Date(o.created_at);
+      if (d.getFullYear() !== selectedYear) return;
+      const m = d.getMonth();
+      base[m].litres += o.litres ?? 0;
+      base[m].spend += o.amountGBP ?? 0;
+    });
+    return base;
+  }, [orders, selectedYear]);
 
-  async function getPublicUrl(path: string) {
-    // If your bucket is private (recommended), create a signed URL:
-    const { data, error } = await supabase.storage.from("invoices").createSignedUrl(path, 60 * 10); // 10 min
-    if (error) throw error;
-    return data.signedUrl;
-  }
+  const rowsToShow = showAllMonths
+    ? usageByMonth
+    : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
 
   /* =========================
      Render
      ========================= */
 
-  if (isAdmin === null) {
-    return blankShell("Checking admin…");
+  const canOrder = petrolPrice != null && dieselPrice != null;
+
+  // ----------------- Loading screen -----------------
+  if (!hasRefreshed || loading) {
+    return (
+      <div className="min-h-screen bg-[#0b1220] text-white">
+        <div className="max-w-6xl mx-auto px-4 py-4">
+          <div className="flex items-center gap-3">
+            <a href="https://fuelflow.co.uk" aria-label="FuelFlow website" className="shrink-0">
+              <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+            </a>
+            <div className="hidden md:block text-sm text-white/70">Refreshing…</div>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={logout}
+                className="h-9 inline-flex items-center rounded-lg bg-yellow-500 px-3 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
+              >
+                Log out
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="max-w-6xl mx-auto px-4">
+          <div className="mt-16 rounded-2xl border border-white/10 bg-white/[0.03] p-8 text-center">
+            <h1 className="text-2xl md:text-3xl font-bold">Loading dashboard</h1>
+            <p className="mt-2 text-white/70">Pulling latest prices and your recent orders…</p>
+            <button
+              onClick={refresh}
+              className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-white/10 px-6 text-base font-semibold hover:bg-white/15"
+            >
+              Refresh now
+            </button>
+            {error && (
+              <div className="mt-4 rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">
+                {error}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
-  if (isAdmin === false) {
-    return blankShell("You don’t have access to the admin dashboard.");
-  }
+
+  // ------------- Derived for "Recent Orders" -------------
+  const visibleOrders = orders.slice(0, visibleCount);
+  const hasMore = visibleCount < orders.length;
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
-      {/* Header */}
-      <div className="sticky top-0 z-30 border-b border-white/10 bg-[#0b1220]/80 backdrop-blur">
-        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-3">
-          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
-          <div className="text-sm text-white/70">Signed in as <span className="font-medium">{me}</span></div>
+      {/* Sticky mobile CTA */}
+      <div className="md:hidden fixed bottom-4 inset-x-4 z-40">
+        <a
+          href="/order"
+          aria-disabled={!canOrder}
+          className={cx(
+            "block text-center rounded-xl py-3 font-semibold shadow-lg",
+            canOrder ? "bg-yellow-500 text-[#041F3E]" : "bg-white/10 text-white/60 cursor-not-allowed"
+          )}
+        >
+          Order Fuel
+        </a>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-4 py-4 space-y-6">
+        {/* Header */}
+        <div className="flex items-center gap-3">
+          <a href="https://fuelflow.co.uk" aria-label="FuelFlow website" className="shrink-0">
+            <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+          </a>
+
+          <div className="hidden sm:block text-sm text-white/70">
+            Welcome back, <span className="font-medium">{userEmail}</span>
+          </div>
+
           <div className="ml-auto flex items-center gap-2">
-            <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">Client view</a>
+            <div className="hidden md:flex items-center gap-2">
+              <a
+                href="/order"
+                aria-disabled={!canOrder}
+                className={cx(
+                  "h-9 inline-flex items-center rounded-lg px-3 text-sm font-semibold bg-yellow-500 text-[#041F3E] hover:bg-yellow-400",
+                  !canOrder && "opacity-50 cursor-not-allowed pointer-events-none"
+                )}
+              >
+                Order Fuel
+              </a>
+              <a
+                href="/documents"
+                className="h-9 inline-flex items-center rounded-lg bg-white/10 px-3 text-sm hover:bg-white/15"
+              >
+                Documents
+              </a>
+              <button
+                onClick={loadAll}
+                className="h-9 inline-flex items-center rounded-lg bg-white/10 px-3 text-sm hover:bg-white/15"
+              >
+                Refresh
+              </button>
+            </div>
+
             <button
-              onClick={async () => { await supabase.auth.signOut(); window.location.href = "/login"; }}
-              className="rounded-lg bg-yellow-500 px-3 py-1.5 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
+              onClick={logout}
+              className="h-9 inline-flex items-center rounded-lg bg-yellow-500 px-3 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
             >
               Log out
             </button>
           </div>
         </div>
-      </div>
 
-      <div className="max-w-7xl mx-auto px-4 py-5 space-y-6">
-        {/* Top: KPIs & controls */}
-        <section className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-          <KpiCard label="Revenue" value={gbpFmt.format(sumRevenue)} />
-          <KpiCard label="Litres" value={Math.round(sumLitres).toLocaleString()} />
-          <KpiCard label="Orders" value={filteredOrders.length.toLocaleString()} />
-          <KpiCard label="Paid Orders" value={paidCount.toLocaleString()} />
+        {/* Top cards: Prices + Documents */}
+        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <Card title="Petrol (95)">
+            <div className="text-3xl font-bold">
+              {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
+              <span className="text-base font-normal text-gray-300"> / litre</span>
+            </div>
+            <div className="mt-1 text-xs text-white/60">Refreshed: {formatShortDMY(refreshedAt)}</div>
+          </Card>
+
+          <Card title="Diesel">
+            <div className="text-3xl font-bold">
+              {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
+              <span className="text-base font-normal text-gray-300"> / litre</span>
+            </div>
+            <div className="mt-1 text-xs text-white/60">Refreshed: {formatShortDMY(refreshedAt)}</div>
+          </Card>
+
+          <div className="bg-gray-800 rounded-xl p-4 md:p-5">
+            <p className="text-gray-400 mb-2">Documents</p>
+            <a
+              href="/documents"
+              className="inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
+            >
+              Open documents
+            </a>
+          </div>
         </section>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="rounded-lg bg-white/5 p-1">
-            {(["month","90d","ytd","all"] as Range[]).map((r) => (
+        {/* Usage & Spend */}
+        <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
+            <h2 className="text-xl md:text-2xl font-semibold">Usage &amp; Spend</h2>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-white/70">Year:</span>
+              <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
+                <button
+                  onClick={() => setSelectedYear(currentYear - 1)}
+                  disabled={selectedYear === currentYear - 1}
+                  className={cx(
+                    "px-3 py-1.5",
+                    selectedYear === currentYear - 1 ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
+                  )}
+                >
+                  {currentYear - 1}
+                </button>
+                <button
+                  onClick={() => setSelectedYear(currentYear)}
+                  disabled={selectedYear === currentYear}
+                  className={cx(
+                    "px-3 py-1.5",
+                    selectedYear === currentYear ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
+                  )}
+                >
+                  {currentYear}
+                </button>
+              </div>
               <button
-                key={r}
-                onClick={() => setRange(r)}
-                className={cx(
-                  "px-3 py-1.5 text-sm rounded-md",
-                  range === r ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/10"
-                )}
+                onClick={() => setShowAllMonths((s) => !s)}
+                className="ml-3 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
               >
-                {labelForRange(r)}
+                {showAllMonths ? "Show current month" : "Show 12 months"}
               </button>
-            ))}
-          </div>
-          <div className="relative ml-auto w-full sm:w-80">
-            <input
-              placeholder="Search email, product, status, order id"
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            {!!search && (
-              <button
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-white/60 text-xs"
-                onClick={() => setSearch("")}
-              >
-                clear
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Orders */}
-        <section className="rounded-xl border border-white/10 bg-white/[0.03] p-4 md:p-5">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-lg md:text-xl font-semibold">Orders</h2>
-            <div className="text-xs text-white/70">
-              Showing {visibleOrders.length} of {orders.length}
             </div>
           </div>
 
-          {loading ? (
-            <div className="text-white/70">Loading…</div>
-          ) : error ? (
-            <div className="rounded border border-rose-400/40 bg-rose-500/10 p-3 text-rose-200 text-sm">{error}</div>
-          ) : (
-            <>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="text-white/70">
-                    <tr className="border-b border-white/10">
-                      <th className="py-2 pr-4">Date</th>
-                      <th className="py-2 pr-4">Email</th>
-                      <th className="py-2 pr-4">Product</th>
-                      <th className="py-2 pr-4">Litres</th>
-                      <th className="py-2 pr-4">Amount</th>
-                      <th className="py-2 pr-4">Status</th>
-                      <th className="py-2 pr-4">Order ID</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleOrders
-                      .filter((o) => filteredOrders.includes(o))
-                      .map((o) => (
-                        <tr key={o.id} className="border-b border-white/5">
-                          <td className="py-2 pr-4 whitespace-nowrap">{new Date(o.created_at).toLocaleString()}</td>
-                          <td className="py-2 pr-4">{o.user_email}</td>
-                          <td className="py-2 pr-4 capitalize">{o.fuel || "—"}</td>
-                          <td className="py-2 pr-4">{o.litres ?? "—"}</td>
-                          <td className="py-2 pr-4">{gbpFmt.format(toGBP(o.total_pence))}</td>
-                          <td className="py-2 pr-4">
-                            <span
-                              className={cx(
-                                "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                                (o.status || "").toLowerCase() === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
-                              )}
-                            >
-                              {(o.status || "pending").toLowerCase()}
-                            </span>
-                          </td>
-                          <td className="py-2 pr-4 font-mono text-xs">{o.id}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {visibleOrders.length < orders.length && (
-                <div className="mt-3 text-center">
-                  <button
-                    onClick={() => setPage((p) => p + 1)}
-                    className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
-                  >
-                    Load more
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-        </section>
-
-        {/* Payments */}
-        <section className="rounded-xl border border-white/10 bg-white/[0.03] p-4 md:p-5">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-lg md:text-xl font-semibold">Payments</h2>
-            <div className="text-xs text-white/70">{payments.length} rows</div>
-          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="text-white/70">
-                <tr className="border-b border-white/10">
-                  <th className="py-2 pr-4">Date</th>
-                  <th className="py-2 pr-4">Email</th>
-                  <th className="py-2 pr-4">Amount</th>
-                  <th className="py-2 pr-4">Status</th>
-                  <th className="py-2 pr-4">Order ID</th>
-                  <th className="py-2 pr-4">PI</th>
-                  <th className="py-2 pr-4">Session</th>
+              <thead className="text-gray-300">
+                <tr className="border-b border-gray-700/60">
+                  <th className="py-2 pr-4">Month</th>
+                  <th className="py-2 pr-4">Litres</th>
+                  <th className="py-2 pr-4">Spend</th>
                 </tr>
               </thead>
               <tbody>
-                {payments.map((p, i) => (
-                  <tr key={i} className="border-b border-white/5">
-                    <td className="py-2 pr-4 whitespace-nowrap">{p.created_at ? new Date(p.created_at).toLocaleString() : "—"}</td>
-                    <td className="py-2 pr-4">{p.email || "—"}</td>
-                    <td className="py-2 pr-4">{gbpFmt.format(toGBP(p.amount))}</td>
+                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
+                  <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
                     <td className="py-2 pr-4">
-                      <span className={cx("inline-flex items-center rounded px-2 py-0.5 text-xs", p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70")}>
-                        {(p.status || "—").toLowerCase()}
-                      </span>
+                      {months[r.monthIdx]} {String(selectedYear).slice(2)}
                     </td>
-                    <td className="py-2 pr-4 font-mono text-xs">{p.order_id || "—"}</td>
-                    <td className="py-2 pr-4 font-mono text-xs">{p.pi_id || "—"}</td>
-                    <td className="py-2 pr-4 font-mono text-xs">{p.cs_id || "—"}</td>
+                    <td className="py-2 pr-4 align-middle">
+                      {Math.round(r.litres).toLocaleString()}
+                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                        <div
+                          className="h-1.5 rounded bg-yellow-500/80"
+                          style={{ width: `${(r.litres / Math.max(1, ...usageByMonth.map(x => x.litres))) * 100}%` }}
+                        />
+                      </div>
+                    </td>
+                    <td className="py-2 pr-4 align-middle">
+                      {gbp.format(r.spend)}
+                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                        <div
+                          className="h-1.5 rounded bg-white/40"
+                          style={{ width: `${(r.spend / Math.max(1, ...usageByMonth.map(x => x.spend))) * 100}%` }}
+                        />
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -471,157 +547,141 @@ export default function AdminDashboard() {
           </div>
         </section>
 
-        {/* Invoice browser (per customer email) */}
-        <section className="rounded-xl border border-white/10 bg-white/[0.03] p-4 md:p-5">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-lg md:text-xl font-semibold">Invoice Browser</h2>
+        {/* errors */}
+        {error && (
+          <div className="bg-red-800/60 border border-red-500 text-red-100 p-4 rounded">
+            {error}
           </div>
+        )}
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs text-white/70 mb-1">Customer email</label>
-              <div className="flex gap-2">
-                <input
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
-                  placeholder="name@company.com"
-                  value={invEmail}
-                  onChange={(e) => setInvEmail(e.target.value)}
-                />
-                <button
-                  onClick={loadYears}
-                  className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
-                >
-                  Load
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs text-white/70 mb-1">Year</label>
-              <div className="flex gap-2">
-                <select
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm"
-                  value={invYear}
-                  onChange={(e) => loadMonths(e.target.value)}
-                >
-                  <option value="">—</option>
-                  {invYears.map((y) => (
-                    <option key={y} value={y}>{y}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs text-white/70 mb-1">Month</label>
-              <div className="flex gap-2">
-                <select
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm"
-                  value={invMonth}
-                  onChange={(e) => loadFiles(e.target.value)}
-                >
-                  <option value="">—</option>
-                  {invMonths.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-              </div>
+        {/* recent orders (collapsible / incremental) */}
+        <section className="bg-gray-800 rounded-xl p-4 md:p-6 mb-24 md:mb-0">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl md:text-2xl font-semibold">
+              Recent Orders <span className="text-white/50 text-sm">({orders.length})</span>
+            </h2>
+            <div className="flex items-center gap-2">
+              {orders.length > 20 && (
+                <>
+                  {!hasMore ? (
+                    <button
+                      onClick={() => setVisibleCount(20)}
+                      className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
+                    >
+                      Collapse to last 20
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setVisibleCount((n) => Math.min(n + 20, orders.length))}
+                      className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
+                    >
+                      Show 20 more
+                    </button>
+                  )}
+                </>
+              )}
+              <button
+                onClick={loadAll}
+                className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
+              >
+                Refresh
+              </button>
             </div>
           </div>
 
-          <div className="mt-4">
-            {invLoading ? (
-              <div className="text-white/70">Loading…</div>
-            ) : invFiles.length === 0 ? (
-              <div className="text-white/60 text-sm">No invoices to show.</div>
-            ) : (
-              <div className="overflow-x-auto">
+          {loading ? (
+            <div className="text-gray-300">Loading…</div>
+          ) : orders.length === 0 ? (
+            <div className="text-gray-400">No orders yet.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              {/* Optional max-height on small screens to avoid super-long pages */}
+              <div className="md:max-h-none max-h-[60vh] overflow-auto rounded-lg">
                 <table className="w-full text-left text-sm">
-                  <thead className="text-white/70">
-                    <tr className="border-b border-white/10">
-                      <th className="py-2 pr-4">Invoice PDF</th>
-                      <th className="py-2 pr-4">Last modified</th>
-                      <th className="py-2 pr-4">Size</th>
-                      <th className="py-2 pr-4">Open</th>
+                  <thead className="text-gray-300 sticky top-0 bg-gray-800">
+                    <tr className="border-b border-gray-700">
+                      <th className="py-2 pr-4">Date</th>
+                      <th className="py-2 pr-4">Product</th>
+                      <th className="py-2 pr-4">Litres</th>
+                      <th className="py-2 pr-4">Amount</th>
+                      <th className="py-2 pr-4">Status</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {invFiles.map((f) => (
-                      <tr key={f.path} className="border-b border-white/5">
-                        <td className="py-2 pr-4">{f.name}</td>
-                        <td className="py-2 pr-4">{f.last_modified ? new Date(f.last_modified).toLocaleString() : "—"}</td>
-                        <td className="py-2 pr-4">{f.size ? `${Math.round(f.size/1024)} KB` : "—"}</td>
+                    {visibleOrders.map((o) => (
+                      <tr key={o.id} className="border-b border-gray-800">
                         <td className="py-2 pr-4">
-                          <button
-                            className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-2 py-1 hover:bg-yellow-400"
-                            onClick={async () => {
-                              try {
-                                const url = await getPublicUrl(f.path);
-                                window.open(url, "_blank");
-                              } catch (e: any) {
-                                setError(e?.message || "Failed to open");
-                              }
-                            }}
+                          {new Date(o.created_at).toLocaleString()}
+                        </td>
+                        <td className="py-2 pr-4 capitalize">
+                          {(o.fuel as string) || "—"}
+                        </td>
+                        <td className="py-2 pr-4">{o.litres ?? "—"}</td>
+                        <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
+                        <td className="py-2 pr-4">
+                          <span
+                            className={cx(
+                              "inline-flex items-center rounded px-2 py-0.5 text-xs",
+                              (o.status || "").toLowerCase() === "paid"
+                                ? "bg-green-600/70"
+                                : "bg-gray-600/70"
+                            )}
                           >
-                            View
-                          </button>
+                            {(o.status || o.paymentStatus || "pending").toLowerCase()}
+                          </span>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            )}
-          </div>
+
+              {/* Show-more / collapse at bottom for easy reach on long lists */}
+              {orders.length > 20 && (
+                <div className="mt-3 flex items-center justify-center gap-2">
+                  {hasMore ? (
+                    <button
+                      onClick={() => setVisibleCount((n) => Math.min(n + 20, orders.length))}
+                      className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+                    >
+                      Show 20 more
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setVisibleCount(20)}
+                      className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+                    >
+                      Collapse to last 20
+                    </button>
+                  )}
+                  <div className="text-xs text-white/60">
+                    Showing <b>{Math.min(visibleCount, orders.length)}</b> of <b>{orders.length}</b>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
-        <footer className="py-6 text-center text-xs text-white/50">
-          FuelFlow Admin • {new Date().getFullYear()}
-        </footer>
+        {/* bottom refresh date (kept) */}
+        <div className="text-center text-xs text-white/50">
+          Refreshed: {formatShortDMY(refreshedAt)}
+        </div>
       </div>
     </div>
   );
 }
 
 /* =========================
-   Components & utils
+   Components
    ========================= */
 
-function KpiCard({ label, value }: { label: string; value: string }) {
+function Card(props: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-      <div className="text-sm text-white/70">{label}</div>
-      <div className="mt-1 text-2xl font-semibold">{value}</div>
+    <div className="bg-gray-800 rounded-xl p-4 md:p-5">
+      <p className="text-gray-400">{props.title}</p>
+      <div className="mt-2">{props.children}</div>
     </div>
   );
-}
-
-function blankShell(text: string) {
-  return (
-    <div className="min-h-screen grid place-items-center bg-[#0b1220] text-white">
-      <div className="rounded-xl border border-white/10 bg-white/[0.03] px-6 py-4 text-white/80">
-        {text}
-      </div>
-    </div>
-  );
-}
-
-function labelForRange(r: "month" | "90d" | "ytd" | "all") {
-  switch (r) {
-    case "month": return "This month";
-    case "90d": return "Last 90 days";
-    case "ytd": return "Year to date";
-    default: return "All time";
-  }
-}
-
-function dateRange(r: "month" | "90d" | "ytd" | "all") {
-  switch (r) {
-    case "month": return { from: startOfMonth(), to: null as Date | null };
-    case "90d":  return { from: daysAgo(90), to: null as Date | null };
-    case "ytd":  return { from: startOfYear(), to: null as Date | null };
-    case "all":
-    default:     return { from: null as Date | null, to: null as Date | null };
-  }
 }
 
