@@ -12,7 +12,8 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
 
 function sb() {
   return createClient(
-    (process.env.SUPABASE_URL as string) || (process.env.NEXT_PUBLIC_SUPABASE_URL as string),
+    (process.env.SUPABASE_URL as string) ||
+      (process.env.NEXT_PUBLIC_SUPABASE_URL as string),
     process.env.SUPABASE_SERVICE_ROLE_KEY as string
   );
 }
@@ -44,11 +45,16 @@ function readRawBody(req: any): Promise<Buffer> {
 
 const CANONICAL_BASE =
   (process.env.SELF_BASE_URL || "").replace(/\/+$/, "") ||
-  (process.env.SITE_URL || process.env.NEXT_PUBLIC_SITE_URL || "").replace(/\/+$/, "") ||
+  (process.env.SITE_URL || process.env.NEXT_PUBLIC_SITE_URL || "").replace(
+    /\/+$/,
+    ""
+  ) ||
   (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
 
-const WEBHOOK_DEBUG = String(process.env.INVOICE_DEBUG_IN_WEBHOOK || "").toLowerCase() === "true";
+const WEBHOOK_DEBUG =
+  String(process.env.INVOICE_DEBUG_IN_WEBHOOK || "").toLowerCase() === "true";
 
+/* ---------- logging & helpers ---------- */
 async function logRow(row: {
   event_type: string;
   order_id?: string | null;
@@ -69,15 +75,52 @@ async function logRow(row: {
 
 async function saveWebhookEvent(e: Stripe.Event) {
   try {
-    await sb().from("webhook_events").upsert([{ id: e.id, type: e.type, raw: e as any }], { onConflict: "id" });
+    await sb()
+      .from("webhook_events")
+      .upsert([{ id: e.id, type: e.type, raw: e as any }], {
+        onConflict: "id",
+      });
   } catch {}
+}
+
+/** Idempotency guard: has an invoice already been sent for this order? */
+async function invoiceAlreadySent(orderId?: string | null): Promise<boolean> {
+  if (!orderId) return false;
+  try {
+    const { data, error } = await sb()
+      .from("webhook_logs")
+      .select("id")
+      .eq("event_type", "invoice_sent")
+      .eq("order_id", orderId)
+      .limit(1);
+    if (error) return false;
+    return (data?.length || 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** If PI belongs to a Checkout Session, we’ll let `checkout.session.completed` handle invoicing. */
+async function hasCheckoutSessionForPI(piId?: string | null): Promise<boolean> {
+  if (!piId) return false;
+  try {
+    const list = await stripe.checkout.sessions.list({
+      payment_intent: piId,
+      limit: 1,
+    });
+    return (list.data?.length || 0) > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function fetchOrder(orderId?: string | null): Promise<OrderRow | null> {
   if (!orderId) return null;
   const { data, error } = await sb()
     .from("orders")
-    .select("id,product,fuel,litres,unit_price_pence,total_pence,name,address_line1,address_line2,city,postcode,delivery_date,user_email")
+    .select(
+      "id,product,fuel,litres,unit_price_pence,total_pence,name,address_line1,address_line2,city,postcode,delivery_date,user_email"
+    )
     .eq("id", orderId)
     .maybeSingle();
 
@@ -97,8 +140,12 @@ function buildItemsFromOrderOrStripe(args: {
 
   if (order && (order.litres || order.total_pence || order.unit_price_pence)) {
     const litres = Number(order.litres || 0);
-    const desc = order.product || order.fuel || (lineItems?.data?.[0]?.description ?? "Fuel order");
-    const totalMajor = order.total_pence != null ? Number(order.total_pence) / 100 : undefined;
+    const desc =
+      order.product ||
+      order.fuel ||
+      (lineItems?.data?.[0]?.description ?? "Fuel order");
+    const totalMajor =
+      order.total_pence != null ? Number(order.total_pence) / 100 : undefined;
     const unitMajor =
       order.unit_price_pence != null
         ? Number(order.unit_price_pence) / 100
@@ -106,11 +153,18 @@ function buildItemsFromOrderOrStripe(args: {
         ? totalMajor / litres
         : undefined;
 
-    if (litres && totalMajor != null) return [{ description: desc, litres, total: totalMajor }];
-    if (litres && unitMajor != null) return [{ description: desc, litres, unitPrice: unitMajor }];
+    if (litres && totalMajor != null)
+      return [{ description: desc, litres, total: totalMajor }];
+    if (litres && unitMajor != null)
+      return [{ description: desc, litres, unitPrice: unitMajor }];
   }
 
-  const items: Array<{ description: string; litres: number; total?: number; unitPrice?: number }> = [];
+  const items: Array<{
+    description: string;
+    litres: number;
+    total?: number;
+    unitPrice?: number;
+  }> = [];
   if (lineItems) {
     for (const row of lineItems.data) {
       const qty = row.quantity ?? 1;
@@ -131,13 +185,17 @@ function buildItemsFromOrderOrStripe(args: {
           ? row.price.unit_amount * qty
           : 0) / 100;
 
-      const name = row.description || ((row.price?.product as Stripe.Product | undefined)?.name ?? "Item");
+      const name =
+        row.description ||
+        ((row.price?.product as Stripe.Product | undefined)?.name ?? "Item");
       items.push({ description: name, litres, total: totalMajor });
     }
   }
 
   if (items.length === 0) {
-    const totalMajor = (typeof session?.amount_total === "number" ? session!.amount_total : 0) / 100;
+    const totalMajor =
+      (typeof session?.amount_total === "number" ? session!.amount_total : 0) /
+      100;
     items.push({
       description: "Payment",
       litres: Number((session?.metadata as any)?.litres || 1),
@@ -150,16 +208,22 @@ function buildItemsFromOrderOrStripe(args: {
 function toISODate(dateStr?: string | null): string | undefined {
   if (!dateStr) return undefined;
   if (/^\d{4}-\d{2}-\d{2}T/.test(dateStr)) return dateStr;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return new Date(`${dateStr}T12:00:00.000Z`).toISOString();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr))
+    return new Date(`${dateStr}T12:00:00.000Z`).toISOString();
   const d = new Date(dateStr);
   return isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
 async function callInvoiceRoute(payload: any) {
   if (!process.env.INVOICE_SECRET) throw new Error("INVOICE_SECRET not set");
-  if (!CANONICAL_BASE) throw new Error("SELF_BASE_URL / SITE_URL / NEXT_PUBLIC_SITE_URL / VERCEL_URL not set");
+  if (!CANONICAL_BASE)
+    throw new Error(
+      "SELF_BASE_URL / SITE_URL / NEXT_PUBLIC_SITE_URL / VERCEL_URL not set"
+    );
 
-  const url = `${CANONICAL_BASE}/api/invoices/create${WEBHOOK_DEBUG ? `?debug=1` : ""}`;
+  const url = `${CANONICAL_BASE}/api/invoices/create${
+    WEBHOOK_DEBUG ? `?debug=1` : ""
+  }`;
   const resp = await fetch(url, {
     method: "POST",
     headers: {
@@ -172,13 +236,25 @@ async function callInvoiceRoute(payload: any) {
 
   const text = await resp.text();
   let json: any = null;
-  try { json = JSON.parse(text); } catch {}
+  try {
+    json = JSON.parse(text);
+  } catch {}
   if (!resp.ok) {
-    console.error("[invoice] route call failed", { url, status: resp.status, body: text?.slice(0, 1000) });
+    console.error("[invoice] route call failed", {
+      url,
+      status: resp.status,
+      body: text?.slice(0, 1000),
+    });
     throw new Error(`Invoice route error: ${resp.status}`);
   }
 
-  try { await logRow({ event_type: "invoice_created", status: "ok", extra: { storagePath: json?.storagePath, id: json?.id } }); } catch {}
+  try {
+    await logRow({
+      event_type: "invoice_created",
+      status: "ok",
+      extra: { storagePath: json?.storagePath, id: json?.id },
+    });
+  } catch {}
   if (WEBHOOK_DEBUG && json?.debug) {
     console.log("[invoice] debug.normalized:", json.debug.normalized);
     console.log("[invoice] pages:", json.debug.pages);
@@ -208,13 +284,17 @@ async function upsertPaymentRow(args: {
       cs_id: args.cs_id ?? undefined,
       meta: args.meta ?? undefined,
     };
-    if (row.pi_id) await sb().from("payments").upsert([row as any], { onConflict: "pi_id" });
+    if (row.pi_id)
+      await sb().from("payments").upsert([row as any], { onConflict: "pi_id" });
     else await sb().from("payments").insert(row as any);
   } catch {}
 }
 
-// ---------- Handler ----------
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+/* ---------- Handler ---------- */
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).end("Method Not Allowed");
@@ -225,7 +305,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET as string);
+    event = stripe.webhooks.constructEvent(
+      rawBody,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET as string
+    );
   } catch (err: any) {
     await logRow({ event_type: "bad_signature", error: err?.message });
     return res.status(400).send(`Webhook Error: ${err?.message}`);
@@ -235,39 +319,80 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     switch (event.type) {
+      /* ============================================================
+         PRIMARY path for invoicing
+         ============================================================ */
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
 
+        const piId =
+          typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : session.payment_intent?.id || null;
+
         let orderId =
           (session.metadata as any)?.order_id ||
-          (typeof session.payment_intent === "string"
-            ? (await stripe.paymentIntents.retrieve(session.payment_intent)).metadata?.order_id
-            : session.payment_intent?.metadata?.order_id);
+          (piId
+            ? (await stripe.paymentIntents.retrieve(piId)).metadata?.order_id
+            : undefined);
 
-        await logRow({ event_type: "checkout.session.completed/received", order_id: orderId ?? null });
+        await logRow({
+          event_type: "checkout.session.completed/received",
+          order_id: orderId ?? null,
+        });
 
-        const li = await stripe.checkout.sessions.listLineItems(session.id, { limit: 100, expand: ["data.price.product"] });
-        const order = await fetchOrder(orderId);
-
+        // Mark order as paid
         if (orderId) {
-          const { error } = await sb().from("orders").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", orderId);
+          const { error } = await sb()
+            .from("orders")
+            .update({ status: "paid", paid_at: new Date().toISOString() })
+            .eq("id", orderId);
           if (error) throw new Error(`Supabase update failed: ${error.message}`);
-          await logRow({ event_type: "order_updated_to_paid", order_id: orderId, status: "paid" });
+          await logRow({
+            event_type: "order_updated_to_paid",
+            order_id: orderId,
+            status: "paid",
+          });
         } else {
-          await logRow({ event_type: "missing_order_id_on_session", status: "pending" });
+          await logRow({
+            event_type: "missing_order_id_on_session",
+            status: "pending",
+          });
         }
 
+        // Upsert payment record
         await upsertPaymentRow({
-          pi_id: typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id,
-          amount: (typeof session.amount_total === "number" ? session.amount_total : null) ?? null,
+          pi_id: piId,
+          amount:
+            (typeof session.amount_total === "number"
+              ? session.amount_total
+              : null) ?? null,
           currency: (session.currency || "gbp").toUpperCase(),
           status: session.payment_status || "paid",
-          email: (session.customer_details?.email || session.customer_email || (session.metadata as any)?.email) ?? null,
+          email:
+            (session.customer_details?.email ||
+              session.customer_email ||
+              (session.metadata as any)?.email) ?? null,
           order_id: orderId ?? null,
           cs_id: session.id,
           meta: session.metadata ?? null,
         });
 
+        // Idempotency: if we already sent an invoice for this order, skip.
+        if (await invoiceAlreadySent(orderId)) {
+          await logRow({
+            event_type: "invoice_skip_already_sent",
+            order_id: orderId ?? null,
+          });
+          break;
+        }
+
+        // Build invoice
+        const li = await stripe.checkout.sessions.listLineItems(session.id, {
+          limit: 100,
+          expand: ["data.price.product"],
+        });
+        const order = await fetchOrder(orderId);
         const items = buildItemsFromOrderOrStripe({ order, lineItems: li, session });
 
         const dateISO =
@@ -276,11 +401,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           new Date().toISOString();
 
         const emailLower =
-          (order?.user_email ||
+          (
+            order?.user_email ||
             session.customer_details?.email ||
             session.customer_email ||
             (session.metadata as any)?.email ||
-            "")?.toString().toLowerCase();
+            ""
+          )
+            .toString()
+            .toLowerCase();
 
         const payload = {
           customer: {
@@ -301,41 +430,102 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         };
 
         const resp = await callInvoiceRoute(payload);
-        await logRow({ event_type: "invoice_sent", order_id: orderId ?? null, status: "paid", extra: { storagePath: resp?.storagePath } });
+        await logRow({
+          event_type: "invoice_sent",
+          order_id: orderId ?? null,
+          status: "paid",
+          extra: { storagePath: resp?.storagePath },
+        });
         break;
       }
 
+      /* ============================================================
+         SECONDARY path — only when there is NO Checkout Session
+         (e.g. manual PI confirmation, some API flows)
+         ============================================================ */
       case "payment_intent.succeeded": {
         const pi = event.data.object as Stripe.PaymentIntent;
+        const piId = pi.id;
+
+        // If this PI is tied to a Checkout Session, skip invoicing here.
+        if (await hasCheckoutSessionForPI(piId)) {
+          await logRow({
+            event_type: "pi.succeeded_skipped_due_to_checkout_session",
+            extra: { pi_id: piId },
+          });
+          // Still upsert payment info for completeness:
+          const orderIdFromPi = (pi.metadata as any)?.order_id || null;
+          await upsertPaymentRow({
+            pi_id: piId,
+            amount: (pi.amount_received ?? pi.amount) ?? null,
+            currency: (pi.currency || "gbp").toUpperCase(),
+            status: pi.status,
+            email:
+              (pi.receipt_email || (pi.metadata as any)?.customer_email) ?? null,
+            order_id: orderIdFromPi,
+            meta: pi.metadata ?? null,
+          });
+          break;
+        }
 
         const orderId =
           (pi.metadata as any)?.order_id ||
-          (typeof pi.latest_charge === "string" ? (await stripe.charges.retrieve(pi.latest_charge)).metadata?.order_id : undefined);
+          (typeof pi.latest_charge === "string"
+            ? (await stripe.charges.retrieve(pi.latest_charge)).metadata
+                ?.order_id
+            : undefined);
 
-        await logRow({ event_type: "payment_intent.succeeded/received", order_id: orderId ?? null });
+        await logRow({
+          event_type: "payment_intent.succeeded/received",
+          order_id: orderId ?? null,
+        });
 
         const order = await fetchOrder(orderId);
 
         if (orderId) {
-          const { error } = await sb().from("orders").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", orderId);
+          const { error } = await sb()
+            .from("orders")
+            .update({ status: "paid", paid_at: new Date().toISOString() })
+            .eq("id", orderId);
           if (error) throw new Error(`Supabase update failed: ${error.message}`);
-          await logRow({ event_type: "order_updated_to_paid", order_id: orderId, status: "paid" });
+          await logRow({
+            event_type: "order_updated_to_paid",
+            order_id: orderId,
+            status: "paid",
+          });
         }
 
         await upsertPaymentRow({
-          pi_id: pi.id,
+          pi_id: piId,
           amount: (pi.amount_received ?? pi.amount) ?? null,
           currency: (pi.currency || "gbp").toUpperCase(),
           status: pi.status,
-          email: (pi.receipt_email || (pi.metadata as any)?.customer_email) ?? null,
+          email:
+            (pi.receipt_email || (pi.metadata as any)?.customer_email) ?? null,
           order_id: orderId ?? null,
           meta: pi.metadata ?? null,
         });
 
-        let items: Array<{ description: string; litres: number; total?: number; unitPrice?: number }>;
+        // Idempotency: if already invoiced for this order, skip
+        if (await invoiceAlreadySent(orderId)) {
+          await logRow({
+            event_type: "invoice_skip_already_sent",
+            order_id: orderId ?? null,
+          });
+          break;
+        }
+
+        // Build invoice from PI
+        let items: Array<{
+          description: string;
+          litres: number;
+          total?: number;
+          unitPrice?: number;
+        }>;
         if (order && (order.litres || order.total_pence || order.unit_price_pence)) {
           const litres = Number(order.litres || 0);
-          const totalMajor = order.total_pence != null ? Number(order.total_pence) / 100 : undefined;
+          const totalMajor =
+            order.total_pence != null ? Number(order.total_pence) / 100 : undefined;
           const unitMajor =
             order.unit_price_pence != null
               ? Number(order.unit_price_pence) / 100
@@ -343,9 +533,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               ? totalMajor / litres
               : undefined;
           const desc = order.product || order.fuel || "Payment";
-          items = totalMajor != null
-            ? [{ description: desc, litres, total: totalMajor }]
-            : [{ description: desc, litres, unitPrice: unitMajor || 0 }];
+          items =
+            totalMajor != null
+              ? [{ description: desc, litres, total: totalMajor }]
+              : [{ description: desc, litres, unitPrice: unitMajor || 0 }];
         } else {
           const litres = Number((pi.metadata as any)?.litres || 1);
           const totalMajor = ((pi.amount_received ?? pi.amount) || 0) / 100;
@@ -358,12 +549,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           toISODate((pi.metadata as any)?.deliveryDate) ||
           new Date().toISOString();
 
-        const emailLower =
-          (order?.user_email || pi.receipt_email || (pi.metadata as any)?.customer_email || "")?.toString().toLowerCase();
+        const emailLower = (
+          order?.user_email ||
+          pi.receipt_email ||
+          (pi.metadata as any)?.customer_email ||
+          ""
+        )
+          .toString()
+          .toLowerCase();
 
         const resp = await callInvoiceRoute({
           customer: {
-            name: order?.name || pi.shipping?.name || (pi.metadata as any)?.customer_name || "Customer",
+            name:
+              order?.name ||
+              pi.shipping?.name ||
+              (pi.metadata as any)?.customer_name ||
+              "Customer",
             email: emailLower,
             address_line1: order?.address_line1 ?? null,
             address_line2: order?.address_line2 ?? null,
@@ -372,10 +573,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           },
           items,
           currency: (pi.currency || "gbp").toUpperCase(),
-          meta: { orderId: orderId ?? undefined, notes: (pi.metadata as any)?.notes ?? undefined, dateISO },
+          meta: {
+            orderId: orderId ?? undefined,
+            notes: (pi.metadata as any)?.notes ?? undefined,
+            dateISO,
+          },
         });
 
-        await logRow({ event_type: "invoice_sent", order_id: orderId ?? null, status: "paid", extra: { storagePath: resp?.storagePath } });
+        await logRow({
+          event_type: "invoice_sent",
+          order_id: orderId ?? null,
+          status: "paid",
+          extra: { storagePath: resp?.storagePath },
+        });
         break;
       }
 
@@ -384,7 +594,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   } catch (e: any) {
     console.error("Webhook handler error:", e);
-    await logRow({ event_type: "handler_error", error: String(e?.message || e) });
+    await logRow({
+      event_type: "handler_error",
+      error: String(e?.message || e),
+    });
     return res.status(200).json({ received: true, error: e?.message });
   }
 
