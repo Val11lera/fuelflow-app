@@ -1,12 +1,10 @@
 // src/pages/client-dashboard.tsx
 // src/pages/client-dashboard.tsx
-// src/pages/client-dashboard.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { useBlockGuard } from "@/hooks/useBlockGuard";
-
+import { useBlockGuard } from "@/hooks/useBlockGuard"; // ⟵ NEW
 
 /* =========================
    Setup
@@ -73,6 +71,8 @@ function formatShortDMY(value?: string | Date | null) {
    ========================= */
 
 export default function ClientDashboard() {
+  useBlockGuard(); // ⟵ NEW: redirects blocked users to /access-issue
+
   const [userEmail, setUserEmail] = useState<string>("");
 
   // screen / loading
@@ -670,20 +670,5 @@ export default function ClientDashboard() {
           Refreshed: {formatShortDMY(refreshedAt)}
         </div>
       </div>
-    </div>
-  );
-}
-
-/* =========================
-   Components
-   ========================= */
-
-function Card(props: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="bg-gray-800 rounded-xl p-4 md:p-5">
-      <p className="text-gray-400">{props.title}</p>
-      <div className="mt-2">{props.children}</div>
-    </div>
-  );
-}
+    </div
 
