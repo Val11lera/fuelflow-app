@@ -5,16 +5,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-
-
-// at top
 import { useBlockGuard } from "@/hooks/useBlockGuard";
-
-export default function ClientDashboard() {
-  useBlockGuard(); // ⟵ redirects blocked users away
-  // ...rest of your component unchanged
-}
-
 
 
 /* =========================
