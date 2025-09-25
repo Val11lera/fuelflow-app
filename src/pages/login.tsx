@@ -190,53 +190,6 @@ export default function Login() {
     }
   }
 
-  async function handleMagicLink() {
-    try {
-      setLoading(true);
-      setMsg(null);
-
-      if (!email) {
-        setMsg({ type: "error", text: "Enter your email to receive a magic link." });
-        return;
-      }
-      if (!captchaToken) {
-        setMsg({ type: "error", text: "Please complete the captcha." });
-        return;
-      }
-
-      const r = await fetch("/api/auth/send-magic-link", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, captchaToken }),
-      });
-      const data = await r.json();
-
-      if (!r.ok || data?.error) {
-        setMsg({ type: "error", text: data?.error || "Couldn’t send magic link." });
-        resetCaptcha();
-        return;
-      }
-
-      resetCaptcha();
-
-      if (data.sent) {
-        setMsg({ type: "success", text: "Magic link sent! Check your inbox." });
-      } else if (data.consentUrl) {
-        setMsg({ type: "success", text: "Opening your sign-in link…" });
-        window.location.href = data.consentUrl;
-      } else if (data.actionUrl) {
-        setMsg({ type: "success", text: "Magic link generated. Opening…" });
-        window.location.href = data.actionUrl;
-      } else {
-        setMsg({ type: "success", text: "Magic link generated." });
-      }
-    } catch (e: any) {
-      setMsg({ type: "error", text: e?.message || "Unexpected error." });
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function handleReset() {
     try {
       setLoading(true);
@@ -431,21 +384,13 @@ export default function Login() {
               </div>
 
               {/* CTAs */}
-              <div className="mt-4 grid grid-cols-1 gap-2">
+              <div className="mt-4">
                 <button
                   onClick={handleLogin}
                   disabled={loading}
-                  className="rounded-lg bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
+                  className="w-full rounded-lg bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
                 >
                   {loading ? "Signing in…" : "Sign in"}
-                </button>
-                <button
-                  onClick={handleMagicLink}
-                  disabled={loading || !email}
-                  className="rounded-lg bg-white/10 px-4 py-2 font-semibold hover:bg-white/15 disabled:opacity-50"
-                  title={!email ? "Enter your email first" : ""}
-                >
-                  Email me a magic link
                 </button>
               </div>
 
