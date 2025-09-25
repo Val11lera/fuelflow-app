@@ -456,6 +456,9 @@ export default function AdminDashboard() {
           <KpiCard label="Paid Orders" value={paidCount.toLocaleString()} />
         </section>
 
+        {/* 👇 NEW: Client Approvals panel */}
+        <ApprovalsPanel />
+
         {/* Controls (mobile-first layout) */}
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-12 sm:items-end">
           {/* Date range group */}
@@ -658,7 +661,7 @@ export default function AdminDashboard() {
                     {(o.status || "pending").toLowerCase()}
                   </span>
                 </div>
-                <div className="mt-1 text-[13px] text-white/80">{o.user_email || "—"}</div>
+                <div className="mt-1 text=[13px] text-white/80">{o.user_email || "—"}</div>
                 <div className="mt-2 flex flex-wrap gap-2 text-sm">
                   <Badge label="Litres" value={String(o.litres ?? "—")} />
                   <Badge label="Amount" value={gbpFmt.format(toGBP(o.total_pence))} />
@@ -944,6 +947,152 @@ export default function AdminDashboard() {
         )}
       </div>
     </div>
+  );
+}
+
+/* =========================
+   NEW: Client Approvals Panel
+   ========================= */
+
+type PendingItem = { id: string; email: string; created_at: string };
+
+function ApprovalsPanel() {
+  const [items, setItems] = useState<PendingItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function getToken(): Promise<string | null> {
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.access_token || null;
+    // (No reliance on localStorage – works server+client side)
+  }
+
+  async function load() {
+    setLoading(true);
+    setErr(null);
+    try {
+      const token = await getToken();
+      if (!token) {
+        setErr("Not authenticated");
+        setItems([]);
+        return;
+      }
+      const r = await fetch("/api/admin/pending-clients", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Failed to load");
+      setItems(j.items || []);
+    } catch (e: any) {
+      setErr(e?.message || "Failed to load pending clients.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function approve(email: string, userId?: string) {
+    try {
+      const token = await getToken();
+      if (!token) return;
+      const r = await fetch("/api/admin/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email, userId }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Approval failed");
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Approve failed");
+    }
+  }
+
+  async function block(email: string, userId?: string) {
+    try {
+      const token = await getToken();
+      if (!token) return;
+      const r = await fetch("/api/admin/block", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email, userId, action: "block", reason: "Not approved" }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((j as any)?.error || "Block failed");
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Block failed");
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  return (
+    <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 md:p-5">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="text-xl font-semibold">Client Approvals</h2>
+        <button
+          onClick={load}
+          className="rounded bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+          title="Reload pending clients"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {err && (
+        <div className="mb-3 rounded border border-rose-400/40 bg-rose-500/10 p-2 text-sm text-rose-200">{err}</div>
+      )}
+
+      {loading ? (
+        <div className="text-white/70">Loading…</div>
+      ) : items.length === 0 ? (
+        <div className="text-white/60 text-sm">No pending clients.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm min-w-[520px]">
+            <thead className="text-white/70">
+              <tr className="border-b border-white/10">
+                <th className="py-2 pr-4">Email</th>
+                <th className="py-2 pr-4">Requested</th>
+                <th className="py-2 pr-4" />
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it) => (
+                <tr key={it.id} className="border-b border-white/5">
+                  <td className="py-2 pr-4">{it.email}</td>
+                  <td className="py-2 pr-4 whitespace-nowrap">{new Date(it.created_at).toLocaleString()}</td>
+                  <td className="py-2 pr-4">
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => approve(it.email, it.id)}
+                        className="rounded bg-yellow-500 px-3 py-1.5 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
+                        title="Approve this client"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => block(it.email, it.id)}
+                        className="rounded bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+                        title="Block this client"
+                      >
+                        Block
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs text-white/60">
+        Approve adds the email to the allow-list. Block adds it to the block list and signs the user out.
+      </p>
+    </section>
   );
 }
 
