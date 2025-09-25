@@ -1,4 +1,5 @@
 // src/pages/api/admin/approve.ts
+// src/pages/api/admin/approve.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
@@ -24,14 +25,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const jwt = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7) : null;
   if (!jwt) return res.status(401).json({ error: "Unauthorized" });
 
-  const { data: caller } = await sr.auth.getUser(jwt);
-  const callerEmail = caller?.user?.email?.toLowerCase();
-  if (!callerEmail) return res.status(401).json({ error: "Unauthorized" });
+  const { data: caller, error: callerErr } = await sr.auth.getUser(jwt);
+  if (callerErr || !caller?.user?.email) return res.status(401).json({ error: "Unauthorized" });
 
+  const callerEmail = caller.user.email.toLowerCase();
   const { data: adminRow } = await sr.from("admins").select("email").eq("email", callerEmail).maybeSingle();
   if (!adminRow?.email) return res.status(403).json({ error: "Forbidden" });
 
-  const lower = email.toLowerCase();
+  const lower = email.toLowerCase().trim();
 
   // Approve (upsert)
   const { error: upErr } = await sr
@@ -40,7 +41,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (upErr) return res.status(500).json({ error: upErr.message });
 
   // Optional: un-block if they were blocked previously
-  await sr.from("blocked_users").delete().eq("email", lower).catch(() => {});
+  try {
+    await sr.from("blocked_users").delete().eq("email", lower);
+  } catch {
+    // non-fatal – approval still stands
+  }
 
   // Optional: sign them out so approval takes effect immediately on next action
   if (userId) {
@@ -51,7 +56,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       } else if (typeof adminApi?.invalidateRefreshTokens === "function") {
         await adminApi.invalidateRefreshTokens(userId);
       }
-    } catch {}
+    } catch {
+      // non-fatal
+    }
   }
 
   return res.status(200).json({ ok: true });
