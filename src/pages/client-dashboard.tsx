@@ -71,7 +71,7 @@ function formatShortDMY(value?: string | Date | null) {
    ========================= */
 
 export default function ClientDashboard() {
-  useBlockGuard(); // ⟵ NEW: redirects blocked users to /access-issue
+  useBlockGuard(); // ⟵ NEW: redirect blocked users
 
   const [userEmail, setUserEmail] = useState<string>("");
 
@@ -484,7 +484,7 @@ export default function ClientDashboard() {
                   disabled={selectedYear === currentYear - 1}
                   className={cx(
                     "px-3 py-1.5",
-                    selectedYear === currentYear - 1 ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
+                    selectedYear === currentYear - 1 ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg:white/15"
                   )}
                 >
                   {currentYear - 1}
@@ -494,7 +494,7 @@ export default function ClientDashboard() {
                   disabled={selectedYear === currentYear}
                   className={cx(
                     "px-3 py-1.5",
-                    selectedYear === currentYear ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
+                    selectedYear === currentYear ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg:white/15"
                   )}
                 >
                   {currentYear}
@@ -502,7 +502,7 @@ export default function ClientDashboard() {
               </div>
               <button
                 onClick={() => setShowAllMonths((s) => !s)}
-                className="ml-3 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+                className="ml-3 rounded-lg bg:white/10 px-3 py-1.5 text-sm hover:bg:white/15"
               >
                 {showAllMonths ? "Show current month" : "Show 12 months"}
               </button>
@@ -519,31 +519,35 @@ export default function ClientDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
-                  <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
-                    <td className="py-2 pr-4">
-                      {months[r.monthIdx]} {String(selectedYear).slice(2)}
-                    </td>
-                    <td className="py-2 pr-4 align-middle">
-                      {Math.round(r.litres).toLocaleString()}
-                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                        <div
-                          className="h-1.5 rounded bg-yellow-500/80"
-                          style={{ width: `${(r.litres / Math.max(1, ...usageByMonth.map(x => x.litres))) * 100}%` }}
-                        />
-                      </div>
-                    </td>
-                    <td className="py-2 pr-4 align-middle">
-                      {gbp.format(r.spend)}
-                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                        <div
-                          className="h-1.5 rounded bg-white/40"
-                          style={{ width: `${(r.spend / Math.max(1, ...usageByMonth.map(x => x.spend))) * 100}%` }}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => {
+                  const maxLitres = Math.max(1, ...usageByMonth.map(x => x.litres));
+                  const maxSpend  = Math.max(1, ...usageByMonth.map(x => x.spend));
+                  return (
+                    <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
+                      <td className="py-2 pr-4">
+                        {months[r.monthIdx]} {String(selectedYear).slice(2)}
+                      </td>
+                      <td className="py-2 pr-4 align-middle">
+                        {Math.round(r.litres).toLocaleString()}
+                        <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                          <div
+                            className="h-1.5 rounded bg-yellow-500/80"
+                            style={{ width: `${(r.litres / maxLitres) * 100}%` }}
+                          />
+                        </div>
+                      </td>
+                      <td className="py-2 pr-4 align-middle">
+                        {gbp.format(r.spend)}
+                        <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                          <div
+                            className="h-1.5 rounded bg-white/40"
+                            style={{ width: `${(r.spend / maxSpend) * 100}%` }}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -670,5 +674,20 @@ export default function ClientDashboard() {
           Refreshed: {formatShortDMY(refreshedAt)}
         </div>
       </div>
-    </div
+    </div>
+  );
+}
+
+/* =========================
+   Components
+   ========================= */
+
+function Card(props: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-gray-800 rounded-xl p-4 md:p-5">
+      <p className="text-gray-400">{props.title}</p>
+      <div className="mt-2">{props.children}</div>
+    </div>
+  );
+}
 
