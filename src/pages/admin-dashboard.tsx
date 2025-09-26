@@ -1,18 +1,21 @@
 // src/pages/admin-dashboard.tsx
+// src/pages/admin-dashboard.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 /* =========================
-   Supabase
+   Supabase (browser client)
    ========================= */
-
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
+/* =========================
+   Types
+   ========================= */
 type Fuel = "diesel" | "petrol" | string;
 
 type OrderRow = {
@@ -38,10 +41,16 @@ type PaymentRow = {
   created_at?: string | null;
 };
 
+type ApprovalRow = {
+  email: string;
+  requested_at: string; // ISO
+  status: "pending" | "approved" | "blocked";
+  reason?: string | null;
+};
+
 /* =========================
    Helpers
    ========================= */
-
 const gbpFmt = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
 
 function cx(...c: (string | false | null | undefined)[]) {
@@ -86,227 +95,6 @@ function dateRange(r: "month" | "90d" | "ytd" | "all") {
     default:
       return { from: null as Date | null, to: null as Date | null };
   }
-}
-
-/* =========================
-   NEW: Client Approvals Panel
-   ========================= */
-
-function ApprovalsPanel() {
-  const [open, setOpen] = useState(true);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  type PendingRow = { email: string; requested_at?: string | null };
-  type ApprovedRow = { email: string; approved_at?: string | null };
-  type BlockedRow = { email: string; reason?: string | null; blocked_at?: string | null };
-
-  const [pending, setPending] = useState<PendingRow[]>([]);
-  const [approved, setApproved] = useState<ApprovedRow[]>([]);
-  const [blocked, setBlocked] = useState<BlockedRow[]>([]);
-
-  type Filter = "all" | "pending" | "approved" | "blocked";
-  const [filter, setFilter] = useState<Filter>("all");
-
-  async function load() {
-    try {
-      setLoading(true);
-      setError(null);
-      const r = await fetch("/api/admin/approvals/list");
-      if (!r.ok) throw new Error(await r.text());
-      const data = await r.json();
-      setPending(data?.pending ?? []);
-      setApproved(data?.approved ?? []);
-      setBlocked(data?.blocked ?? []);
-    } catch (e: any) {
-      setError(e?.message || "Failed to load approvals.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-  }, []);
-
-  async function setStatus(email: string, status: "approved" | "blocked" | "pending", reason?: string) {
-    try {
-      setLoading(true);
-      setError(null);
-      const r = await fetch("/api/admin/approvals/set", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, status, reason: reason || null }),
-      });
-      if (!r.ok) throw new Error(await r.text());
-      await load();
-    } catch (e: any) {
-      setError(e?.message || "Failed to update status.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  type Row = { email: string; date?: string; reason?: string | null; group: "pending" | "approved" | "blocked" };
-  const rows: Row[] = [
-    ...pending.map((p) => ({ email: p.email, date: p.requested_at || undefined, group: "pending" as const })),
-    ...approved.map((a) => ({ email: a.email, date: a.approved_at || undefined, group: "approved" as const })),
-    ...blocked.map((b) => ({ email: b.email, date: b.blocked_at || undefined, reason: b.reason || null, group: "blocked" as const })),
-  ].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-
-  const filtered = rows.filter((r) => (filter === "all" ? true : r.group === filter));
-
-  return (
-    <section className="rounded-xl border border-white/10 bg-white/[0.03]">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 pt-3 gap-2">
-        <button onClick={() => setOpen((o) => !o)} className="flex items-center gap-3" aria-expanded={open}>
-          <svg
-            viewBox="0 0 24 24"
-            className={`h-5 w-5 transition-transform ${open ? "rotate-90" : ""}`}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <path d="M8 5l8 7-8 7" />
-          </svg>
-        <div className="font-semibold">Client Approvals</div>
-          <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/80">
-            {rows.length} ({pending.length} pending • {approved.length} approved • {blocked.length} blocked)
-          </span>
-        </button>
-        <div className="flex items-center gap-2 pb-3">
-          <label className="text-sm text-white/70">Status:</label>
-          <select
-            className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value as Filter)}
-          >
-            <option value="all">All</option>
-            <option value="pending">Pending</option>
-            <option value="approved">Approved</option>
-            <option value="blocked">Blocked</option>
-          </select>
-          <button onClick={load} className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15" disabled={loading}>
-            Refresh
-          </button>
-        </div>
-      </div>
-
-      {/* Body */}
-      {open && (
-        <div className="px-3 pb-4">
-          {error && (
-            <div className="mx-1 mb-3 rounded border border-rose-400/40 bg-rose-500/10 p-2 text-rose-200 text-sm">
-              {error}
-            </div>
-          )}
-
-          {loading ? (
-            <div className="px-1 py-2 text-white/70">Loading…</div>
-          ) : filtered.length === 0 ? (
-            <div className="px-1 py-2 text-white/70">No rows.</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm min-w-[520px]">
-                <thead className="text-white/70">
-                  <tr className="border-b border-white/10">
-                    <th className="py-2 pr-4">Email</th>
-                    <th className="py-2 pr-4">Status</th>
-                    <th className="py-2 pr-4">Since</th>
-                    <th className="py-2 pr-4">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((r) => (
-                    <tr key={`${r.group}-${r.email}`} className="border-b border-white/5">
-                      <td className="py-2 pr-4">{r.email}</td>
-                      <td className="py-2 pr-4">
-                        <span
-                          className={`inline-flex items-center rounded px-2 py-0.5 text-xs ${
-                            r.group === "blocked"
-                              ? "bg-rose-600/70"
-                              : r.group === "approved"
-                              ? "bg-green-600/70"
-                              : "bg-gray-600/70"
-                          }`}
-                        >
-                          {r.group}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-4 whitespace-nowrap">
-                        {r.date ? new Date(r.date).toLocaleString() : "—"}
-                      </td>
-                      <td className="py-2 pr-4">
-                        {r.group === "pending" && (
-                          <div className="flex gap-2">
-                            <button
-                              className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-2 py-1 hover:bg-yellow-400"
-                              onClick={() => setStatus(r.email, "approved")}
-                              disabled={loading}
-                            >
-                              Approve
-                            </button>
-                            <button
-                              className="rounded bg-white/10 text-xs px-2 py-1 hover:bg-white/15"
-                              onClick={() => setStatus(r.email, "blocked")}
-                              disabled={loading}
-                            >
-                              Block
-                            </button>
-                          </div>
-                        )}
-                        {r.group === "approved" && (
-                          <div className="flex gap-2">
-                            <button
-                              className="rounded bg-white/10 text-xs px-2 py-1 hover:bg-white/15"
-                              onClick={() => setStatus(r.email, "blocked")}
-                              disabled={loading}
-                            >
-                              Block
-                            </button>
-                            <button
-                              className="rounded bg-white/10 text-xs px-2 py-1 hover:bg-white/15"
-                              onClick={() => setStatus(r.email, "pending")}
-                              disabled={loading}
-                            >
-                              Set pending
-                            </button>
-                          </div>
-                        )}
-                        {r.group === "blocked" && (
-                          <div className="flex gap-2">
-                            <button
-                              className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-2 py-1 hover:bg-yellow-400"
-                              onClick={() => setStatus(r.email, "approved")}
-                              disabled={loading}
-                            >
-                              Unblock &amp; Approve
-                            </button>
-                            <button
-                              className="rounded bg-white/10 text-xs px-2 py-1 hover:bg-white/15"
-                              onClick={() => setStatus(r.email, "pending")}
-                              disabled={loading}
-                            >
-                              Set pending
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          <p className="mt-3 text-xs text-white/60">
-            Approve adds the email to the allow-list. Block adds it to the block list and signs the user out.
-          </p>
-        </div>
-      )}
-    </section>
-  );
 }
 
 /* =========================
@@ -509,7 +297,6 @@ export default function AdminDashboard() {
   const paidCount = filteredOrders.filter((o) => (o.status || "").toLowerCase() === "paid").length;
 
   /* ===== Usage & Spend (yearly view) ===== */
-
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
   const currentYear = new Date().getFullYear();
   const currentMonthIdx = new Date().getMonth();
@@ -668,7 +455,7 @@ export default function AdminDashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 py-5 space-y-6">
-        {/* NEW: Client Approvals */}
+        {/* ===== Client Approvals (collapsible with status filter) ===== */}
         <ApprovalsPanel />
 
         {/* KPIs */}
@@ -717,7 +504,7 @@ export default function AdminDashboard() {
                 </select>
               </label>
 
-              {/* Use in Invoice Browser */}
+              {/* Invoice Browser helper */}
               <button
                 type="button"
                 disabled={customerFilter === "all"}
@@ -985,7 +772,6 @@ export default function AdminDashboard() {
                   </div>
 
                   <div className="mt-2 grid grid-cols-1 gap-1">
-                    {/* These wrap and don't resize the viewport */}
                     <CodeRow label="PI" value={p.pi_id || "—"} />
                     <CodeRow label="Session" value={p.cs_id || "—"} />
                   </div>
@@ -1170,7 +956,209 @@ export default function AdminDashboard() {
 }
 
 /* =========================
-   Components
+   Client Approvals Panel
+   ========================= */
+function ApprovalsPanel() {
+  const [open, setOpen] = useState(true);
+  const [rows, setRows] = useState<ApprovalRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "approved" | "blocked">("all");
+
+  // Build auth headers with Supabase bearer
+  async function authHeaders() {
+    const { data } = await supabase.auth.getSession();
+    const token = data?.session?.access_token;
+    if (!token) throw new Error("Not authenticated");
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
+    };
+  }
+
+  async function load() {
+    try {
+      setLoading(true);
+      setErr(null);
+      const r = await fetch("/api/admin/approvals/list", {
+        headers: await authHeaders(),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Failed to load approvals");
+      setRows((j?.rows || []) as ApprovalRow[]);
+    } catch (e: any) {
+      setErr(e?.message || "Failed to load approvals");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const counts = useMemo(() => {
+    const base = { pending: 0, approved: 0, blocked: 0 };
+    rows.forEach((r) => {
+      if (r.status === "pending") base.pending++;
+      if (r.status === "approved") base.approved++;
+      if (r.status === "blocked") base.blocked++;
+    });
+    return base;
+  }, [rows]);
+
+  const visible = useMemo(() => {
+    if (statusFilter === "all") return rows;
+    return rows.filter((r) => r.status === statusFilter);
+  }, [rows, statusFilter]);
+
+  async function setStatus(email: string, status: "approved" | "blocked", reason?: string) {
+    try {
+      setErr(null);
+      const r = await fetch("/api/admin/approvals/set", {
+        method: "POST",
+        headers: await authHeaders(),
+        body: JSON.stringify({ email, status, reason: reason || null }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Failed to update status");
+      // Refresh
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Failed to update");
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-white/10 bg-white/[0.03]">
+      <div className="flex items-center gap-3 px-4 py-3">
+        <button onClick={() => setOpen((s) => !s)} className="flex items-center gap-3" aria-expanded={open}>
+          <Chevron open={open} />
+          <div className="font-semibold">Client Approvals</div>
+          <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/80">
+            {counts.pending} pending • {counts.approved} approved • {counts.blocked} blocked
+          </span>
+        </button>
+
+        <div className="ml-auto flex items-center gap-2">
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-white/70">Status:</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as any)}
+              className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+            >
+              <option value="all">All</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="blocked">Blocked</option>
+            </select>
+          </label>
+
+          <button
+            onClick={load}
+            className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+            aria-label="Refresh approvals"
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="px-4 pb-4">
+          {err && (
+            <div className="mb-3 rounded border border-rose-400/40 bg-rose-500/10 p-2 text-rose-200 text-sm">
+              {err}
+            </div>
+          )}
+
+          {loading ? (
+            <div className="text-white/70 px-1 py-2 text-sm">Loading…</div>
+          ) : visible.length === 0 ? (
+            <div className="text-white/70 px-1 py-2 text-sm">No rows.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm min-w-[520px]">
+                <thead className="text-white/70 border-b border-white/10">
+                  <tr>
+                    <th className="py-2 pr-4">Email</th>
+                    <th className="py-2 pr-4">Requested</th>
+                    <th className="py-2 pr-4">Status</th>
+                    <th className="py-2 pr-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((r) => {
+                    const status = r.status;
+                    return (
+                      <tr key={`${r.email}-${r.requested_at}`} className="border-b border-white/5">
+                        <td className="py-2 pr-4">{r.email}</td>
+                        <td className="py-2 pr-4 whitespace-nowrap">
+                          {new Date(r.requested_at).toLocaleString()}
+                        </td>
+                        <td className="py-2 pr-4">
+                          <span
+                            className={cx(
+                              "inline-flex items-center rounded px-2 py-0.5 text-xs",
+                              status === "approved"
+                                ? "bg-green-600/70"
+                                : status === "blocked"
+                                ? "bg-rose-600/70"
+                                : "bg-gray-600/70"
+                            )}
+                          >
+                            {status}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-2">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => setStatus(r.email, "approved")}
+                              disabled={status === "approved"}
+                              className={cx(
+                                "rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-3 py-1 hover:bg-yellow-400",
+                                status === "approved" && "opacity-60 cursor-not-allowed"
+                              )}
+                            >
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => {
+                                const reason = prompt("Reason for blocking? (optional)") || undefined;
+                                setStatus(r.email, "blocked", reason);
+                              }}
+                              disabled={status === "blocked"}
+                              className={cx(
+                                "rounded bg-white/10 text-white font-semibold text-xs px-3 py-1 hover:bg-white/15",
+                                status === "blocked" && "opacity-60 cursor-not-allowed"
+                              )}
+                            >
+                              Block
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <p className="mt-3 text-xs text-white/60">
+            Approve adds the email to the allow-list. Block adds it to the block list and signs the user out.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* =========================
+   Reusable UI
    ========================= */
 
 function Chevron({ open }: { open: boolean }) {
@@ -1310,3 +1298,4 @@ function CodeRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
