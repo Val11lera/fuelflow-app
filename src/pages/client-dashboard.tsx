@@ -4,7 +4,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { useBlockGuard } from "@/hooks/useBlockGuard"; // ⟵ NEW
 
 /* =========================
    Setup
@@ -47,6 +46,8 @@ type PaymentRow = {
   status: string;
 };
 
+type AccessState = "allowed" | "blocked" | "pending";
+
 /* =========================
    Helpers
    ========================= */
@@ -71,8 +72,6 @@ function formatShortDMY(value?: string | Date | null) {
    ========================= */
 
 export default function ClientDashboard() {
-  useBlockGuard(); // ⟵ NEW: redirect blocked users
-
   const [userEmail, setUserEmail] = useState<string>("");
 
   // screen / loading
@@ -91,13 +90,16 @@ export default function ClientDashboard() {
   const [visibleCount, setVisibleCount] = useState<number>(20);
   const [error, setError] = useState<string | null>(null);
 
+  // Access / approval state
+  const [access, setAccess] = useState<AccessState>("pending");
+
   // usage UI
   const currentYear = new Date().getFullYear();
   const currentMonthIdx = new Date().getMonth();
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
-  // ----------------- Auth + automatic refresh on mount -----------------
+  // ----------------- Auth + access guards + auto refresh on mount -----------------
   useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
@@ -105,9 +107,42 @@ export default function ClientDashboard() {
         window.location.href = "/login";
         return;
       }
-      setUserEmail((auth.user.email || "").toLowerCase());
+      const emailLower = (auth.user.email || "").toLowerCase();
+
+      // 1) Blocked guard — immediate sign out + redirect
+      const { data: blocked } = await supabase
+        .from("blocked_users")
+        .select("email")
+        .eq("email", emailLower)
+        .maybeSingle();
+
+      if (blocked?.email) {
+        try {
+          await supabase.auth.signOut();
+        } finally {
+          window.location.href = "/login?blocked=1";
+        }
+        return;
+      }
+
+      // 2) Allowed check (used to toggle “Order” availability & banner)
+      const { data: allowed, error: allowErr } = await supabase
+        .from("email_allowlist")
+        .select("email")
+        .eq("email", emailLower)
+        .maybeSingle();
+
+      if (allowErr) {
+        // if the table doesn't exist or other issue — keep UX functional
+        setAccess("pending");
+      } else {
+        setAccess(allowed?.email ? "allowed" : "pending");
+      }
+
+      setUserEmail(emailLower);
+
       // AUTO REFRESH right away
-      await loadAll();
+      await loadAll(emailLower);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -146,20 +181,23 @@ export default function ClientDashboard() {
   }, []);
 
   // ----------------- Refresh (loads all dashboard data) -----------------
-  async function loadAll() {
+  async function loadAll(emailLower?: string) {
     try {
       setLoading(true);
       setError(null);
 
-      const { data: auth } = await supabase.auth.getUser();
-      if (!auth?.user) {
-        window.location.href = "/login";
-        return;
+      let email = emailLower;
+      if (!email) {
+        const { data: auth } = await supabase.auth.getUser();
+        if (!auth?.user) {
+          window.location.href = "/login";
+          return;
+        }
+        email = (auth.user.email || "").toLowerCase();
+        setUserEmail(email);
       }
-      const emailLower = (auth.user.email || "").toLowerCase();
-      setUserEmail(emailLower);
 
-      await Promise.all([loadLatestPrices(), loadOrders(emailLower)]);
+      await Promise.all([loadLatestPrices(), loadOrders(email!)]);
 
       setHasRefreshed(true);
       setRefreshedAt(new Date());
@@ -333,7 +371,7 @@ export default function ClientDashboard() {
      Render
      ========================= */
 
-  const canOrder = petrolPrice != null && dieselPrice != null;
+  const canOrder = access === "allowed" && petrolPrice != null && dieselPrice != null;
 
   // ----------------- Loading screen -----------------
   if (!hasRefreshed || loading) {
@@ -386,12 +424,15 @@ export default function ClientDashboard() {
       {/* Sticky mobile CTA */}
       <div className="md:hidden fixed bottom-4 inset-x-4 z-40">
         <a
-          href="/order"
+          href={canOrder ? "/order" : undefined}
           aria-disabled={!canOrder}
           className={cx(
             "block text-center rounded-xl py-3 font-semibold shadow-lg",
             canOrder ? "bg-yellow-500 text-[#041F3E]" : "bg-white/10 text-white/60 cursor-not-allowed"
           )}
+          onClick={(e) => {
+            if (!canOrder) e.preventDefault();
+          }}
         >
           Order Fuel
         </a>
@@ -411,11 +452,16 @@ export default function ClientDashboard() {
           <div className="ml-auto flex items-center gap-2">
             <div className="hidden md:flex items-center gap-2">
               <a
-                href="/order"
+                href={canOrder ? "/order" : undefined}
                 aria-disabled={!canOrder}
+                onClick={(e) => {
+                  if (!canOrder) e.preventDefault();
+                }}
                 className={cx(
-                  "h-9 inline-flex items-center rounded-lg px-3 text-sm font-semibold bg-yellow-500 text-[#041F3E] hover:bg-yellow-400",
-                  !canOrder && "opacity-50 cursor-not-allowed pointer-events-none"
+                  "h-9 inline-flex items-center rounded-lg px-3 text-sm font-semibold",
+                  canOrder
+                    ? "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
+                    : "bg-white/10 text-white/60 cursor-not-allowed"
                 )}
               >
                 Order Fuel
@@ -442,6 +488,14 @@ export default function ClientDashboard() {
             </button>
           </div>
         </div>
+
+        {/* Pending/blocked banners */}
+        {access === "pending" && (
+          <div className="rounded-lg border border-amber-400/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+            Your account is pending approval. You can browse your data, but placing new orders is
+            disabled until an admin approves your email.
+          </div>
+        )}
 
         {/* Top cards: Prices + Documents */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -484,7 +538,7 @@ export default function ClientDashboard() {
                   disabled={selectedYear === currentYear - 1}
                   className={cx(
                     "px-3 py-1.5",
-                    selectedYear === currentYear - 1 ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg:white/15"
+                    selectedYear === currentYear - 1 ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
                   )}
                 >
                   {currentYear - 1}
@@ -494,7 +548,7 @@ export default function ClientDashboard() {
                   disabled={selectedYear === currentYear}
                   className={cx(
                     "px-3 py-1.5",
-                    selectedYear === currentYear ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg:white/15"
+                    selectedYear === currentYear ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
                   )}
                 >
                   {currentYear}
@@ -502,7 +556,7 @@ export default function ClientDashboard() {
               </div>
               <button
                 onClick={() => setShowAllMonths((s) => !s)}
-                className="ml-3 rounded-lg bg:white/10 px-3 py-1.5 text-sm hover:bg:white/15"
+                className="ml-3 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
               >
                 {showAllMonths ? "Show current month" : "Show 12 months"}
               </button>
@@ -519,35 +573,31 @@ export default function ClientDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => {
-                  const maxLitres = Math.max(1, ...usageByMonth.map(x => x.litres));
-                  const maxSpend  = Math.max(1, ...usageByMonth.map(x => x.spend));
-                  return (
-                    <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
-                      <td className="py-2 pr-4">
-                        {months[r.monthIdx]} {String(selectedYear).slice(2)}
-                      </td>
-                      <td className="py-2 pr-4 align-middle">
-                        {Math.round(r.litres).toLocaleString()}
-                        <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                          <div
-                            className="h-1.5 rounded bg-yellow-500/80"
-                            style={{ width: `${(r.litres / maxLitres) * 100}%` }}
-                          />
-                        </div>
-                      </td>
-                      <td className="py-2 pr-4 align-middle">
-                        {gbp.format(r.spend)}
-                        <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                          <div
-                            className="h-1.5 rounded bg-white/40"
-                            style={{ width: `${(r.spend / maxSpend) * 100}%` }}
-                          />
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
+                  <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
+                    <td className="py-2 pr-4">
+                      {months[r.monthIdx]} {String(selectedYear).slice(2)}
+                    </td>
+                    <td className="py-2 pr-4 align-middle">
+                      {Math.round(r.litres).toLocaleString()}
+                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                        <div
+                          className="h-1.5 rounded bg-yellow-500/80"
+                          style={{ width: `${(r.litres / Math.max(1, ...usageByMonth.map(x => x.litres))) * 100}%` }}
+                        />
+                      </div>
+                    </td>
+                    <td className="py-2 pr-4 align-middle">
+                      {gbp.format(r.spend)}
+                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                        <div
+                          className="h-1.5 rounded bg-white/40"
+                          style={{ width: `${(r.spend / Math.max(1, ...usageByMonth.map(x => x.spend))) * 100}%` }}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -690,4 +740,5 @@ function Card(props: { title: string; children: React.ReactNode }) {
     </div>
   );
 }
+
 
