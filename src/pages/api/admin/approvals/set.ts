@@ -1,101 +1,79 @@
 // src/pages/api/admin/approvals/set.ts
 // src/pages/api/admin/approvals/set.ts
+// src/pages/api/admin/approvals/set.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
-// --- Supabase clients ---
-const URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-// Service-role for admin auth checks; anon for regular table access
-const sr = createClient(URL, SERVICE, {
-  auth: { autoRefreshToken: false, persistSession: false },
-});
-const anon = createClient(URL, ANON, {
-  auth: { autoRefreshToken: false, persistSession: false },
-});
+type Body = {
+  email?: string;
+  action?: "approve" | "block";
+  reason?: string | null;
+};
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  // 1) Require a bearer token from the client
+  const authHeader = req.headers.authorization || "";
+  if (!authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Missing bearer token" });
+  }
+
+  // 2) Create a Supabase client that forwards the user's JWT to PostgREST
+  const sb = createClient(SUPABASE_URL, SUPABASE_ANON, {
+    global: {
+      headers: {
+        // This is the critical bit: RLS will now see auth.email()
+        Authorization: authHeader,
+      },
+    },
+  });
+
+  // 3) Input
+  const { email, action, reason }: Body = (req.body || {}) as Body;
+  const lower = String(email || "").trim().toLowerCase();
+  if (!lower) return res.status(400).json({ error: "email required" });
+  if (action !== "approve" && action !== "block") {
+    return res.status(400).json({ error: "invalid action" });
+  }
+
   try {
-    if (req.method !== "POST") {
-      res.setHeader("Allow", "POST");
-      return res.status(405).json({ error: "Method not allowed" });
-    }
-
-    // ---- Admin auth via Bearer token ----
-    const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
-    if (!token) return res.status(401).json({ error: "Missing bearer token" });
-
-    const { data: who, error: whoErr } = await sr.auth.getUser(token);
-    if (whoErr || !who?.user?.email) return res.status(401).json({ error: "Invalid token" });
-
-    const caller = (who.user.email || "").toLowerCase();
-    const { data: adminRow, error: adminErr } = await anon
-      .from("admins")
-      .select("email")
-      .eq("email", caller)
-      .maybeSingle();
-
-    if (adminErr) return res.status(500).json({ error: adminErr.message });
-    if (!adminRow?.email) return res.status(403).json({ error: "Not an admin" });
-
-    // ---- Params ----
-    const { email: rawEmail, action, reason } = (req.body ?? {}) as {
-      email?: string;
-      action?: "approve" | "block" | "unblock" | "remove-allow";
-      reason?: string;
-    };
-
-    const email = String(rawEmail || "").toLowerCase();
-    if (!email || !action) return res.status(400).json({ error: "email and action are required" });
-
-    // ---- Actions ----
-
-    // Approve: add to allow-list, remove from blocked (if present)
-    if (action === "approve") {
-      const up = await anon.from("email_allowlist").upsert({ email }).select().single();
-      if (up.error) return res.status(500).json({ error: up.error.message });
-
-      // best-effort cleanup from blocked
-      await anon.from("blocked_users").delete().eq("email", email);
-
-      return res.status(200).json({ ok: true, status: "allowed" });
-    }
-
-    // Block: add to blocked, remove from allow-list (and rely on app guards to deny access)
     if (action === "block") {
-      const up = await anon
+      // Insert/update block (allowed by blocked_users_admin_all policy)
+      const { error: insErr } = await sb
         .from("blocked_users")
-        .upsert({ email, reason: reason || null })
+        .upsert({ email: lower, reason: reason ?? null })
         .select()
         .single();
-      if (up.error) return res.status(500).json({ error: up.error.message });
 
-      // best-effort cleanup from allow-list
-      await anon.from("email_allowlist").delete().eq("email", email);
+      if (insErr) return res.status(403).json({ error: insErr.message });
 
-      // Note: supabase-js v2 has no admin.invalidateUserSessions().
-      // Access is blocked on next request via your guards (blocked_users check / RLS / middleware).
+      // Best-effort: remove from allowlist
+      await sb.from("email_allowlist").delete().eq("email", lower);
+
       return res.status(200).json({ ok: true, status: "blocked" });
-    }
+    } else {
+      // approve
+      const { error: upErr } = await sb
+        .from("email_allowlist")
+        .upsert({ email: lower })
+        .select()
+        .single();
 
-    // Unblock: remove from blocked (does not auto-approve)
-    if (action === "unblock") {
-      const { error } = await anon.from("blocked_users").delete().eq("email", email);
-      if (error) return res.status(500).json({ error: error.message });
-      return res.status(200).json({ ok: true, status: "pending" });
-    }
+      if (upErr) return res.status(403).json({ error: upErr.message });
 
-    // Remove-allow: delete from allow-list (becomes pending)
-    if (action === "remove-allow") {
-      const { error } = await anon.from("email_allowlist").delete().eq("email", email);
-      if (error) return res.status(500).json({ error: error.message });
-      return res.status(200).json({ ok: true, status: "pending" });
-    }
+      // Best-effort: remove from block list
+      await sb.from("blocked_users").delete().eq("email", lower);
 
-    return res.status(400).json({ error: "Unknown action" });
+      return res.status(200).json({ ok: true, status: "approved" });
+    }
   } catch (e: any) {
-    return res.status(500).json({ error: e?.message || "Unexpected error" });
+    return res.status(500).json({ error: e?.message || "Server error" });
   }
 }
