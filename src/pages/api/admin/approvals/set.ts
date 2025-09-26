@@ -1,6 +1,5 @@
 // src/pages/api/admin/approvals/set.ts
 // src/pages/api/admin/approvals/set.ts
-// src/pages/api/admin/approvals/set.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
@@ -19,23 +18,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // 1) Require a bearer token from the client
+  // 1) Require and forward the user's JWT
   const authHeader = req.headers.authorization || "";
   if (!authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ error: "Missing bearer token" });
   }
 
-  // 2) Create a Supabase client that forwards the user's JWT to PostgREST
+  // Supabase client that forwards the token to PostgREST ⇒ RLS sees auth.email()
   const sb = createClient(SUPABASE_URL, SUPABASE_ANON, {
-    global: {
-      headers: {
-        // This is the critical bit: RLS will now see auth.email()
-        Authorization: authHeader,
-      },
-    },
+    global: { headers: { Authorization: authHeader } },
   });
 
-  // 3) Input
+  // 2) Inputs
   const { email, action, reason }: Body = (req.body || {}) as Body;
   const lower = String(email || "").trim().toLowerCase();
   if (!lower) return res.status(400).json({ error: "email required" });
@@ -45,27 +39,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     if (action === "block") {
-      // Insert/update block (allowed by blocked_users_admin_all policy)
+      // Insert/update into block list (guarded by RLS -> admin only)
       const { error: insErr } = await sb
         .from("blocked_users")
         .upsert({ email: lower, reason: reason ?? null })
         .select()
         .single();
-
       if (insErr) return res.status(403).json({ error: insErr.message });
 
-      // Best-effort: remove from allowlist
+      // Best-effort: remove from allow list
       await sb.from("email_allowlist").delete().eq("email", lower);
 
       return res.status(200).json({ ok: true, status: "blocked" });
     } else {
-      // approve
+      // Approve: add to allow list
       const { error: upErr } = await sb
         .from("email_allowlist")
         .upsert({ email: lower })
         .select()
         .single();
-
       if (upErr) return res.status(403).json({ error: upErr.message });
 
       // Best-effort: remove from block list
@@ -77,3 +69,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: e?.message || "Server error" });
   }
 }
+
