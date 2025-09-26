@@ -46,8 +46,6 @@ type PaymentRow = {
   status: string;
 };
 
-type AccessState = "allowed" | "blocked" | "pending";
-
 /* =========================
    Helpers
    ========================= */
@@ -90,16 +88,13 @@ export default function ClientDashboard() {
   const [visibleCount, setVisibleCount] = useState<number>(20);
   const [error, setError] = useState<string | null>(null);
 
-  // Access / approval state
-  const [access, setAccess] = useState<AccessState>("pending");
-
   // usage UI
   const currentYear = new Date().getFullYear();
   const currentMonthIdx = new Date().getMonth();
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
-  // ----------------- Auth + access guards + auto refresh on mount -----------------
+  // ----------------- Auth + automatic refresh on mount -----------------
   useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
@@ -107,42 +102,9 @@ export default function ClientDashboard() {
         window.location.href = "/login";
         return;
       }
-      const emailLower = (auth.user.email || "").toLowerCase();
-
-      // 1) Blocked guard — immediate sign out + redirect
-      const { data: blocked } = await supabase
-        .from("blocked_users")
-        .select("email")
-        .eq("email", emailLower)
-        .maybeSingle();
-
-      if (blocked?.email) {
-        try {
-          await supabase.auth.signOut();
-        } finally {
-          window.location.href = "/login?blocked=1";
-        }
-        return;
-      }
-
-      // 2) Allowed check (used to toggle “Order” availability & banner)
-      const { data: allowed, error: allowErr } = await supabase
-        .from("email_allowlist")
-        .select("email")
-        .eq("email", emailLower)
-        .maybeSingle();
-
-      if (allowErr) {
-        // if the table doesn't exist or other issue — keep UX functional
-        setAccess("pending");
-      } else {
-        setAccess(allowed?.email ? "allowed" : "pending");
-      }
-
-      setUserEmail(emailLower);
-
+      setUserEmail((auth.user.email || "").toLowerCase());
       // AUTO REFRESH right away
-      await loadAll(emailLower);
+      await loadAll();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -186,18 +148,15 @@ export default function ClientDashboard() {
       setLoading(true);
       setError(null);
 
-      let email = emailLower;
-      if (!email) {
-        const { data: auth } = await supabase.auth.getUser();
-        if (!auth?.user) {
-          window.location.href = "/login";
-          return;
-        }
-        email = (auth.user.email || "").toLowerCase();
-        setUserEmail(email);
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth?.user) {
+        window.location.href = "/login";
+        return;
       }
+      const lower = (emailLower || auth.user.email || "").toLowerCase();
+      setUserEmail(lower);
 
-      await Promise.all([loadLatestPrices(), loadOrders(email!)]);
+      await Promise.all([loadLatestPrices(), loadOrders(lower)]);
 
       setHasRefreshed(true);
       setRefreshedAt(new Date());
@@ -371,7 +330,7 @@ export default function ClientDashboard() {
      Render
      ========================= */
 
-  const canOrder = access === "allowed" && petrolPrice != null && dieselPrice != null;
+  const canOrder = petrolPrice != null && dieselPrice != null;
 
   // ----------------- Loading screen -----------------
   if (!hasRefreshed || loading) {
@@ -424,15 +383,12 @@ export default function ClientDashboard() {
       {/* Sticky mobile CTA */}
       <div className="md:hidden fixed bottom-4 inset-x-4 z-40">
         <a
-          href={canOrder ? "/order" : undefined}
+          href="/order"
           aria-disabled={!canOrder}
           className={cx(
             "block text-center rounded-xl py-3 font-semibold shadow-lg",
             canOrder ? "bg-yellow-500 text-[#041F3E]" : "bg-white/10 text-white/60 cursor-not-allowed"
           )}
-          onClick={(e) => {
-            if (!canOrder) e.preventDefault();
-          }}
         >
           Order Fuel
         </a>
@@ -452,16 +408,11 @@ export default function ClientDashboard() {
           <div className="ml-auto flex items-center gap-2">
             <div className="hidden md:flex items-center gap-2">
               <a
-                href={canOrder ? "/order" : undefined}
+                href="/order"
                 aria-disabled={!canOrder}
-                onClick={(e) => {
-                  if (!canOrder) e.preventDefault();
-                }}
                 className={cx(
-                  "h-9 inline-flex items-center rounded-lg px-3 text-sm font-semibold",
-                  canOrder
-                    ? "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
-                    : "bg-white/10 text-white/60 cursor-not-allowed"
+                  "h-9 inline-flex items-center rounded-lg px-3 text-sm font-semibold bg-yellow-500 text-[#041F3E] hover:bg-yellow-400",
+                  !canOrder && "opacity-50 cursor-not-allowed pointer-events-none"
                 )}
               >
                 Order Fuel
@@ -473,7 +424,7 @@ export default function ClientDashboard() {
                 Documents
               </a>
               <button
-                onClick={loadAll}
+                onClick={() => loadAll()}
                 className="h-9 inline-flex items-center rounded-lg bg-white/10 px-3 text-sm hover:bg-white/15"
               >
                 Refresh
@@ -488,14 +439,6 @@ export default function ClientDashboard() {
             </button>
           </div>
         </div>
-
-        {/* Pending/blocked banners */}
-        {access === "pending" && (
-          <div className="rounded-lg border border-amber-400/40 bg-amber-500/10 p-3 text-sm text-amber-200">
-            Your account is pending approval. You can browse your data, but placing new orders is
-            disabled until an admin approves your email.
-          </div>
-        )}
 
         {/* Top cards: Prices + Documents */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -637,7 +580,7 @@ export default function ClientDashboard() {
                 </>
               )}
               <button
-                onClick={loadAll}
+                onClick={() => loadAll()}
                 className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
               >
                 Refresh
@@ -740,5 +683,3 @@ function Card(props: { title: string; children: React.ReactNode }) {
     </div>
   );
 }
-
-
