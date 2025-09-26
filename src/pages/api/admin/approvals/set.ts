@@ -2,80 +2,122 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
-type Action = "approve" | "block" | "unblock";
+// If you ever move this to /app route handlers, you'll want: export const runtime = "nodejs";
 
-function normEmail(v?: string | null) {
-  return (v || "").trim().toLowerCase();
+type Body = {
+  email?: string;
+  action?: "approve" | "block" | "unblock";
+  reason?: string | null;
+};
+
+// ---- Resolve envs (support a couple of common aliases) ----
+const URL =
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  process.env.SUPABASE_URL ||
+  "";
+
+const SERVICE_ROLE =
+  process.env.SUPABASE_SERVICE_ROLE ||
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  "";
+
+/** Reusable JSON helpers */
+function bad(res: NextApiResponse, status: number, error: string) {
+  return res.status(status).json({ error });
+}
+function ok(res: NextApiResponse, extra?: Record<string, unknown>) {
+  return res.status(200).json({ ok: true, ...(extra || {}) });
+}
+
+/** Very light email check; we lower-case and trim either way */
+function normalizeEmail(e?: string | null) {
+  return (e || "").trim().toLowerCase();
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // Require POST
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return bad(res, 405, "Method not allowed");
+  }
+
+  // Fail fast if server is missing envs
+  if (!URL || !SERVICE_ROLE) {
+    return bad(res, 500, "Server misconfigured: missing SUPABASE_SERVICE_ROLE or URL");
+  }
+
+  // Parse / validate body
+  const { email: rawEmail, action, reason } = (req.body || {}) as Body;
+  const email = normalizeEmail(rawEmail);
+  if (!email) return bad(res, 400, "Missing email");
+  if (!action) return bad(res, 400, "Missing action");
+
+  // Create a SERVICE-ROLE client (bypasses RLS as intended for admin actions)
+  const sr = createClient(URL, SERVICE_ROLE, {
+    auth: { persistSession: false },
+  });
+
   try {
-    if (req.method !== "POST") {
-      return res.status(405).json({ error: "method not allowed" });
+    switch (action) {
+      case "approve": {
+        // Add to allow-list; harmless if it already exists
+        const { error: aerr } = await sr
+          .from("email_allowlist")
+          .insert({ email })
+          .onConflict("email")
+          .ignore();
+
+        if (aerr) return bad(res, 500, aerr.message);
+
+        // If previously blocked, remove from blocked list (idempotent)
+        const { error: derr } = await sr
+          .from("blocked_users")
+          .delete()
+          .eq("email", email);
+
+        if (derr) return bad(res, 500, derr.message);
+
+        return ok(res, { action: "approve", email });
+      }
+
+      case "block": {
+        // Add to blocked_users (upsert), and remove from allow-list so it doesn't look approved
+        const { error: berr } = await sr
+          .from("blocked_users")
+          .upsert({ email, reason: reason ?? null })
+          .select()
+          .single(); // single() forces error if nothing is returned
+
+        if (berr) return bad(res, 500, berr.message);
+
+        // Best-effort cleanup in allowlist (no error if not present)
+        const { error: aerr } = await sr
+          .from("email_allowlist")
+          .delete()
+          .eq("email", email);
+
+        if (aerr) return bad(res, 500, aerr.message);
+
+        return ok(res, { action: "block", email });
+      }
+
+      case "unblock": {
+        // Remove from block list
+        const { error: derr } = await sr
+          .from("blocked_users")
+          .delete()
+          .eq("email", email);
+
+        if (derr) return bad(res, 500, derr.message);
+
+        // (Optional) DO NOT auto-approve on unblock; admin can click Approve separately if desired
+        return ok(res, { action: "unblock", email });
+      }
+
+      default:
+        return bad(res, 400, "Invalid action");
     }
-
-    // Accept both JSON body and query-string fallbacks
-    const body = (req.body ?? {}) as Record<string, any>;
-    const action = (body.action || req.query.action || "").toString().toLowerCase() as Action;
-    const email = normEmail((body.email ?? req.query.email) as string | undefined);
-    const reason = (body.reason ?? req.query.reason ?? "") as string;
-
-    if (!email) return res.status(400).json({ error: "missing email" });
-    if (!["approve", "block", "unblock"].includes(action)) {
-      return res.status(400).json({ error: "invalid action" });
-    }
-
-    // Server-side Supabase client (service role preferred)
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const service = process.env.SUPABASE_SERVICE_ROLE || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-    const sb = createClient(url, service, { auth: { persistSession: false } });
-
-    // Run DB changes in a transaction-esque sequence
-    if (action === "approve") {
-      // 1) Add to allowlist
-      const { error: upErr } = await sb
-        .from("email_allowlist")
-        .upsert({ email, created_at: new Date().toISOString() }, { onConflict: "email" });
-      if (upErr) return res.status(500).json({ error: upErr.message });
-
-      // 2) Remove from blocked list (if present)
-      const { error: delErr } = await sb.from("blocked_users").delete().eq("email", email);
-      if (delErr) return res.status(500).json({ error: delErr.message });
-
-      return res.status(200).json({ ok: true });
-    }
-
-    if (action === "block") {
-      // 1) Add to blocked list
-      const { error: upErr } = await sb
-        .from("blocked_users")
-        .upsert(
-          { email, reason: reason || null, created_at: new Date().toISOString() },
-          { onConflict: "email" }
-        );
-      if (upErr) return res.status(500).json({ error: upErr.message });
-
-      // 2) Remove from allowlist (if present)
-      const { error: delErr } = await sb.from("email_allowlist").delete().eq("email", email);
-      if (delErr) return res.status(500).json({ error: delErr.message });
-
-      // (Optional) best-effort: sign the user out next time they refresh.
-      // You can ignore this if not needed. No error handling here; keep response OK.
-
-      return res.status(200).json({ ok: true });
-    }
-
-    if (action === "unblock") {
-      // Simply remove from blocked list. Do NOT auto-approve.
-      const { error: delErr } = await sb.from("blocked_users").delete().eq("email", email);
-      if (delErr) return res.status(500).json({ error: delErr.message });
-
-      return res.status(200).json({ ok: true });
-    }
-
-    // Should never reach here
-    return res.status(400).json({ error: "invalid action" });
   } catch (e: any) {
-    return res.status(500).json({ error: e?.message || "server error" });
+    return bad(res, 500, e?.message || "Unknown error");
   }
 }
