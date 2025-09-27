@@ -1,9 +1,11 @@
 export default function Blocked() {
   return (
-    <main className="min-h-screen grid place-items-center text-white bg-[#0b1220]">
-      <div className="rounded-xl border border-white/10 bg-white/5 p-6">
-        <h1 className="text-2xl font-semibold">Your account is blocked</h1>
-        <p className="mt-2 text-white/70">Please contact support.</p>
+    <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#0b1220", color: "white" }}>
+      <div style={{ padding: 16, border: "1px solid #ffffff22", borderRadius: 12, background: "rgba(255,255,255,0.04)" }}>
+        <h1 style={{ margin: 0, fontSize: 20, marginBottom: 8 }}>Access blocked</h1>
+        <p style={{ margin: 0, opacity: 0.8 }}>
+          Your account is currently blocked. Please contact support if you believe this is a mistake.
+        </p>
       </div>
     </main>
   );
