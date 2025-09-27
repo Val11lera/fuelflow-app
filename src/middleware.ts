@@ -1,7 +1,7 @@
 // /src/middleware.ts
 // src/middleware.ts
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { createServerClient } from "@supabase/ssr";
 
 export const config = {
   matcher: ["/client-dashboard", "/admin-dashboard"],
@@ -15,8 +15,12 @@ function makeClient(req: NextRequest) {
     {
       cookies: {
         get: (key) => req.cookies.get(key)?.value,
-        set: (key, value, options) => { res.cookies.set({ name: key, value, ...options }); },
-        remove: (key, options) => { res.cookies.set({ name: key, value: "", ...options, maxAge: 0 }); },
+        set: (key, value, options) => {
+          res.cookies.set({ name: key, value, ...options });
+        },
+        remove: (key, options) => {
+          res.cookies.set({ name: key, value: "", ...options, maxAge: 0 });
+        },
       },
     }
   );
@@ -28,33 +32,58 @@ export default async function middleware(req: NextRequest) {
   const url = new URL(req.url);
   const path = url.pathname;
 
+  const loginRedirect = (reason: string) =>
+    NextResponse.redirect(
+      new URL(
+        `/login?reason=${encodeURIComponent(reason)}&next=${encodeURIComponent(path)}`,
+        req.url
+      )
+    );
+
+  // 1) Require session
   const { data: sessionRes } = await supabase.auth.getSession();
   const email = sessionRes.session?.user?.email?.toLowerCase();
+  if (!email) return loginRedirect("no-session");
 
-  const goLogin = (reason: string) =>
-    NextResponse.redirect(new URL(`/login?reason=${encodeURIComponent(reason)}&next=${encodeURIComponent(path)}`, req.url));
+  // 2) Block check (applies to everyone, including admins)
+  const { data: blocked, error: blErr } = await supabase
+    .from("blocked_users")
+    .select("email")
+    .eq("email", email)
+    .maybeSingle();
 
-  if (!email) return goLogin("no-session");
-
-  const { data: bl, error: blErr } = await supabase
-    .from("blocked_users").select("email").eq("email", email).maybeSingle();
-  if (!blErr && bl?.email) {
-    try { await supabase.auth.signOut(); } catch {}
-    return goLogin("blocked");
+  if (!blErr && blocked?.email) {
+    try {
+      await supabase.auth.signOut();
+    } catch {}
+    return loginRedirect("blocked");
   }
 
-  const { data: al, error: alErr } = await supabase
-    .from("email_allowlist").select("email").eq("email", email).maybeSingle();
-  if (alErr)   return goLogin("allowlist-rls-error");
-  if (!al?.email) return goLogin("not-allowlisted");
+  // 3) Admin check (requires admins_self_select policy)
+  const { data: adm, error: adErr } = await supabase
+    .from("admins")
+    .select("email")
+    .eq("email", email)
+    .maybeSingle();
 
-  if (path.startsWith("/admin-dashboard")) {
-    const { data: ad, error: adErr } = await supabase
-      .from("admins").select("email").eq("email", email).maybeSingle();
-    if (adErr)      return goLogin("admin-rls-error");
-    if (!ad?.email) return NextResponse.redirect(new URL("/client-dashboard", req.url));
+  const isAdmin = !adErr && !!adm?.email;
+
+  // 4) If admin: allow (even if not in allow-list). If non-admin: must be allow-listed.
+  if (!isAdmin) {
+    const { data: allow, error: alErr } = await supabase
+      .from("email_allowlist")
+      .select("email")
+      .eq("email", email)
+      .maybeSingle();
+
+    if (alErr) return loginRedirect("allowlist-rls-error");
+    if (!allow?.email) return loginRedirect("not-allowlisted");
+  }
+
+  // 5) If trying to access admin dashboard but not admin, send to client dashboard
+  if (path.startsWith("/admin-dashboard") && !isAdmin) {
+    return NextResponse.redirect(new URL("/client-dashboard", req.url));
   }
 
   return res;
 }
-
