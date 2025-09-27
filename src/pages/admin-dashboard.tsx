@@ -473,7 +473,12 @@ export default function AdminDashboard() {
 
   /* ====== Approve / Block / Unblock ====== */
 
-  async function callApprovalAction(email: string, action: "approve" | "block" | "unblock", reason?: string | null) {
+  // NEW: single helper that POSTs to /api/admin/approvals/set
+  async function setClientStatus(
+    action: "approve" | "block" | "unblock",
+    email: string,
+    reason?: string | null
+  ) {
     try {
       setApprovalsError(null);
       const { data: sessionRes } = await supabase.auth.getSession();
@@ -486,12 +491,13 @@ export default function AdminDashboard() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ email, action, reason: reason || null }),
+        body: JSON.stringify({ action, email, reason: reason ?? null }),
       });
 
+      const text = await res.text();
       if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || `Failed (${res.status})`);
+        // surface API error text if present
+        throw new Error(text || `Failed (${res.status})`);
       }
 
       await loadApprovals();
@@ -501,14 +507,14 @@ export default function AdminDashboard() {
   }
 
   function onApprove(email: string) {
-    callApprovalAction(email, "approve");
+    setClientStatus("approve", email);
   }
   function onBlock(email: string) {
     const reason = window.prompt("Reason for blocking (optional):") || null;
-    callApprovalAction(email, "block", reason);
+    setClientStatus("block", email, reason);
   }
   function onUnblock(email: string) {
-    callApprovalAction(email, "unblock");
+    setClientStatus("unblock", email);
   }
 
   /* =========================
@@ -571,7 +577,7 @@ export default function AdminDashboard() {
                 <span className="text-white/70">Status:</span>
                 <select
                   value={approvalsFilter}
-                  onChange={(e) => setApprovalsFilter(e.target.value as ApprovalsFilter)}
+                  onChange={(e) => setApprovalsFilter(e.target.value as any)}
                   className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
                 >
                   <option value="all">All</option>
