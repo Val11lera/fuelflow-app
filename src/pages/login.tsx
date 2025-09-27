@@ -93,38 +93,63 @@ export default function Login() {
     setCaptchaToken(null);
   }
 
-  // Post-login routing (checks admin table)
+  // Post-login routing (checks blocklist, allow-list and admin)
   async function routeAfterLogin(explicitEmail?: string) {
-    try {
-      let lower = (explicitEmail || "").toLowerCase();
+    // fail-safe navigator so we never “hang” on the login screen
+    const go = (path: string) => {
+      try {
+        router.replace(path);
+        // hard fallback in case router is blocked by something
+        setTimeout(() => {
+          if (window.location.pathname !== path) window.location.assign(path);
+        }, 150);
+      } catch {
+        window.location.assign(path);
+      }
+    };
 
+    try {
+      // 1) Who just logged in?
+      let lower = (explicitEmail || "").toLowerCase();
       if (!lower) {
         const { data: auth } = await supabase.auth.getUser();
         lower = (auth?.user?.email || "").toLowerCase();
       }
       if (!lower) {
-        router.push("/client-dashboard");
-        return;
+        return go("/client-dashboard");
       }
 
-      const { data, error } = await supabase
-        .from("admins")
-        .select("email")
-        .eq("email", lower)
-        .maybeSingle();
+      // 2) Check all three states in parallel (RLS read-only)
+      const [blockedRes, allowRes, adminRes] = await Promise.all([
+        supabase.from("blocked_users").select("email").eq("email", lower).limit(1),
+        supabase.from("email_allowlist").select("email").eq("email", lower).limit(1),
+        supabase.from("admins").select("email").eq("email", lower).limit(1),
+      ]);
 
-      if (error) {
-        router.push("/client-dashboard");
-        return;
+      // If we can’t query for any reason, default to client dashboard
+      if (blockedRes.error || allowRes.error || adminRes.error) {
+        return go("/client-dashboard");
       }
 
-      if (data?.email) {
-        router.push("/admin-dashboard");
-      } else {
-        router.push("/client-dashboard");
+      const isBlocked = (blockedRes.data?.length || 0) > 0;
+      const isAllowed = (allowRes.data?.length || 0) > 0;
+      const isAdmin   = (adminRes.data?.length  || 0) > 0;
+
+      // 3) Route
+      if (isBlocked) {
+        // optional: also clear the auth so they don't look “signed in”
+        await supabase.auth.signOut();
+        return go("/blocked");
       }
+
+      if (isAdmin) return go("/admin-dashboard");
+      if (isAllowed) return go("/client-dashboard");
+
+      // Logged in but not yet approved
+      return go("/pending");
     } catch {
-      router.push("/client-dashboard");
+      // last resort
+      return go("/client-dashboard");
     }
   }
 
