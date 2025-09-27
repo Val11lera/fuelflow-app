@@ -13,9 +13,14 @@ type Body = {
 };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Only POST is allowed
+  // --- TEMP sanity endpoint so you can test in the browser ---
+  if (req.method === "GET") {
+    // visit /api/admin/approvals and you should see this message
+    return res.status(200).send("approvals route alive");
+  }
+
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
+    res.setHeader("Allow", "POST, GET");
     return res.status(405).send("Method Not Allowed");
   }
 
@@ -23,7 +28,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { email, action, reason }: Body = (req.body || {}) as Body;
     if (!email || !action) return res.status(400).send("Missing email or action");
 
-    // Caller must be a logged-in admin (we validate the user via the bearer token)
     const authHeader = req.headers.authorization || "";
     const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
     if (!token) return res.status(401).send("Missing bearer token");
