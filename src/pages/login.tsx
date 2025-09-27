@@ -93,20 +93,22 @@ export default function Login() {
     setCaptchaToken(null);
   }
 
-  // Post-login routing (checks blocklist, allow-list and admin)
+   // Post-login routing (checks blocklist, allow-list and admin)
   async function routeAfterLogin(explicitEmail?: string) {
-    // fail-safe navigator so we never “hang” on the login screen
     const go = (path: string) => {
+      // if we’re already on the target, do nothing (prevents loop)
+      if (typeof window !== "undefined" && window.location.pathname === path) return;
+
       try {
         router.replace(path);
-        // hard fallback in case router is blocked by something
-        setTimeout(() => {
-          if (window.location.pathname !== path) window.location.assign(path);
-        }, 150);
       } catch {
-        window.location.assign(path);
+        // fallback only if different path
+        if (typeof window !== "undefined" && window.location.pathname !== path) {
+          window.location.assign(path);
+        }
       }
     };
+
 
     try {
       // 1) Who just logged in?
