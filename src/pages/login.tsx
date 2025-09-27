@@ -93,21 +93,73 @@ export default function Login() {
     setCaptchaToken(null);
   }
 
-   // Post-login routing (checks blocklist, allow-list and admin)
+    // After successful login, decide where to go.
+  // Only navigate when APPROVED and NOT BLOCKED.
   async function routeAfterLogin(explicitEmail?: string) {
     const go = (path: string) => {
-      // if we’re already on the target, do nothing (prevents loop)
       if (typeof window !== "undefined" && window.location.pathname === path) return;
-
       try {
         router.replace(path);
       } catch {
-        // fallback only if different path
         if (typeof window !== "undefined" && window.location.pathname !== path) {
           window.location.assign(path);
         }
       }
     };
+
+    let lower = (explicitEmail || "").toLowerCase();
+    if (!lower) {
+      const { data } = await supabase.auth.getUser();
+      lower = (data?.user?.email || "").toLowerCase();
+    }
+    if (!lower) {
+      go("/login");
+      return;
+    }
+
+    // 1) If blocked → sign out and show message
+    const { data: bl, error: blErr } = await supabase
+      .from("blocked_users")
+      .select("email")
+      .eq("email", lower)
+      .maybeSingle();
+
+    if (!blErr && bl?.email) {
+      await supabase.auth.signOut();
+      setMsg({ type: "error", text: "Your account is blocked. Please contact support." });
+      return; // stay on login
+    }
+
+    // 2) Must be approved (allowlist)
+    const { data: al, error: alErr } = await supabase
+      .from("email_allowlist")
+      .select("email")
+      .eq("email", lower)
+      .maybeSingle();
+
+    if (alErr || !al?.email) {
+      setMsg({
+        type: "info",
+        text: "Your account is pending approval. We’ll email you when it’s ready.",
+      });
+      return; // stay on login
+    }
+
+    // 3) Admins go to admin-dashboard, others to client-dashboard
+    const { data: admin, error: adminErr } = await supabase
+      .from("admins")
+      .select("email")
+      .eq("email", lower)
+      .maybeSingle();
+
+    if (!adminErr && admin?.email) {
+      go("/admin-dashboard");
+      return;
+    }
+
+    go("/client-dashboard");
+  }
+
 
 
     try {
