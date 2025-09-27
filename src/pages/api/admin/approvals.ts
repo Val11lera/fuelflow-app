@@ -1,10 +1,17 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
-
-const admin = createClient(SUPABASE_URL, SERVICE_ROLE);
+function getAdminClient(): SupabaseClient {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const service = process.env.SUPABASE_SERVICE_ROLE;
+  if (!url) {
+    throw new Error("ENV:NEXT_PUBLIC_SUPABASE_URL is missing");
+  }
+  if (!service) {
+    throw new Error("ENV:SUPABASE_SERVICE_ROLE is missing");
+  }
+  return createClient(url, service);
+}
 
 type Body = {
   email?: string;
@@ -13,10 +20,15 @@ type Body = {
 };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // --- TEMP sanity endpoint so you can test in the browser ---
+  // Simple health check so you can load in the browser
   if (req.method === "GET") {
-    // visit /api/admin/approvals and you should see this message
-    return res.status(200).send("approvals route alive");
+    try {
+      // Only create the client here (lazy), so a missing env gives a clear message
+      getAdminClient();
+      return res.status(200).send("approvals route alive");
+    } catch (e: any) {
+      return res.status(500).send(e?.message || "Server not configured");
+    }
   }
 
   if (req.method !== "POST") {
@@ -25,6 +37,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
+    const admin = getAdminClient(); // lazy create (after we checked method)
+
     const { email, action, reason }: Body = (req.body || {}) as Body;
     if (!email || !action) return res.status(400).send("Missing email or action");
 
@@ -32,6 +46,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
     if (!token) return res.status(401).send("Missing bearer token");
 
+    // Who is calling?
     const { data: userRes, error: userErr } = await admin.auth.getUser(token);
     if (userErr || !userRes?.user) return res.status(401).send("Invalid token");
 
@@ -79,6 +94,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     return res.status(400).send("Unknown action");
   } catch (e: any) {
-    return res.status(500).send(e?.message || "Server error");
+    return res.status(500).send(e?.message || "Internal Server Error");
   }
 }
