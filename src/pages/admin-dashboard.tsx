@@ -485,14 +485,15 @@ export default function AdminDashboard() {
       const token = sessionRes.session?.access_token;
       if (!token) throw new Error("Missing session token");
 
-      const res = await fetch("/api/admin/approvals/set", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ action, email, reason: reason ?? null }),
-      });
+const res = await fetch("/api/admin/approvals", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  },
+  body: JSON.stringify({ email, action, reason: reason || null }),
+});
+
 
       const text = await res.text();
       if (!res.ok) {
