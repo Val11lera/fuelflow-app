@@ -14,12 +14,11 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // ...your existing page guards (client dashboards etc)...
   return NextResponse.next();
 }
 
 export const config = {
-  // exclude api + static from middleware matcher
   matcher: ["/((?!api/|_next/|favicon.ico|.*\\.(?:png|jpg|jpeg|svg|gif|ico|css|js|map)$).*)"],
 };
+
 
