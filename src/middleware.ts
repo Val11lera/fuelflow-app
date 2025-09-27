@@ -1,4 +1,5 @@
 // /src/middleware.ts
+// /src/middleware.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
@@ -10,7 +11,7 @@ const PROTECTED = [
   "/client-dashboard",
   "/order",
   "/documents",
-  "/api", // protect all /api/* you want to gate for clients
+  "/api", // protect your API routes if desired
 ];
 
 export async function middleware(req: NextRequest) {
@@ -21,10 +22,9 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // we will set cookies on the outgoing response when needed
   const res = NextResponse.next();
 
-  // Supabase SSR client using cookies from the request/response
+  // Supabase SSR client bound to request/response cookies
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -43,7 +43,7 @@ export async function middleware(req: NextRequest) {
     }
   );
 
-  // 1) Require a session
+  // 1) Need a logged-in user
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -58,7 +58,6 @@ export async function middleware(req: NextRequest) {
   const email = (user.email || "").toLowerCase();
 
   // 2) Blocked check
-  // (relies on RLS policies below that allow users to read their own row)
   const { data: blocked } = await supabase
     .from("blocked_users")
     .select("email")
@@ -66,15 +65,13 @@ export async function middleware(req: NextRequest) {
     .maybeSingle();
 
   if (blocked?.email) {
-    // Don’t let them in. Redirect to a friendly page.
     const url = req.nextUrl.clone();
     url.pathname = "/blocked";
     url.searchParams.set("email", email);
     return NextResponse.redirect(url, { headers: res.headers });
   }
 
-  // 3) Allow-list (approved) check.
-  //    If you consider “approved” = exists in email_allowlist
+  // 3) Approved (allow-list) check
   const { data: allowed } = await supabase
     .from("email_allowlist")
     .select("email")
@@ -88,16 +85,14 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(url, { headers: res.headers });
   }
 
-  // All good
   return res;
 }
 
-// Tell Next.js which paths the middleware should run on
 export const config = {
   matcher: [
     "/client-dashboard",
     "/order",
     "/documents",
-    "/api/:path*", // only if you want to protect API routes too
+    "/api/:path*",
   ],
 };
