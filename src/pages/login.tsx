@@ -169,14 +169,22 @@ export default function Login() {
     if (!remember) localStorage.removeItem("ff_login_email");
   }, [remember, email]);
 
+  // Run once on mount: if there is a session, redirect once – otherwise do nothing.
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const { data: auth } = await supabase.auth.getUser();
-      if (auth?.user?.email) {
-        await routeAfterLogin(auth.user.email);
+      const { data } = await supabase.auth.getSession();
+      const email = data?.session?.user?.email;
+      if (!cancelled && email) {
+        // Only redirect if we truly have a session
+        await routeAfterLogin(email);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
 
   /* -------------------------
      Actions
