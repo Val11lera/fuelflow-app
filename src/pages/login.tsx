@@ -81,6 +81,9 @@ export default function Login() {
   // feature modal
   const [openFeature, setOpenFeature] = useState<FeatureKey | null>(null);
 
+  // prevent auto-redirect loop
+  const [checkedAuto, setCheckedAuto] = useState(false);
+
   /* -------------------------
      Helpers
   -------------------------- */
@@ -93,7 +96,7 @@ export default function Login() {
     setCaptchaToken(null);
   }
 
-    // After successful login, decide where to go.
+  // After successful login, decide where to go.
   // Only navigate when APPROVED and NOT BLOCKED.
   async function routeAfterLogin(explicitEmail?: string) {
     const go = (path: string) => {
@@ -117,7 +120,7 @@ export default function Login() {
       return;
     }
 
-    // 1) If blocked → sign out and show message
+    // 1) If blocked → sign out and stay on login with message
     const { data: bl, error: blErr } = await supabase
       .from("blocked_users")
       .select("email")
@@ -160,53 +163,6 @@ export default function Login() {
     go("/client-dashboard");
   }
 
-
-
-    try {
-      // 1) Who just logged in?
-      let lower = (explicitEmail || "").toLowerCase();
-      if (!lower) {
-        const { data: auth } = await supabase.auth.getUser();
-        lower = (auth?.user?.email || "").toLowerCase();
-      }
-      if (!lower) {
-        return go("/client-dashboard");
-      }
-
-      // 2) Check all three states in parallel (RLS read-only)
-      const [blockedRes, allowRes, adminRes] = await Promise.all([
-        supabase.from("blocked_users").select("email").eq("email", lower).limit(1),
-        supabase.from("email_allowlist").select("email").eq("email", lower).limit(1),
-        supabase.from("admins").select("email").eq("email", lower).limit(1),
-      ]);
-
-      // If we can’t query for any reason, default to client dashboard
-      if (blockedRes.error || allowRes.error || adminRes.error) {
-        return go("/client-dashboard");
-      }
-
-      const isBlocked = (blockedRes.data?.length || 0) > 0;
-      const isAllowed = (allowRes.data?.length || 0) > 0;
-      const isAdmin   = (adminRes.data?.length  || 0) > 0;
-
-      // 3) Route
-      if (isBlocked) {
-        // optional: also clear the auth so they don't look “signed in”
-        await supabase.auth.signOut();
-        return go("/blocked");
-      }
-
-      if (isAdmin) return go("/admin-dashboard");
-      if (isAllowed) return go("/client-dashboard");
-
-      // Logged in but not yet approved
-      return go("/pending");
-    } catch {
-      // last resort
-      return go("/client-dashboard");
-    }
-  }
-
   /* -------------------------
      Effects
   -------------------------- */
@@ -221,22 +177,22 @@ export default function Login() {
     if (!remember) localStorage.removeItem("ff_login_email");
   }, [remember, email]);
 
-  // Run once on mount: if there is a session, redirect once – otherwise do nothing.
+  // Auto-route if already logged in (once)
   useEffect(() => {
+    if (checkedAuto) return;
     let cancelled = false;
     (async () => {
       const { data } = await supabase.auth.getSession();
-      const email = data?.session?.user?.email;
-      if (!cancelled && email) {
-        // Only redirect if we truly have a session
-        await routeAfterLogin(email);
+      const currentEmail = data?.session?.user?.email;
+      if (!cancelled && currentEmail) {
+        await routeAfterLogin(currentEmail);
       }
+      if (!cancelled) setCheckedAuto(true);
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
-
+  }, [checkedAuto]);
 
   /* -------------------------
      Actions
@@ -633,3 +589,4 @@ function HeadsetArt({ className }: { className?: string }) {
     </svg>
   );
 }
+
