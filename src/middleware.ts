@@ -45,7 +45,7 @@ export default async function middleware(req: NextRequest) {
   const email = sessionRes.session?.user?.email?.toLowerCase();
   if (!email) return loginRedirect("no-session");
 
-  // 2) Block check (applies to everyone, including admins)
+  // 2) Block check (applies to everyone)
   const { data: blocked, error: blErr } = await supabase
     .from("blocked_users")
     .select("email")
@@ -53,9 +53,7 @@ export default async function middleware(req: NextRequest) {
     .maybeSingle();
 
   if (!blErr && blocked?.email) {
-    try {
-      await supabase.auth.signOut();
-    } catch {}
+    try { await supabase.auth.signOut(); } catch {}
     return loginRedirect("blocked");
   }
 
@@ -68,7 +66,7 @@ export default async function middleware(req: NextRequest) {
 
   const isAdmin = !adErr && !!adm?.email;
 
-  // 4) If admin: allow (even if not in allow-list). If non-admin: must be allow-listed.
+  // 4) Non-admins must be allow-listed; admins bypass allow-list
   if (!isAdmin) {
     const { data: allow, error: alErr } = await supabase
       .from("email_allowlist")
@@ -80,7 +78,7 @@ export default async function middleware(req: NextRequest) {
     if (!allow?.email) return loginRedirect("not-allowlisted");
   }
 
-  // 5) If trying to access admin dashboard but not admin, send to client dashboard
+  // 5) Don’t let non-admins hit admin dashboard
   if (path.startsWith("/admin-dashboard") && !isAdmin) {
     return NextResponse.redirect(new URL("/client-dashboard", req.url));
   }
