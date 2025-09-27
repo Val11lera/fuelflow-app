@@ -3,12 +3,12 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 function getAdminClient(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const service = process.env.SUPABASE_SERVICE_ROLE;
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url) {
     throw new Error("ENV:NEXT_PUBLIC_SUPABASE_URL is missing");
   }
   if (!service) {
-    throw new Error("ENV:SUPABASE_SERVICE_ROLE is missing");
+    throw new Error("ENV:SUPABASE_SERVICE_ROLE_KEY is missing");
   }
   return createClient(url, service);
 }
