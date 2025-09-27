@@ -1,104 +1,125 @@
 // src/pages/api/admin/approvals/set.ts
+// /src/pages/api/admin/approvals/set.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
 type Body = {
+  action: "approve" | "block" | "unblock";
   email?: string;
-  action?: "approve" | "block" | "unblock";
   reason?: string | null;
 };
 
-// Allow common env aliases
-const URL =
-  process.env.NEXT_PUBLIC_SUPABASE_URL ||
-  process.env.SUPABASE_URL ||
-  "";
-
-const SERVICE_ROLE =
-  process.env.SUPABASE_SERVICE_ROLE ||
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  "";
-
-function bad(res: NextApiResponse, status: number, error: string) {
-  return res.status(status).json({ error });
-}
-function ok(res: NextApiResponse, extra?: Record<string, unknown>) {
-  return res.status(200).json({ ok: true, ...(extra || {}) });
-}
-function normalizeEmail(e?: string | null) {
-  return (e || "").trim().toLowerCase();
-}
-
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
+    // 405 for anything except POST
     res.setHeader("Allow", "POST");
-    return bad(res, 405, "Method not allowed");
+    return res.status(405).json({ error: "Method Not Allowed" });
   }
 
-  if (!URL || !SERVICE_ROLE) {
-    return bad(res, 500, "Server misconfigured: missing SUPABASE_SERVICE_ROLE or URL");
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !anon || !service) {
+    return res
+      .status(500)
+      .json({ error: "Server misconfigured: missing SUPABASE_SERVICE_ROLE_KEY or URL" });
   }
 
-  const { email: rawEmail, action, reason } = (req.body || {}) as Body;
-  const email = normalizeEmail(rawEmail);
-  if (!email) return bad(res, 400, "Missing email");
-  if (!action) return bad(res, 400, "Missing action");
+  // 1) Read and validate body
+  let body: Body;
+  try {
+    body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+  } catch {
+    return res.status(400).json({ error: "Invalid JSON body" });
+  }
 
-  const sr = createClient(URL, SERVICE_ROLE, { auth: { persistSession: false } });
+  const action = body?.action;
+  const emailLower = (body?.email || "").toLowerCase().trim();
+  const reason = body?.reason ?? null;
+
+  if (!action || !["approve", "block", "unblock"].includes(action)) {
+    return res.status(400).json({ error: "Invalid or missing action" });
+  }
+  if (action !== "approve" && !emailLower) {
+    // For block/unblock we need an email
+    return res.status(400).json({ error: "Missing email" });
+  }
+
+  // 2) Verify caller is an admin using the session cookie (anon client)
+  const anonClient = createServerClient(url, anon, {
+    cookies: {
+      get(name: string) {
+        return req.cookies[name];
+      },
+      set(name: string, value: string, options: CookieOptions) {
+        // reflect any cookie changes back to the browser
+        res.setHeader("Set-Cookie", `${name}=${value}; Path=/; HttpOnly; SameSite=Lax`);
+      },
+      remove(name: string, options: CookieOptions) {
+        res.setHeader("Set-Cookie", `${name}=; Path=/; Max-Age=0`);
+      },
+    },
+  });
+
+  const {
+    data: { user },
+  } = await anonClient.auth.getUser();
+
+  if (!user?.email) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const adminEmail = user.email.toLowerCase();
+  const { data: adminRow, error: adminErr } = await anonClient
+    .from("admins")
+    .select("email")
+    .eq("email", adminEmail)
+    .maybeSingle();
+
+  if (adminErr || !adminRow?.email) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  // 3) Perform the action with the SERVICE ROLE client (bypasses RLS for writes)
+  const sr = createClient(url, service, { auth: { persistSession: false } });
 
   try {
-    switch (action) {
-      case "approve": {
-        // Use UPSERT (idempotent) instead of insert().onConflict()
-        const { error: aerr } = await sr
-          .from("email_allowlist")
-          .upsert({ email });
-
-        if (aerr) return bad(res, 500, aerr.message);
-
-        // If previously blocked, remove the block (best effort)
-        const { error: derr } = await sr
-          .from("blocked_users")
-          .delete()
-          .eq("email", email);
-
-        if (derr) return bad(res, 500, derr.message);
-        return ok(res, { action: "approve", email });
-      }
-
-      case "block": {
-        // Upsert into blocked_users; also remove from allowlist
-        const { error: berr } = await sr
-          .from("blocked_users")
-          .upsert({ email, reason: reason ?? null });
-
-        if (berr) return bad(res, 500, berr.message);
-
-        const { error: aerr } = await sr
-          .from("email_allowlist")
-          .delete()
-          .eq("email", email);
-
-        if (aerr) return bad(res, 500, aerr.message);
-        return ok(res, { action: "block", email });
-      }
-
-      case "unblock": {
-        const { error: derr } = await sr
-          .from("blocked_users")
-          .delete()
-          .eq("email", email);
-
-        if (derr) return bad(res, 500, derr.message);
-        // Intentionally do NOT auto-approve here.
-        return ok(res, { action: "unblock", email });
-      }
-
-      default:
-        return bad(res, 400, "Invalid action");
+    if (action === "approve") {
+      // Approve = upsert into allow-list
+      if (!emailLower) return res.status(400).json({ error: "Missing email" });
+      const { error } = await sr
+        .from("email_allowlist")
+        .upsert({ email: emailLower }, { onConflict: "email" });
+      if (error) throw error;
     }
+
+    if (action === "block") {
+      // Block = upsert into blocked_users (reason optional)
+      const { error } = await sr
+        .from("blocked_users")
+        .upsert({ email: emailLower, reason }, { onConflict: "email" });
+      if (error) throw error;
+
+      // (Optional) try to force sessions to end. This API is not guaranteed to be present
+      // across all supabase-js versions, so we ignore errors.
+      try {
+        // If you have an exact user id, you can delete or sign out.
+        // Not strictly necessary: middleware blocks access anyway.
+        // await sr.auth.admin.signOutUser(uid)
+      } catch {}
+    }
+
+    if (action === "unblock") {
+      // Unblock = delete from blocked_users
+      const { error } = await sr.from("blocked_users").delete().eq("email", emailLower);
+      if (error) throw error;
+    }
+
+    return res.status(200).json({ ok: true });
   } catch (e: any) {
-    return bad(res, 500, e?.message || "Unknown error");
+    return res.status(500).json({ error: e?.message || "Unexpected error" });
   }
 }
 
