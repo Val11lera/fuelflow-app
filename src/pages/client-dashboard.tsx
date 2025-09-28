@@ -1,91 +1,11 @@
 // src/pages/client-dashboard.tsx
 // src/pages/client-dashboard.tsx
 "use client";
-// at top of the file (or near other imports)
-import type { GetServerSideProps } from "next";
-import { getServerSupabase } from "@/lib/supabase-server";
-
-// ... your ClientDashboard component here (unchanged) ...
-
-export const getServerSideProps: GetServerSideProps = async (ctx) => {
-  const supabase = getServerSupabase(ctx);
-
-  // 1) Who is this?
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user?.email) {
-    // not signed in
-    return {
-      redirect: { destination: "/login", permanent: false },
-    };
-  }
-
-  const email = user.email.toLowerCase();
-
-  // 2) Are they blocked?
-  const { data: blockedRows, error: blockedErr } = await supabase
-    .from("blocked_users")
-    .select("email")
-    .eq("email", email)
-    .limit(1);
-
-  if (blockedErr) {
-    // Fail safe: if we can't determine, push them to login
-    return { redirect: { destination: "/login", permanent: false } };
-  }
-
-  if (blockedRows && blockedRows.length > 0) {
-    // Optional: sign out by clearing cookies so they land on /login next time
-    await supabase.auth.signOut();
-    return {
-      redirect: { destination: "/blocked", permanent: false },
-    };
-  }
-
-  // 3) Are they approved? (in allowlist)
-  const { data: allowRows, error: allowErr } = await supabase
-    .from("email_allowlist")
-    .select("email")
-    .eq("email", email)
-    .limit(1);
-
-  if (allowErr) {
-    return { redirect: { destination: "/login", permanent: false } };
-  }
-
-  if (!allowRows || allowRows.length === 0) {
-    // Logged in but not approved
-    return {
-      redirect: { destination: "/pending", permanent: false },
-    };
-  }
-
-  // OK → render dashboard
-  return { props: {} };
-};
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import type { GetServerSideProps } from "next";
 import { createClient } from "@supabase/supabase-js";
+import { getServerSupabase } from "@/lib/supabase-server";
 
 /* =========================
    Setup
@@ -176,41 +96,47 @@ export default function ClientDashboard() {
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
-  // ----------------- Auth + automatic refresh on mount -----------------
-// ----------------- Auth + access gate (allow-list / blocked) -----------------
-useEffect(() => {
-  (async () => {
-    try {
-      const { data: auth } = await supabase.auth.getUser();
-      const email = (auth?.user?.email || "").toLowerCase();
-      if (!email) {
-        window.location.replace("/login?reason=signin&next=/client-dashboard");
-        return;
-      }
+  // ----------------- Auth + access gate (allow-list / blocked) -----------------
+  useEffect(() => {
+    let cancelled = false;
 
-      // Gate via helper
-      const { ensureClientAccess } = await import("../lib/access-guard");
+    (async () => {
       try {
-        const okEmail = await ensureClientAccess(supabase);
+        const { ensureClientAccess } = await import("@/lib/access-guard");
+
+        // Throws "signin" | "blocked" | "pending" (we treat pending as signin for now)
+        let okEmail = "";
+        try {
+          okEmail = await ensureClientAccess(supabase);
+        } catch (e: any) {
+          const reason = String(e?.message || "signin");
+          try {
+            await supabase.auth.signOut();
+          } catch {}
+          if (!cancelled) {
+            window.location.replace(
+              `/login?reason=${encodeURIComponent(reason)}&next=/client-dashboard`
+            );
+          }
+          return;
+        }
+
+        if (cancelled) return;
+
         setUserEmail(okEmail);
-      } catch (e: any) {
-        const reason = e?.message || "signin";
-        try { await supabase.auth.signOut(); } catch {}
-        window.location.replace(`/login?reason=${encodeURIComponent(reason)}&next=/client-dashboard`);
-        return;
+        await loadAll(okEmail);
+      } catch {
+        if (!cancelled) {
+          window.location.replace("/login?reason=signin&next=/client-dashboard");
+        }
       }
+    })();
 
-      // Allowed → load data
-      await loadAll();
-    } catch {
-  window.location.replace("/login?reason=signin&next=/client-dashboard");
-return;
-    }
-  })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
-
-
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ----------------- Auto logout on inactivity -----------------
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -253,7 +179,7 @@ return;
 
       const { data: auth } = await supabase.auth.getUser();
       if (!auth?.user) {
-        window.location.href = "/login";
+        window.location.replace("/login?reason=signin&next=/client-dashboard");
         return;
       }
       const lower = (emailLower || auth.user.email || "").toLowerCase();
@@ -775,6 +701,69 @@ return;
 }
 
 /* =========================
+   Server-side guard (keep)
+   ========================= */
+
+export const getServerSideProps: GetServerSideProps = async (ctx) => {
+  const supabase = getServerSupabase(ctx);
+
+  // 1) Who is this?
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user?.email) {
+    // not signed in
+    return {
+      redirect: { destination: "/login", permanent: false },
+    };
+  }
+
+  const email = user.email.toLowerCase();
+
+  // 2) Are they blocked?
+  const { data: blockedRows, error: blockedErr } = await supabase
+    .from("blocked_users")
+    .select("email")
+    .eq("email", email)
+    .limit(1);
+
+  if (blockedErr) {
+    // Fail safe: if we can't determine, push them to login
+    return { redirect: { destination: "/login", permanent: false } };
+  }
+
+  if (blockedRows && blockedRows.length > 0) {
+    // Optional: sign out by clearing cookies so they land on /login next time
+    await supabase.auth.signOut();
+    return {
+      redirect: { destination: "/blocked", permanent: false },
+    };
+  }
+
+  // 3) Are they approved? (in allowlist)
+  const { data: allowRows, error: allowErr } = await supabase
+    .from("email_allowlist")
+    .select("email")
+    .eq("email", email)
+    .limit(1);
+
+  if (allowErr) {
+    return { redirect: { destination: "/login", permanent: false } };
+  }
+
+  if (!allowRows || allowRows.length === 0) {
+    // Logged in but not approved
+    return {
+      redirect: { destination: "/pending", permanent: false },
+    };
+  }
+
+  // OK → render dashboard
+  return { props: {} };
+};
+
+/* =========================
    Components
    ========================= */
 
@@ -786,3 +775,4 @@ function Card(props: { title: string; children: React.ReactNode }) {
     </div>
   );
 }
+
