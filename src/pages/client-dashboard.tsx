@@ -203,7 +203,8 @@ useEffect(() => {
       // Allowed → load data
       await loadAll();
     } catch {
-      window.location.replace("/login?reason=signin&next=/client-dashboard`);
+  window.location.replace("/login?reason=signin&next=/client-dashboard");
+return;
     }
   })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
