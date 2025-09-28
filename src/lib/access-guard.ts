@@ -1,8 +1,19 @@
 // src/lib/access-guard.ts
+// src/lib/access-guard.ts
 import { SupabaseClient } from "@supabase/supabase-js";
 
+/**
+ * Ensures the current session user:
+ *  - is signed in
+ *  - is NOT in blocked_users
+ *  - IS in email_allowlist
+ *
+ * Returns lowercased email string on success.
+ * Throws one of: "signin" | "blocked" | "pending"
+ */
 export async function ensureClientAccess(supabase: SupabaseClient): Promise<string> {
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { user }, error: uerr } = await supabase.auth.getUser();
+  if (uerr) throw new Error("signin");
   const email = user?.email?.toLowerCase();
   if (!email) throw new Error("signin");
 
@@ -12,9 +23,9 @@ export async function ensureClientAccess(supabase: SupabaseClient): Promise<stri
       .from("blocked_users")
       .select("email")
       .eq("email", email)
-      .limit(1);
+      .maybeSingle();
     if (error) throw new Error("signin");
-    if (data && data.length) throw new Error("blocked");
+    if (data?.email) throw new Error("blocked");
   }
 
   // Allow-listed?
@@ -23,9 +34,9 @@ export async function ensureClientAccess(supabase: SupabaseClient): Promise<stri
       .from("email_allowlist")
       .select("email")
       .eq("email", email)
-      .limit(1);
+      .maybeSingle();
     if (error) throw new Error("signin");
-    if (!data || data.length === 0) throw new Error("pending");
+    if (!data?.email) throw new Error("pending");
   }
 
   return email;
