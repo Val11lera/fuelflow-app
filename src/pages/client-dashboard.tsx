@@ -188,7 +188,7 @@ useEffect(() => {
         return;
       }
 
-      // Check allow/blocked using helper
+      // Gate via helper
       const { ensureClientAccess } = await import("../lib/access-guard");
       try {
         const okEmail = await ensureClientAccess(supabase);
@@ -208,6 +208,7 @@ useEffect(() => {
   })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
 }, []);
+
 
 
   // ----------------- Auto logout on inactivity -----------------
