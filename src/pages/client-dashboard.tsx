@@ -704,51 +704,56 @@ export default function ClientDashboard() {
    ========================= */
 
 export const getServerSideProps: GetServerSideProps = async (ctx) => {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const serviceKey  = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  if (!supabaseUrl || !serviceKey) {
+  const supabase = getServerSupabase(ctx);
+
+  // 1) Who is this?
+  const { data: userRes, error: userErr } = await supabase.auth.getUser();
+
+  // If clearly not signed in, send to /login. (This is the only /login redirect.)
+  if (userErr || !userRes?.user?.email) {
     return { redirect: { destination: "/login", permanent: false } };
   }
 
-  // Read user access token from cookies set by Supabase Auth
-  const cookies = ctx.req.cookies || {};
-  const accessToken =
-    cookies["sb-access-token"] ||
-    cookies["supabase-access-token"] || // fallback for some setups
-    "";
+  const email = userRes.user.email.toLowerCase();
 
-  if (!accessToken) {
-    return { redirect: { destination: "/login", permanent: false } };
-  }
-
-  // Service-Role client (for table reads) + forward user's Bearer (for auth.getUser)
-  const server = createClient(supabaseUrl, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: `Bearer ${accessToken}` } },
-  });
-
-  // Who is this?
-  const { data: userRes, error: userErr } = await server.auth.getUser();
-  const email = userRes?.user?.email?.toLowerCase() || null;
-  if (userErr || !email) {
-    return { redirect: { destination: "/login", permanent: false } };
-  }
-
-  // Blocked?
-  {
-    const { data: blk, error } = await server
+  // 2) Are they blocked?
+  try {
+    const { data: blockedRows, error: blockedErr } = await supabase
       .from("blocked_users")
       .select("email")
       .eq("email", email)
-      .maybeSingle();
-    if (error) {
-      return { redirect: { destination: "/login", permanent: false } };
-    }
-    if (blk?.email) {
-      try { await server.auth.signOut(); } catch {}
+      .limit(1);
+
+    if (!blockedErr && blockedRows && blockedRows.length > 0) {
+      // Do NOT sign out on the server — it can cause loops if cookies desync.
       return { redirect: { destination: "/blocked", permanent: false } };
     }
+  } catch {
+    // swallow — fall through to client-side guard
   }
+
+  // 3) Are they approved (allowlist)?
+  try {
+    const { data: allowRows, error: allowErr } = await supabase
+      .from("email_allowlist")
+      .select("email")
+      .eq("email", email)
+      .limit(1);
+
+    if (!allowErr && (!allowRows || allowRows.length === 0)) {
+      return { redirect: { destination: "/pending", permanent: false } };
+    }
+  } catch {
+    // swallow — fall through to client-side guard
+  }
+
+  // If we got here, either:
+  // - everything is OK, or
+  // - we couldn’t conclusively read the tables (e.g., transient cookie/RLS issue).
+  // In BOTH cases, render the page and let the existing client-side guard enforce access.
+  return { props: {} };
+};
+
 
   // Approved?
   {
