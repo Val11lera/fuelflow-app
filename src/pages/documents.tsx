@@ -12,7 +12,7 @@ import { createClient } from "@supabase/supabase-js";
 type ContractStatus = "draft" | "signed" | "approved" | "cancelled";
 type TankOption = "buy" | "rent";
 
-const TERMS_VERSION = "v1.1";
+const TERMS_VERSION = "v1.2";
 const INVOICES_BUCKET = "invoices";
 
 const supabase =
