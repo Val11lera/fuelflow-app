@@ -14,7 +14,7 @@ type Fuel = "diesel" | "petrol";
 type TankOption = "buy" | "rent";
 type ContractStatus = "draft" | "signed" | "approved" | "cancelled";
 
-const TERMS_VERSION = "v1.1";
+const TERMS_VERSION = "v1.2";
 
 type ContractRow = {
   id: string;
