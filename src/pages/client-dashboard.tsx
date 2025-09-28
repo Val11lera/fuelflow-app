@@ -5,7 +5,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { GetServerSideProps } from "next";
 import { createClient } from "@supabase/supabase-js";
-import { getServerSupabase } from "@/lib/supabase-server";
 
 /* =========================
    Setup
@@ -701,65 +700,71 @@ export default function ClientDashboard() {
 }
 
 /* =========================
-   Server-side guard (keep)
+   Server-side guard (fixed)
    ========================= */
 
 export const getServerSideProps: GetServerSideProps = async (ctx) => {
-  const supabase = getServerSupabase(ctx);
-
-  // 1) Who is this?
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user?.email) {
-    // not signed in
-    return {
-      redirect: { destination: "/login", permanent: false },
-    };
-  }
-
-  const email = user.email.toLowerCase();
-
-  // 2) Are they blocked?
-  const { data: blockedRows, error: blockedErr } = await supabase
-    .from("blocked_users")
-    .select("email")
-    .eq("email", email)
-    .limit(1);
-
-  if (blockedErr) {
-    // Fail safe: if we can't determine, push them to login
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const serviceKey  = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  if (!supabaseUrl || !serviceKey) {
     return { redirect: { destination: "/login", permanent: false } };
   }
 
-  if (blockedRows && blockedRows.length > 0) {
-    // Optional: sign out by clearing cookies so they land on /login next time
-    await supabase.auth.signOut();
-    return {
-      redirect: { destination: "/blocked", permanent: false },
-    };
-  }
+  // Read user access token from cookies set by Supabase Auth
+  const cookies = ctx.req.cookies || {};
+  const accessToken =
+    cookies["sb-access-token"] ||
+    cookies["supabase-access-token"] || // fallback for some setups
+    "";
 
-  // 3) Are they approved? (in allowlist)
-  const { data: allowRows, error: allowErr } = await supabase
-    .from("email_allowlist")
-    .select("email")
-    .eq("email", email)
-    .limit(1);
-
-  if (allowErr) {
+  if (!accessToken) {
     return { redirect: { destination: "/login", permanent: false } };
   }
 
-  if (!allowRows || allowRows.length === 0) {
-    // Logged in but not approved
-    return {
-      redirect: { destination: "/pending", permanent: false },
-    };
+  // Service-Role client (for table reads) + forward user's Bearer (for auth.getUser)
+  const server = createClient(supabaseUrl, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+  });
+
+  // Who is this?
+  const { data: userRes, error: userErr } = await server.auth.getUser();
+  const email = userRes?.user?.email?.toLowerCase() || null;
+  if (userErr || !email) {
+    return { redirect: { destination: "/login", permanent: false } };
   }
 
-  // OK → render dashboard
+  // Blocked?
+  {
+    const { data: blk, error } = await server
+      .from("blocked_users")
+      .select("email")
+      .eq("email", email)
+      .maybeSingle();
+    if (error) {
+      return { redirect: { destination: "/login", permanent: false } };
+    }
+    if (blk?.email) {
+      try { await server.auth.signOut(); } catch {}
+      return { redirect: { destination: "/blocked", permanent: false } };
+    }
+  }
+
+  // Approved?
+  {
+    const { data: al, error } = await server
+      .from("email_allowlist")
+      .select("email")
+      .eq("email", email)
+      .maybeSingle();
+    if (error) {
+      return { redirect: { destination: "/login", permanent: false } };
+    }
+    if (!al?.email) {
+      return { redirect: { destination: "/pending", permanent: false } };
+    }
+  }
+
   return { props: {} };
 };
 
