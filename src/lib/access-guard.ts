@@ -1,33 +1,30 @@
 // src/lib/access-guard.ts
+// src/lib/access-guard.ts
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-/** Throws an Error with reason: 'blocked' | 'not_allowed' */
+/** Throws Error("blocked") or Error("not_allowed") or Error("signin") */
 export async function ensureClientAccess(supabase: SupabaseClient) {
   const { data: auth } = await supabase.auth.getUser();
   const email = (auth?.user?.email || "").toLowerCase();
   if (!email) throw new Error("signin");
 
-  // Blocked?
+  // Is blocked?
   const { data: blockedRow, error: blockedErr } = await supabase
     .from("blocked_users")
     .select("email")
     .eq("email", email)
     .maybeSingle();
   if (blockedErr) throw blockedErr;
-  if (blockedRow?.email) {
-    throw new Error("blocked");
-  }
+  if (blockedRow?.email) throw new Error("blocked");
 
-  // Allow-listed?
+  // Is allow-listed?
   const { data: allowRow, error: allowErr } = await supabase
     .from("email_allowlist")
     .select("email")
     .eq("email", email)
     .maybeSingle();
   if (allowErr) throw allowErr;
-  if (!allowRow?.email) {
-    throw new Error("not_allowed");
-  }
+  if (!allowRow?.email) throw new Error("not_allowed");
 
   return email;
 }
