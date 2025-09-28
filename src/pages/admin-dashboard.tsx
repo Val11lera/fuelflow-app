@@ -164,48 +164,61 @@ export default function AdminDashboard() {
   const [invFiles, setInvFiles] = useState<{ name: string; path: string; last_modified?: string; size?: number }[]>([]);
   const [invLoading, setInvLoading] = useState<boolean>(false);
 
-  // ---------- Auth + admin check ----------
-// ---------- Auth + admin check (with graceful fallback) ----------
-useEffect(() => {
-  (async () => {
-    try {
-      const { data: auth } = await supabase.auth.getUser();
-      const email = (auth?.user?.email || "").toLowerCase();
-      if (!email) {
-        window.location.replace("/login?reason=signin&next=/admin-dashboard");
-        return;
-      }
-      setMe(email);
-
-      const { isAdminEmail, ensureClientAccess } = await import("../lib/access-guard");
-      const admin = await isAdminEmail(supabase, email);
-      if (!admin) {
-        // If not admin, but allowed as client → send to client dashboard
-        try {
-          await ensureClientAccess(supabase);
-          window.location.replace("/client-dashboard");
-        } catch (e: any) {
-          const reason = e?.message || "not_admin";
-          window.location.replace(`/login?reason=${encodeURIComponent(reason)}&next=/admin-dashboard`);
-        }
-        return;
-      }
-
-      setIsAdmin(true);
-    } catch {
-      window.location.replace("/login?reason=signin&next=/admin-dashboard");
-    }
-  })();
-}, []);
-
-
-
-  // Redirect non-admins cleanly
+  /* ---------- New robust auth/admin/blocked guard ---------- */
   useEffect(() => {
-    if (isAdmin === false && typeof window !== "undefined") {
-      window.location.replace("/client-dashboard");
-    }
-  }, [isAdmin]);
+    (async () => {
+      try {
+        // 1) Wait for Supabase session to appear (max ~4s)
+        const deadline = Date.now() + 4000;
+        while (Date.now() < deadline) {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user?.email) break;
+          await new Promise((r) => setTimeout(r, 150));
+        }
+
+        const { data: { session } } = await supabase.auth.getSession();
+        const email = session?.user?.email?.toLowerCase() || "";
+        if (!email) {
+          window.location.replace("/login?reason=signin&next=/admin-dashboard");
+          return;
+        }
+
+        // 2) Blocked users cannot access anything
+        try {
+          const { data: blk } = await supabase
+            .from("blocked_users")
+            .select("email")
+            .eq("email", email)
+            .maybeSingle();
+          if (blk?.email) {
+            await supabase.auth.signOut();
+            window.location.replace("/login?reason=blocked");
+            return;
+          }
+        } catch {
+          // ignore soft DB failure and continue; do not block just because of a transient error
+        }
+
+        // 3) Admin membership
+        const { data, error } = await supabase
+          .from("admins")
+          .select("email")
+          .eq("email", email)
+          .maybeSingle();
+
+        if (error || !data?.email) {
+          // Not an admin -> send to client
+          window.location.replace("/client-dashboard");
+          return;
+        }
+
+        setMe(email);
+        setIsAdmin(true);
+      } catch {
+        window.location.replace("/client-dashboard");
+      }
+    })();
+  }, []);
 
   // ---------- Load business data ----------
   useEffect(() => {
@@ -483,32 +496,25 @@ useEffect(() => {
 
   /* ====== Approve / Block / Unblock ====== */
 
-  // NEW: single helper that POSTs to /api/admin/approvals/set
-  async function setClientStatus(
-    action: "approve" | "block" | "unblock",
-    email: string,
-    reason?: string | null
-  ) {
+  async function callApprovalAction(email: string, action: "approve" | "block" | "unblock", reason?: string | null) {
     try {
       setApprovalsError(null);
       const { data: sessionRes } = await supabase.auth.getSession();
       const token = sessionRes.session?.access_token;
       if (!token) throw new Error("Missing session token");
 
-const res = await fetch("/api/admin/approvals", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  },
-  body: JSON.stringify({ email, action, reason: reason || null }),
-});
+      const res = await fetch("/api/admin/approvals/set", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ email, action, reason: reason || null }),
+      });
 
-
-      const text = await res.text();
       if (!res.ok) {
-        // surface API error text if present
-        throw new Error(text || `Failed (${res.status})`);
+        const txt = await res.text();
+        throw new Error(txt || `Failed (${res.status})`);
       }
 
       await loadApprovals();
@@ -518,14 +524,14 @@ const res = await fetch("/api/admin/approvals", {
   }
 
   function onApprove(email: string) {
-    setClientStatus("approve", email);
+    callApprovalAction(email, "approve");
   }
   function onBlock(email: string) {
     const reason = window.prompt("Reason for blocking (optional):") || null;
-    setClientStatus("block", email, reason);
+    callApprovalAction(email, "block", reason);
   }
   function onUnblock(email: string) {
-    setClientStatus("unblock", email);
+    callApprovalAction(email, "unblock");
   }
 
   /* =========================
@@ -568,7 +574,7 @@ const res = await fetch("/api/admin/approvals", {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 py-5 space-y-6">
-        {/* ====== Client Approvals (NEW) ====== */}
+        {/* ====== Client Approvals ====== */}
         <section className="rounded-xl border border-white/10 bg-white/[0.03]">
           <div className="w-full flex flex-col gap-2 px-4 pt-3 sm:flex-row sm:items-center sm:justify-between">
             <button
@@ -588,7 +594,7 @@ const res = await fetch("/api/admin/approvals", {
                 <span className="text-white/70">Status:</span>
                 <select
                   value={approvalsFilter}
-                  onChange={(e) => setApprovalsFilter(e.target.value as any)}
+                  onChange={(e) => setApprovalsFilter(e.target.value as ApprovalsFilter)}
                   className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
                 >
                   <option value="all">All</option>
@@ -1337,4 +1343,5 @@ function CodeRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
 
