@@ -84,6 +84,7 @@ export default function Login() {
   /* -------------------------
      Helpers
   -------------------------- */
+
   function handleCaps(e: React.KeyboardEvent<HTMLInputElement>) {
     setCapsOn(e.getModifierState && e.getModifierState("CapsLock"));
   }
@@ -93,13 +94,28 @@ export default function Login() {
     setCaptchaToken(null);
   }
 
-  // Where to go next
+  // Where should we go next?
   const nextPath =
     typeof router.query.next === "string" && router.query.next.startsWith("/")
       ? router.query.next
       : "/client-dashboard";
 
-  /** Check access for the given (or current) user */
+  /** Sync the client Supabase session into HTTP-only cookies for SSR */
+  async function syncServerSession() {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const at = session?.access_token;
+    const rt = session?.refresh_token;
+    if (!at || !rt) return;
+    await fetch("/api/auth/set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ access_token: at, refresh_token: rt }),
+    }).catch(() => {});
+  }
+
+  /** Check access state for the given (or current) user */
   async function getAccessState(explicitEmail?: string): Promise<"blocked" | "approved" | "pending" | "unknown"> {
     try {
       let lower = (explicitEmail || "").toLowerCase();
@@ -143,18 +159,25 @@ export default function Login() {
     const state = await getAccessState(explicitEmail);
 
     if (state === "blocked") {
-      try { await supabase.auth.signOut(); } catch {}
+      try {
+        await supabase.auth.signOut();
+      } catch {}
+      await fetch("/api/auth/signout", { method: "POST" }).catch(() => {});
       setMsg({ type: "error", text: "Your account is blocked. Please contact support." });
       return;
     }
 
     if (state !== "approved") {
-      try { await supabase.auth.signOut(); } catch {}
+      try {
+        await supabase.auth.signOut();
+      } catch {}
+      await fetch("/api/auth/signout", { method: "POST" }).catch(() => {});
       setMsg({
         type: "info",
-        text: state === "pending"
-          ? "Your account is pending approval. An admin will grant access soon."
-          : "Please try again.",
+        text:
+          state === "pending"
+            ? "Your account is pending approval. An admin will grant access soon."
+            : "Please try again.",
       });
       return;
     }
@@ -206,11 +229,12 @@ export default function Login() {
     if (!remember) localStorage.removeItem("ff_login_email");
   }, [remember, email]);
 
-  // If already signed in, check access BEFORE routing (prevents loops)
+  // If already signed in, sync cookies then check access BEFORE routing (prevents loops)
   useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
       if (auth?.user?.email) {
+        await syncServerSession();
         await routeAfterLogin(auth.user.email);
       }
     })();
@@ -248,23 +272,33 @@ export default function Login() {
         return;
       }
 
+      // Write HTTP-only cookies for SSR
+      await syncServerSession();
+
       // Access gate (block / approve)
       const state = await getAccessState(email);
 
       if (state === "blocked") {
-        try { await supabase.auth.signOut(); } catch {}
+        try {
+          await supabase.auth.signOut();
+        } catch {}
+        await fetch("/api/auth/signout", { method: "POST" }).catch(() => {});
         setMsg({ type: "error", text: "Your account is blocked. Please contact support." });
         resetCaptcha();
         return;
       }
 
       if (state !== "approved") {
-        try { await supabase.auth.signOut(); } catch {}
+        try {
+          await supabase.auth.signOut();
+        } catch {}
+        await fetch("/api/auth/signout", { method: "POST" }).catch(() => {});
         setMsg({
           type: "info",
-          text: state === "pending"
-            ? "Your account is pending approval. An admin will grant access soon."
-            : "Please try again.",
+          text:
+            state === "pending"
+              ? "Your account is pending approval. An admin will grant access soon."
+              : "Please try again.",
         });
         resetCaptcha();
         return;
@@ -636,5 +670,4 @@ function HeadsetArt({ className }: { className?: string }) {
     </svg>
   );
 }
-
 
