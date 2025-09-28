@@ -177,19 +177,38 @@ export default function ClientDashboard() {
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
   // ----------------- Auth + automatic refresh on mount -----------------
-  useEffect(() => {
-    (async () => {
+// ----------------- Auth + access gate (allow-list / blocked) -----------------
+useEffect(() => {
+  (async () => {
+    try {
       const { data: auth } = await supabase.auth.getUser();
-      if (!auth?.user) {
-        window.location.href = "/login";
+      const email = (auth?.user?.email || "").toLowerCase();
+      if (!email) {
+        window.location.replace("/login?reason=signin&next=/client-dashboard");
         return;
       }
-      setUserEmail((auth.user.email || "").toLowerCase());
-      // AUTO REFRESH right away
+
+      // Check allow/blocked using helper
+      const { ensureClientAccess } = await import("../lib/access-guard");
+      try {
+        const okEmail = await ensureClientAccess(supabase);
+        setUserEmail(okEmail);
+      } catch (e: any) {
+        const reason = e?.message || "signin";
+        try { await supabase.auth.signOut(); } catch {}
+        window.location.replace(`/login?reason=${encodeURIComponent(reason)}&next=/client-dashboard`);
+        return;
+      }
+
+      // Allowed → load data
       await loadAll();
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    } catch {
+      window.location.replace("/login?reason=signin&next=/client-dashboard`);
+    }
+  })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
 
   // ----------------- Auto logout on inactivity -----------------
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
