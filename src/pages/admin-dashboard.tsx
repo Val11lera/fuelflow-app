@@ -199,6 +199,7 @@ useEffect(() => {
 }, []);
 
 
+
   // Redirect non-admins cleanly
   useEffect(() => {
     if (isAdmin === false && typeof window !== "undefined") {
