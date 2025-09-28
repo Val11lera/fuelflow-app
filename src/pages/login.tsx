@@ -93,13 +93,13 @@ export default function Login() {
     setCaptchaToken(null);
   }
 
-  // Where should we go after login?
+  // Where to go next
   const nextPath =
     typeof router.query.next === "string" && router.query.next.startsWith("/")
       ? router.query.next
       : "/client-dashboard";
 
-  /** Check access state for the given (or current) user */
+  /** Check access for the given (or current) user */
   async function getAccessState(explicitEmail?: string): Promise<"blocked" | "approved" | "pending" | "unknown"> {
     try {
       let lower = (explicitEmail || "").toLowerCase();
@@ -149,7 +149,6 @@ export default function Login() {
     }
 
     if (state !== "approved") {
-      // Not approved (pending or unknown) → no access
       try { await supabase.auth.signOut(); } catch {}
       setMsg({
         type: "info",
@@ -236,7 +235,7 @@ export default function Login() {
         return;
       }
 
-      // First: sign in
+      // Sign in
       const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
@@ -249,11 +248,10 @@ export default function Login() {
         return;
       }
 
-      // Second: access gate (block / approve)
+      // Access gate (block / approve)
       const state = await getAccessState(email);
 
       if (state === "blocked") {
-        // Immediately revoke session and stop
         try { await supabase.auth.signOut(); } catch {}
         setMsg({ type: "error", text: "Your account is blocked. Please contact support." });
         resetCaptcha();
@@ -272,7 +270,7 @@ export default function Login() {
         return;
       }
 
-      // Approved → show success then route (admin or client)
+      // Approved → success then route (admin or client)
       setMsg({ type: "success", text: "Login successful! Redirecting…" });
       await routeAfterLogin(email);
     } catch (e: any) {
