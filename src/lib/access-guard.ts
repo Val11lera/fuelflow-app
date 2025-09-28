@@ -2,47 +2,36 @@
 // src/lib/access-guard.ts
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-/** Throws Error("blocked") or Error("not_allowed") or Error("signin") */
-export async function ensureClientAccess(supabase: SupabaseClient) {
-  const { data: auth } = await supabase.auth.getUser();
-  const email = (auth?.user?.email || "").toLowerCase();
+/**
+ * Ensures a user is signed in and not blocked.
+ * Returns the lowercased email if OK, otherwise throws:
+ *  - 'signin'  -> not logged in
+ *  - 'blocked' -> found in blocked_users table
+ */
+export async function ensureClientAccess(supabase: SupabaseClient): Promise<string> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const email = (session?.user?.email || "").toLowerCase();
+
   if (!email) throw new Error("signin");
 
-  // Is blocked?
-  const { data: blockedRow, error: blockedErr } = await supabase
+  // Check blocked
+  const { data: blk, error: blkErr } = await supabase
     .from("blocked_users")
     .select("email")
     .eq("email", email)
     .maybeSingle();
-  if (blockedErr) throw blockedErr;
-  if (blockedRow?.email) throw new Error("blocked");
 
-  // Is allow-listed?
-  const { data: allowRow, error: allowErr } = await supabase
-    .from("email_allowlist")
-    .select("email")
-    .eq("email", email)
-    .maybeSingle();
-  if (allowErr) throw allowErr;
-  if (!allowRow?.email) throw new Error("not_allowed");
+  if (!blkErr && blk?.email) throw new Error("blocked");
+
+  // (Optional) If you want to block non-allowlisted from viewing the client dashboard entirely,
+  // uncomment below. If not, leave as-is to allow them to see a "pending" state in your UI.
+  //
+  // const { data: allow } = await supabase
+  //   .from("email_allowlist")
+  //   .select("email")
+  //   .eq("email", email)
+  //   .maybeSingle();
+  // if (!allow?.email) throw new Error("pending");
 
   return email;
-}
-
-export async function isAdminEmail(supabase: SupabaseClient, email?: string) {
-  let lower = (email || "").toLowerCase();
-  if (!lower) {
-    const { data: auth } = await supabase.auth.getUser();
-    lower = (auth?.user?.email || "").toLowerCase();
-  }
-  if (!lower) return false;
-
-  const { data, error } = await supabase
-    .from("admins")
-    .select("email")
-    .eq("email", lower)
-    .maybeSingle();
-
-  if (error) return false;
-  return !!data?.email;
 }
