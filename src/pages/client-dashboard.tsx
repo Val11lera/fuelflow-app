@@ -5,6 +5,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { GetServerSideProps } from "next";
 import { createClient } from "@supabase/supabase-js";
+import { getServerSupabase } from "@/lib/supabase-server";
 
 /* =========================
    Setup
@@ -324,6 +325,7 @@ export default function ClientDashboard() {
   async function logout() {
     try {
       await supabase.auth.signOut();
+      await fetch("/api/auth/signout", { method: "POST" }).catch(() => {});
     } finally {
       window.location.href = "https://fuelflow.co.uk"; // go to main site after logout
     }
@@ -700,7 +702,7 @@ export default function ClientDashboard() {
 }
 
 /* =========================
-   Server-side guard (fixed)
+   Server-side guard (tolerant to avoid loops)
    ========================= */
 
 export const getServerSideProps: GetServerSideProps = async (ctx) => {
@@ -709,14 +711,16 @@ export const getServerSideProps: GetServerSideProps = async (ctx) => {
   // 1) Who is this?
   const { data: userRes, error: userErr } = await supabase.auth.getUser();
 
-  // If clearly not signed in, send to /login. (This is the only /login redirect.)
+  // Only redirect to /login when clearly unauthenticated.
   if (userErr || !userRes?.user?.email) {
-    return { redirect: { destination: "/login", permanent: false } };
+    return {
+      redirect: { destination: "/login", permanent: false },
+    };
   }
 
   const email = userRes.user.email.toLowerCase();
 
-  // 2) Are they blocked?
+  // 2) Blocked?
   try {
     const { data: blockedRows, error: blockedErr } = await supabase
       .from("blocked_users")
@@ -725,14 +729,13 @@ export const getServerSideProps: GetServerSideProps = async (ctx) => {
       .limit(1);
 
     if (!blockedErr && blockedRows && blockedRows.length > 0) {
-      // Do NOT sign out on the server — it can cause loops if cookies desync.
       return { redirect: { destination: "/blocked", permanent: false } };
     }
   } catch {
-    // swallow — fall through to client-side guard
+    // fall through to client guard
   }
 
-  // 3) Are they approved (allowlist)?
+  // 3) Approved (allowlist)?
   try {
     const { data: allowRows, error: allowErr } = await supabase
       .from("email_allowlist")
@@ -744,32 +747,10 @@ export const getServerSideProps: GetServerSideProps = async (ctx) => {
       return { redirect: { destination: "/pending", permanent: false } };
     }
   } catch {
-    // swallow — fall through to client-side guard
+    // fall through to client guard
   }
 
-  // If we got here, either:
-  // - everything is OK, or
-  // - we couldn’t conclusively read the tables (e.g., transient cookie/RLS issue).
-  // In BOTH cases, render the page and let the existing client-side guard enforce access.
-  return { props: {} };
-};
-
-
-  // Approved?
-  {
-    const { data: al, error } = await server
-      .from("email_allowlist")
-      .select("email")
-      .eq("email", email)
-      .maybeSingle();
-    if (error) {
-      return { redirect: { destination: "/login", permanent: false } };
-    }
-    if (!al?.email) {
-      return { redirect: { destination: "/pending", permanent: false } };
-    }
-  }
-
+  // Render the page; client guard will re-check and route if needed.
   return { props: {} };
 };
 
