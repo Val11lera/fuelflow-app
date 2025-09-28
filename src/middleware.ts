@@ -1,87 +1,85 @@
 // /src/middleware.ts
 // src/middleware.ts
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
 export const config = {
-  matcher: ["/client-dashboard", "/admin-dashboard"],
+  matcher: ["/client-dashboard", "/admin-dashboard"], // protect only dashboards
 };
 
-function makeClient(req: NextRequest) {
-  let res = NextResponse.next();
+export default async function middleware(req: NextRequest) {
+  // We’ll return this response (so cookie updates get sent back)
+  const res = NextResponse.next({ request: { headers: req.headers } });
+  const url = new URL(req.url);
+
+  // Helper to redirect to login with a reason + next parameter
+  const toLogin = (reason: string) => {
+    const params = new URLSearchParams();
+    params.set("next", url.pathname);
+    params.set("reason", reason);
+    return NextResponse.redirect(new URL(`/login?${params.toString()}`, req.url));
+  };
+
+  // Create a Supabase client that reads/writes cookies inside middleware
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get: (key) => req.cookies.get(key)?.value,
-        set: (key, value, options) => {
-          res.cookies.set({ name: key, value, ...options });
+        get: (name: string) => req.cookies.get(name)?.value,
+        set: (name: string, value: string, options: CookieOptions) => {
+          res.cookies.set(name, value, options);
         },
-        remove: (key, options) => {
-          res.cookies.set({ name: key, value: "", ...options, maxAge: 0 });
+        remove: (name: string, options: CookieOptions) => {
+          res.cookies.set(name, "", { ...options, maxAge: 0 });
         },
       },
     }
   );
-  return { supabase, res };
-}
 
-export default async function middleware(req: NextRequest) {
-  const { supabase, res } = makeClient(req);
-  const url = new URL(req.url);
-  const path = url.pathname;
+  // 1) Must be signed in
+  const { data: userRes } = await supabase.auth.getUser();
+  const user = userRes?.user;
+  if (!user) return toLogin("signin");
 
-  const loginRedirect = (reason: string) =>
-    NextResponse.redirect(
-      new URL(
-        `/login?reason=${encodeURIComponent(reason)}&next=${encodeURIComponent(path)}`,
-        req.url
-      )
-    );
+  const email = (user.email || "").toLowerCase();
 
-  // 1) Require session
-  const { data: sessionRes } = await supabase.auth.getSession();
-  const email = sessionRes.session?.user?.email?.toLowerCase();
-  if (!email) return loginRedirect("no-session");
+  // 2) Admin dashboard needs admin
+  if (url.pathname === "/admin-dashboard") {
+    const { data: adminRow, error: adminErr } = await supabase
+      .from("admins")
+      .select("email")
+      .eq("email", email)
+      .maybeSingle();
 
-  // 2) Block check (applies to everyone)
-  const { data: blocked, error: blErr } = await supabase
+    if (adminErr || !adminRow) return toLogin("not_admin");
+    return res; // allow through
+  }
+
+  // 3) Client dashboard: block > allow
+  // Blocked?
+  const { data: blRow } = await supabase
     .from("blocked_users")
     .select("email")
     .eq("email", email)
     .maybeSingle();
 
-  if (!blErr && blocked?.email) {
-    try { await supabase.auth.signOut(); } catch {}
-    return loginRedirect("blocked");
+  if (blRow) {
+    // Kill session so the user is *really* out
+    await supabase.auth.signOut();
+    return toLogin("blocked");
   }
 
-  // 3) Admin check (requires admins_self_select policy)
-  const { data: adm, error: adErr } = await supabase
-    .from("admins")
+  // Allow-listed?
+  const { data: alRow } = await supabase
+    .from("email_allowlist")
     .select("email")
     .eq("email", email)
     .maybeSingle();
 
-  const isAdmin = !adErr && !!adm?.email;
+  if (!alRow) return toLogin("not_allowed");
 
-  // 4) Non-admins must be allow-listed; admins bypass allow-list
-  if (!isAdmin) {
-    const { data: allow, error: alErr } = await supabase
-      .from("email_allowlist")
-      .select("email")
-      .eq("email", email)
-      .maybeSingle();
-
-    if (alErr) return loginRedirect("allowlist-rls-error");
-    if (!allow?.email) return loginRedirect("not-allowlisted");
-  }
-
-  // 5) Don’t let non-admins hit admin dashboard
-  if (path.startsWith("/admin-dashboard") && !isAdmin) {
-    return NextResponse.redirect(new URL("/client-dashboard", req.url));
-  }
-
+  // OK to proceed
   return res;
 }
+
