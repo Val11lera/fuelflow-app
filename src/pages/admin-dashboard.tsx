@@ -165,30 +165,39 @@ export default function AdminDashboard() {
   const [invLoading, setInvLoading] = useState<boolean>(false);
 
   // ---------- Auth + admin check ----------
-  useEffect(() => {
-    (async () => {
+// ---------- Auth + admin check (with graceful fallback) ----------
+useEffect(() => {
+  (async () => {
+    try {
       const { data: auth } = await supabase.auth.getUser();
       const email = (auth?.user?.email || "").toLowerCase();
       if (!email) {
-        window.location.href = "/login";
+        window.location.replace("/login?reason=signin&next=/admin-dashboard");
         return;
       }
       setMe(email);
 
-      const { data, error } = await supabase
-        .from("admins")
-        .select("email")
-        .eq("email", email)
-        .maybeSingle();
-
-      if (error) {
-        setError(error.message);
-        setIsAdmin(false);
+      const { isAdminEmail, ensureClientAccess } = await import("../lib/access-guard");
+      const admin = await isAdminEmail(supabase, email);
+      if (!admin) {
+        // If not admin, but allowed as client → send to client dashboard
+        try {
+          await ensureClientAccess(supabase);
+          window.location.replace("/client-dashboard");
+        } catch (e: any) {
+          const reason = e?.message || "not_admin";
+          window.location.replace(`/login?reason=${encodeURIComponent(reason)}&next=/admin-dashboard`);
+        }
         return;
       }
-      setIsAdmin(!!data?.email);
-    })();
-  }, []);
+
+      setIsAdmin(true);
+    } catch {
+      window.location.replace("/login?reason=signin&next=/admin-dashboard");
+    }
+  })();
+}, []);
+
 
   // Redirect non-admins cleanly
   useEffect(() => {
