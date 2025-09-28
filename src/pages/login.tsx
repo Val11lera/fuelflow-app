@@ -2,232 +2,148 @@
 // src/pages/login.tsx
 "use client";
 
-import React, { useEffect, useRef, useState, type ReactElement } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/router";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 import type HCaptchaType from "@hcaptcha/react-hcaptcha";
 import { createClient } from "@supabase/supabase-js";
-import { useRouter } from "next/router";
 
+/* =========================================================
+   Supabase client
+   ========================================================= */
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
+/* =========================================================
+   Types / helpers
+   ========================================================= */
 type Msg = { type: "error" | "success" | "info"; text: string };
-type FeatureKey = "pricing" | "delivery" | "checkout" | "support";
 
-/* -------------------------------------
-   Small helpers
--------------------------------------- */
-
-// Only allow internal paths like "/client-dashboard"
-function safeNextFromSearch(): string {
-  try {
-    const sp = new URLSearchParams(window.location.search);
-    const next = sp.get("next") || "";
-    if (next && next.startsWith("/")) return next;
-  } catch {}
-  return "";
+function getNextPath(router: ReturnType<typeof useRouter>) {
+  const qNext = (router.query?.next as string) || "";
+  // Only accept same-origin, app-local paths
+  if (qNext && qNext.startsWith("/")) return qNext;
+  return "/client-dashboard";
 }
 
-function setMessageForReason(
-  reason: string | null | undefined
-): Msg | null {
-  switch ((reason || "").toLowerCase()) {
-    case "blocked":
-      return { type: "error", text: "Your account is blocked. Please contact support." };
-    case "signin":
-      return { type: "info", text: "Please sign in." };
-    case "signedout":
-      return { type: "info", text: "You’ve been signed out." };
-    case "timeout":
-      return { type: "error", text: "Session timed out. Please sign in again." };
-    default:
-      return null;
-  }
-}
-
-/* -------------------------------------
-   Feature cards (unchanged visuals)
--------------------------------------- */
-const FEATURES: Record<
-  FeatureKey,
-  {
-    title: string;
-    blurb: string;
-    detail: string;
-    Art: (p: { className?: string }) => ReactElement;
-  }
-> = {
-  pricing: {
-    title: "Live pricing",
-    blurb: "See today’s rate before you order.",
-    detail:
-      "Prices update from our suppliers throughout the day. View your personalised rate card and lock a price before you place an order.",
-    Art: ChartArt,
-  },
-  delivery: {
-    title: "Scheduled delivery",
-    blurb: "Pick a preferred date — subject to availability.",
-    detail:
-      "Choose a delivery window that suits you. Availability varies by area and supplier, and may change without notice.",
-    Art: TruckArt,
-  },
-  checkout: {
-    title: "Secure checkout",
-    blurb: "3-D Secure payments powered by Stripe.",
-    detail:
-      "All payments are processed through Stripe with 3-D Secure. Your card details never touch our servers.",
-    Art: ShieldCardArt,
-  },
-  support: {
-    title: "UK-based support",
-    blurb: "Email or live chat when you need a hand.",
-    detail:
-      "Reach our UK team by email or live chat for account queries, delivery questions and billing help during business hours.",
-    Art: HeadsetArt,
-  },
-};
-
-export default function Login() {
+/* =========================================================
+   Component
+   ========================================================= */
+export default function LoginPage() {
   const router = useRouter();
   const captchaRef = useRef<HCaptchaType>(null);
+  const inFlight = useRef(false);
 
   // form
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
   // ui
-  const [showPassword, setShowPassword] = useState(false);
-  const [capsOn, setCapsOn] = useState(false);
   const [remember, setRemember] = useState(true);
+  const [showPassword, setShowPassword] = useState(false);
+  const [msg, setMsg] = useState<Msg | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // messages
-  const [msg, setMsg] = useState<Msg | null>(null);
-
-  // hCaptcha
+  // captcha
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
-  // feature modal
-  const [openFeature, setOpenFeature] = useState<FeatureKey | null>(null);
+  /* ---------------------------------------------------------
+     Access router: decides final destination after sign-in
+     --------------------------------------------------------- */
+  async function routeAfterLogin() {
+    if (inFlight.current) return;
+    inFlight.current = true;
 
-  // avoid double-redirect loops: only attempt auto-route once per mount
-  const [autoRouted, setAutoRouted] = useState(false);
+    try {
+      // Who just signed in?
+      const { data: auth } = await supabase.auth.getUser();
+      const emailLower = (auth?.user?.email || "").toLowerCase();
 
-  /* -------------------------
-     Helpers
-  -------------------------- */
-  function handleCaps(e: React.KeyboardEvent<HTMLInputElement>) {
-    setCapsOn(e.getModifierState && e.getModifierState("CapsLock"));
+      if (!emailLower) {
+        // No session — back to login
+        await supabase.auth.signOut().catch(() => {});
+        setMsg({ type: "error", text: "Please sign in." });
+        inFlight.current = false;
+        return;
+      }
+
+      // 1) Admins first
+      {
+        const { data, error } = await supabase
+          .from("admins")
+          .select("email")
+          .eq("email", emailLower)
+          .maybeSingle();
+
+        if (!error && data?.email) {
+          setMsg({ type: "success", text: "Login successful! Redirecting…" });
+          router.replace("/admin-dashboard");
+          return;
+        }
+      }
+
+      // 2) Client access gate
+      const { ensureClientAccess } = await import("../lib/access-guard");
+      try {
+        await ensureClientAccess(supabase); // throws 'blocked' or 'pending'
+      } catch (e: any) {
+        const reason = String(e?.message || "");
+        if (reason === "blocked") {
+          setMsg({ type: "info", text: "Your account is blocked." });
+          router.replace("/blocked");
+          return;
+        }
+        if (reason === "pending") {
+          setMsg({ type: "info", text: "Your account is pending approval." });
+          router.replace("/pending");
+          return;
+        }
+        // Couldn’t validate; force re-auth
+        await supabase.auth.signOut().catch(() => {});
+        setMsg({ type: "error", text: "Please sign in." });
+        inFlight.current = false;
+        return;
+      }
+
+      // 3) Allowed client → go to next or dashboard
+      setMsg({ type: "success", text: "Login successful! Redirecting…" });
+      router.replace(getNextPath(router));
+    } finally {
+      // Do not clear inFlight here; we want to avoid re-entry while router navigates
+    }
   }
+
+  /* ---------------------------------------------------------
+     On mount: prefill email + if already signed in, route away
+     --------------------------------------------------------- */
+  useEffect(() => {
+    const saved = localStorage.getItem("ff_login_email");
+    if (saved) setEmail(saved);
+
+    (async () => {
+      const { data: auth } = await supabase.auth.getUser();
+      if (auth?.user?.email) {
+        await routeAfterLogin();
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (remember && email) localStorage.setItem("ff_login_email", email);
+    if (!remember) localStorage.removeItem("ff_login_email");
+  }, [remember, email]);
 
   function resetCaptcha() {
     captchaRef.current?.resetCaptcha();
     setCaptchaToken(null);
   }
 
-  async function routeAfterLogin(explicit?: string) {
-    // Get the user email from param or current session
-    let lower = (explicit || "").toLowerCase();
-
-    if (!lower) {
-      const { data: auth } = await supabase.auth.getUser();
-      lower = (auth?.user?.email || "").toLowerCase();
-    }
-
-    // If still no email, stay on the login page (do NOT redirect to /login again).
-    if (!lower) return;
-
-    // 1) Blocked check
-    try {
-      const { data: blk } = await supabase
-        .from("blocked_users")
-        .select("email")
-        .eq("email", lower)
-        .maybeSingle();
-
-      if (blk?.email) {
-        await supabase.auth.signOut();
-        setMsg({ type: "error", text: "Your account is blocked. Please contact support." });
-        return;
-      }
-    } catch {
-      // if this fails, do not block; just continue
-    }
-
-    // 2) Admin check
-    let isAdmin = false;
-    try {
-      const { data: arow } = await supabase
-        .from("admins")
-        .select("email")
-        .eq("email", lower)
-        .maybeSingle();
-      isAdmin = !!arow?.email;
-    } catch {
-      isAdmin = false;
-    }
-
-    const safeNext = safeNextFromSearch();
-    const dest = safeNext || (isAdmin ? "/admin-dashboard" : "/client-dashboard");
-
-    setMsg({ type: "success", text: "Login successful! Redirecting…" });
-    router.replace(dest);
-  }
-
-  /* -------------------------
-     Effects
-  -------------------------- */
-
-  // seed saved email
-  useEffect(() => {
-    const saved = localStorage.getItem("ff_login_email");
-    if (saved) setEmail(saved);
-  }, []);
-
-  // remember toggle
-  useEffect(() => {
-    if (remember && email) localStorage.setItem("ff_login_email", email);
-    if (!remember) localStorage.removeItem("ff_login_email");
-  }, [remember, email]);
-
-  // show any message from ?reason=
-  useEffect(() => {
-    const reason = new URLSearchParams(window.location.search).get("reason");
-    const m = setMessageForReason(reason);
-    if (m) setMsg(m);
-  }, []);
-
-  // If already logged in and not blocked, route away (only once)
-  useEffect(() => {
-    if (autoRouted) return;
-    (async () => {
-      // Give Supabase a short moment to hydrate session
-      const deadline = Date.now() + 2500;
-      while (Date.now() < deadline) {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user?.email) break;
-        await new Promise((r) => setTimeout(r, 120));
-      }
-
-      const { data: { session } } = await supabase.auth.getSession();
-      const sesEmail = session?.user?.email || "";
-      if (!sesEmail) {
-        setAutoRouted(true);
-        return;
-      }
-
-      // If they’re logged-in, try to route them now.
-      await routeAfterLogin(sesEmail);
-      setAutoRouted(true);
-    })();
-  }, [autoRouted]);
-
-  /* -------------------------
+  /* ---------------------------------------------------------
      Actions
-  -------------------------- */
-
+     --------------------------------------------------------- */
   async function handleLogin() {
     try {
       setLoading(true);
@@ -254,43 +170,7 @@ export default function Login() {
         return;
       }
 
-      // success -> route by role/blocked/users with optional ?next
-      await routeAfterLogin(email);
-    } catch (e: any) {
-      setMsg({ type: "error", text: e?.message || "Unexpected error." });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleReset() {
-    try {
-      setLoading(true);
-      setMsg(null);
-
-      if (!email) {
-        setMsg({ type: "error", text: "Enter your email to receive a reset link." });
-        return;
-      }
-      if (!captchaToken) {
-        setMsg({ type: "error", text: "Please complete the captcha." });
-        return;
-      }
-
-      const redirectTo = `${window.location.origin}/update-password`;
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo,
-        captchaToken,
-      });
-
-      if (error) {
-        setMsg({ type: "error", text: "Couldn’t send reset email: " + error.message });
-        resetCaptcha();
-        return;
-      }
-
-      resetCaptcha();
-      setMsg({ type: "success", text: "Password reset email sent." });
+      await routeAfterLogin();
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
     } finally {
@@ -299,17 +179,15 @@ export default function Login() {
   }
 
   function onEnter(e: React.KeyboardEvent) {
-    if (e.key === "Enter") handleLogin();
+    if (e.key === "Enter") void handleLogin();
   }
 
-  /* -------------------------
-     Render
-  -------------------------- */
-
+  /* ---------------------------------------------------------
+     Render (compact but styled)
+     --------------------------------------------------------- */
   return (
-    <div className="relative flex min-h-[100svh] md:min-h-screen flex-col bg-[#0b1220] text-white">
-      {/* Header */}
-      <header className="relative">
+    <div className="min-h-screen bg-[#0b1220] text-white">
+      <header className="border-b border-white/10">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
           <a href="https://fuelflow.co.uk" className="flex items-center gap-3">
             <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
@@ -325,298 +203,170 @@ export default function Login() {
         </div>
       </header>
 
-      <main className="relative flex-1">
-        <div className="mx-auto grid max-w-6xl grid-cols-1 items-stretch gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
-          {/* VISUAL Welcome (left) */}
-          <section className="order-2 flex lg:order-1 lg:col-span-7">
-            <div className="flex-1 rounded-2xl bg-gray-800/40 p-6 md:p-7 h-full">
-              <h1 className="text-3xl font-bold tracking-tight">Welcome to FuelFlow</h1>
-              <p className="mt-2 max-w-xl text-white/70">
-                Your hub for live fuel pricing, orders, contracts and invoices — all in one place.
-              </p>
-
-              <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {(
-                  [
-                    ["pricing", FEATURES.pricing],
-                    ["delivery", FEATURES.delivery],
-                    ["checkout", FEATURES.checkout],
-                    ["support", FEATURES.support],
-                  ] as [FeatureKey, (typeof FEATURES)[FeatureKey]][]
-                ).map(([key, f]) => (
-                  <button
-                    key={key}
-                    onClick={() => setOpenFeature(key)}
-                    className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 text-left ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20"
-                  >
-                    <span className="pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-yellow-500/10 blur-2xl" />
-                    <div className="mb-3">
-                      <f.Art className="h-12 w-12 opacity-90 transition group-hover:scale-105" />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="text-lg font-semibold">{f.title}</div>
-                      <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wider group-hover:bg-white/15">
-                        Learn more
-                      </span>
-                    </div>
-                    <div className="mt-2 text-sm text-white/75">{f.blurb}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </section>
-
-          {/* Login card (right) */}
-          <section className="order-1 flex lg:order-2 lg:col-span-5">
-            <div className="flex-1 rounded-2xl bg-gray-800 p-6 md:p-7 h-full">
-              <div className="mb-5">
-                <h2 className="text-xl font-semibold tracking-tight">Client login</h2>
-                <p className="mt-1 text-sm text-white/70">Use your account email and password.</p>
-              </div>
-
-              {/* Email */}
-              <label className="block text-sm">
-                <span className="mb-1 block text-white/85">Email</span>
-                <div className="relative">
-                  <input
-                    type="email"
-                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-10 text-white placeholder-white/40 outline-none focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
-                    placeholder="name@company.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    onKeyDown={onEnter}
-                    autoComplete="email"
-                  />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 opacity-70">
-                    <MailIcon className="h-4 w-4" />
-                  </span>
-                </div>
-              </label>
-
-              {/* Password */}
-              <div className="mt-3">
-                <label className="block text-sm">
-                  <span className="mb-1 block text-white/85">Password</span>
-                  <div className="relative">
-                    <input
-                      type={showPassword ? "text" : "password"}
-                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-16 text-white placeholder-white/40 outline-none focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
-                      placeholder="Your password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      onKeyDown={(e) => {
-                        handleCaps(e);
-                        onEnter(e);
-                      }}
-                      autoComplete="current-password"
-                    />
-                    <button
-                      type="button"
-                      aria-label={showPassword ? "Hide password" : "Show password"}
-                      onClick={() => setShowPassword((s) => !s)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
-                    >
-                      {showPassword ? "Hide" : "Show"}
-                    </button>
-                  </div>
-                </label>
-                {capsOn && <div className="mt-1 text-xs text-amber-300">Caps Lock is ON</div>}
-              </div>
-
-              {/* hCaptcha */}
-              <div className="mt-4">
-                <HCaptcha
-                  sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
-                  onVerify={(t) => setCaptchaToken(t)}
-                  onExpire={() => setCaptchaToken(null)}
-                  onClose={() => setCaptchaToken(null)}
-                  ref={captchaRef}
-                  theme="dark"
-                />
-              </div>
-
-              {/* Options row */}
-              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <label className="inline-flex items-center gap-2 text-xs text-white/80">
-                  <input
-                    type="checkbox"
-                    checked={remember}
-                    onChange={(e) => setRemember(e.target.checked)}
-                    className="accent-yellow-500"
-                  />
-                  Remember my email
-                </label>
-                <button
-                  onClick={handleReset}
-                  className="text-xs text-yellow-300 hover:underline underline-offset-2"
-                  type="button"
-                  disabled={loading}
-                >
-                  Forgot password?
-                </button>
-              </div>
-
-              {/* CTAs */}
-              <div className="mt-4">
-                <button
-                  onClick={handleLogin}
-                  disabled={loading}
-                  className="w-full rounded-lg bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
-                >
-                  {loading ? "Signing in…" : "Sign in"}
-                </button>
-              </div>
-
-              {/* Divider + Register */}
-              <div className="my-5 flex items-center gap-3 text-white/40">
-                <span className="h-px w-full bg-white/10" />
-                <span className="text-[11px] uppercase tracking-widest">New to FuelFlow?</span>
-                <span className="h-px w-full bg-white/10" />
-              </div>
-              <a
-                href="https://dashboard.fuelflow.co.uk/register"
-                className="inline-flex w-full items-center justify-center rounded-lg border border-white/15 bg-transparent px-4 py-2 text-sm font-semibold hover:bg-white/5"
-              >
-                Register as a client
-              </a>
-
-              {/* Message */}
-              {msg && (
-                <div
-                  className={[
-                    "mt-4 rounded-lg border p-2 text-sm",
-                    msg.type === "error"
-                      ? "border-rose-400/40 bg-rose-500/10 text-rose-200"
-                      : msg.type === "success"
-                      ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
-                      : "border-white/15 bg-white/5 text-white/80",
-                  ].join(" ")}
-                >
-                  {msg.text}
-                </div>
-              )}
-
-              <p className="mt-4 text-[11px] leading-relaxed text-white/60">
-                By signing in you agree to our{" "}
-                <a href="/terms?return=/client-dashboard" className="text-yellow-300 underline-offset-2 hover:underline">
-                  Terms
-                </a>
-                .
-              </p>
-            </div>
-          </section>
-        </div>
-      </main>
-
-      {/* Feature modal */}
-      {openFeature && (
-        <div
-          aria-modal="true"
-          role="dialog"
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          onClick={() => setOpenFeature(null)}
-        >
-          <div className="absolute inset-0 bg-black/60" />
-          <div
-            className="relative w-full max-w-md rounded-2xl bg-gray-900 p-6 ring-1 ring-white/10"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-3 flex items-center gap-3">
-              {(() => {
-                const Art = openFeature ? FEATURES[openFeature].Art : FEATURES.pricing.Art;
-                return <Art className="h-8 w-8" />;
-              })()}
-              <div className="text-lg font-semibold">
-                {openFeature ? FEATURES[openFeature].title : ""}
-              </div>
-            </div>
-            <p className="text-sm text-white/80">
-              {openFeature ? FEATURES[openFeature].detail : ""}
+      <main className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
+        {/* Left – simple feature tiles */}
+        <section className="order-2 flex lg:order-1 lg:col-span-7">
+          <div className="flex-1 rounded-2xl bg-gray-800/40 p-6 md:p-7">
+            <h1 className="text-3xl font-bold tracking-tight">Welcome to FuelFlow</h1>
+            <p className="mt-2 max-w-xl text-white/70">
+              Your hub for live fuel pricing, orders, contracts and invoices — all in one place.
             </p>
-            <div className="mt-5 flex justify-end">
-              <button
-                onClick={() => setOpenFeature(null)}
-                className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-              >
-                Got it
-              </button>
+
+            <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {[
+                ["Live pricing", "See today’s rate before you order."],
+                ["Scheduled delivery", "Pick a preferred date — subject to availability."],
+                ["Secure checkout", "3-D Secure payments powered by Stripe."],
+                ["UK-based support", "Email or live chat when you need a hand."],
+              ].map(([t, b]) => (
+                <div key={t} className="rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 ring-1 ring-white/10">
+                  <div className="text-lg font-semibold">{t}</div>
+                  <div className="mt-2 text-sm text-white/75">{b}</div>
+                </div>
+              ))}
             </div>
           </div>
-        </div>
-      )}
+        </section>
 
-      <footer className="relative border-t border-white/10">
+        {/* Right – login card */}
+        <section className="order-1 flex lg:order-2 lg:col-span-5">
+          <div className="flex-1 rounded-2xl bg-gray-800 p-6 md:p-7">
+            <div className="mb-5">
+              <h2 className="text-xl font-semibold tracking-tight">Client login</h2>
+              <p className="mt-1 text-sm text-white/70">Use your account email and password.</p>
+            </div>
+
+            {/* Email */}
+            <label className="block text-sm">
+              <span className="mb-1 block text-white/85">Email</span>
+              <input
+                type="email"
+                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder-white/40 outline-none focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
+                placeholder="name@company.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={onEnter}
+                autoComplete="email"
+              />
+            </label>
+
+            {/* Password */}
+            <div className="mt-3">
+              <label className="block text-sm">
+                <span className="mb-1 block text-white/85">Password</span>
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-16 text-white placeholder-white/40 outline-none focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
+                    placeholder="Your password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    onKeyDown={onEnter}
+                    autoComplete="current-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((s) => !s)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
+                  >
+                    {showPassword ? "Hide" : "Show"}
+                  </button>
+                </div>
+              </label>
+            </div>
+
+            {/* hCaptcha */}
+            <div className="mt-4">
+              <HCaptcha
+                sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
+                onVerify={(t) => setCaptchaToken(t)}
+                onExpire={() => setCaptchaToken(null)}
+                onClose={() => setCaptchaToken(null)}
+                ref={captchaRef}
+                theme="dark"
+              />
+            </div>
+
+            {/* Options row */}
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <label className="inline-flex items-center gap-2 text-xs text-white/80">
+                <input
+                  type="checkbox"
+                  checked={remember}
+                  onChange={(e) => setRemember(e.target.checked)}
+                  className="accent-yellow-500"
+                />
+                Remember my email
+              </label>
+              <a
+                className="text-xs text-yellow-300 hover:underline underline-offset-2 cursor-pointer"
+                onClick={async () => {
+                  if (!email) return setMsg({ type: "error", text: "Enter your email first." });
+                  if (!captchaToken) return setMsg({ type: "error", text: "Please complete the captcha." });
+                  const redirectTo = `${window.location.origin}/update-password`;
+                  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+                    redirectTo,
+                    captchaToken,
+                  });
+                  if (error) {
+                    setMsg({ type: "error", text: "Couldn’t send reset email: " + error.message });
+                    captchaRef.current?.resetCaptcha();
+                    setCaptchaToken(null);
+                    return;
+                  }
+                  setMsg({ type: "success", text: "Password reset email sent." });
+                  captchaRef.current?.resetCaptcha();
+                  setCaptchaToken(null);
+                }}
+              >
+                Forgot password?
+              </a>
+            </div>
+
+            {/* Sign in */}
+            <div className="mt-4">
+              <button
+                onClick={handleLogin}
+                disabled={loading}
+                className="w-full rounded-lg bg-yellow-500 px-4 py-2 font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
+              >
+                {loading ? "Signing in…" : "Sign in"}
+              </button>
+            </div>
+
+            {/* Message */}
+            {msg && (
+              <div
+                className={[
+                  "mt-4 rounded-lg border p-2 text-sm",
+                  msg.type === "error"
+                    ? "border-rose-400/40 bg-rose-500/10 text-rose-200"
+                    : msg.type === "success"
+                    ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
+                    : "border-white/15 bg-white/5 text-white/80",
+                ].join(" ")}
+              >
+                {msg.text}
+              </div>
+            )}
+
+            <p className="mt-4 text-[11px] leading-relaxed text-white/60">
+              By signing in you agree to our{" "}
+              <a href="/terms?return=/client-dashboard" className="text-yellow-300 underline-offset-2 hover:underline">
+                Terms
+              </a>
+              .
+            </p>
+          </div>
+        </section>
+      </main>
+
+      <footer className="border-t border-white/10">
         <div className="mx-auto max-w-6xl px-4 py-4 text-center text-xs text-white/60">
           © {new Date().getFullYear()} FuelFlow. Secure login powered by Supabase &amp; hCaptcha.
         </div>
       </footer>
     </div>
-  );
-}
-
-/* ---------- small components & illustrations ---------- */
-
-function MailIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <rect x="3" y="5" width="18" height="14" rx="2" ry="2" />
-      <path d="M3 7l9 6 9-6" />
-    </svg>
-  );
-}
-
-/* Minimal, elegant SVGs */
-function ChartArt({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 64 64" className={className}>
-      <defs>
-        <linearGradient id="g1" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0" stopColor="#FFD000" stopOpacity="0.2" />
-          <stop offset="1" stopColor="#FFD000" stopOpacity="0.4" />
-        </linearGradient>
-      </defs>
-      <rect x="6" y="10" width="52" height="40" rx="8" fill="none" stroke="currentColor" opacity="0.3" />
-      <path
-        d="M12 40 L24 28 L34 33 L46 20 L54 24"
-        fill="none"
-        stroke="url(#g1)"
-        strokeWidth="3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle cx="24" cy="28" r="2" fill="#FFD000" />
-      <circle cx="46" cy="20" r="2" fill="#FFD000" />
-    </svg>
-  );
-}
-function TruckArt({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 64 64" className={className}>
-      <rect x="6" y="22" width="30" height="16" rx="3" fill="none" stroke="currentColor" opacity="0.35" />
-      <path d="M36 26h10l6 6v6H36z" fill="none" stroke="currentColor" opacity="0.35" />
-      <circle cx="18" cy="42" r="4" fill="#FFD000" />
-      <circle cx="46" cy="42" r="4" fill="#FFD000" />
-      <path d="M8 22h26" stroke="#FFD000" strokeWidth="2" opacity="0.5" />
-    </svg>
-  );
-}
-function ShieldCardArt({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 64 64" className={className}>
-      <path d="M32 10l16 6v12c0 10-7 18-16 22-9-4-16-12-16-22V16l16-6z" fill="none" stroke="currentColor" opacity="0.35" />
-      <rect x="22" y="24" width="20" height="12" rx="3" fill="none" stroke="#FFD000" opacity="0.6" />
-      <circle cx="32" cy="30" r="2" fill="#FFD000" />
-    </svg>
-  );
-}
-function HeadsetArt({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 64 64" className={className}>
-      <path d="M12 36v-4c0-11 9-20 20-20s20 9 20 20v4" fill="none" stroke="currentColor" opacity="0.35" />
-      <rect x="10" y="34" width="10" height="12" rx="3" fill="#FFD000" />
-      <rect x="44" y="34" width="10" height="12" rx="3" fill="#FFD000" />
-      <path d="M40 48c0 3-4 6-8 6" stroke="currentColor" opacity="0.35" />
-    </svg>
   );
 }
 
