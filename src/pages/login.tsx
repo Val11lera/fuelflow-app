@@ -2,36 +2,53 @@
 // src/pages/login.tsx
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import React, { useEffect, useRef, useState, type ReactElement } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 import type HCaptchaType from "@hcaptcha/react-hcaptcha";
 import { createClient } from "@supabase/supabase-js";
 import { useRouter } from "next/router";
 
-/* =========================
-   Supabase client (browser)
-   ========================= */
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
-/* =========================
-   Types / helpers
-   ========================= */
 type Msg = { type: "error" | "success" | "info"; text: string };
 type FeatureKey = "pricing" | "delivery" | "checkout" | "support";
 
-function useQuery() {
-  const { asPath } = useRouter();
-  return useMemo(() => {
-    const q = asPath.split("?")[1];
-    return new URLSearchParams(q || "");
-  }, [asPath]);
+/* -------------------------------------
+   Small helpers
+-------------------------------------- */
+
+// Only allow internal paths like "/client-dashboard"
+function safeNextFromSearch(): string {
+  try {
+    const sp = new URLSearchParams(window.location.search);
+    const next = sp.get("next") || "";
+    if (next && next.startsWith("/")) return next;
+  } catch {}
+  return "";
+}
+
+function setMessageForReason(
+  reason: string | null | undefined
+): Msg | null {
+  switch ((reason || "").toLowerCase()) {
+    case "blocked":
+      return { type: "error", text: "Your account is blocked. Please contact support." };
+    case "signin":
+      return { type: "info", text: "Please sign in." };
+    case "signedout":
+      return { type: "info", text: "You’ve been signed out." };
+    case "timeout":
+      return { type: "error", text: "Session timed out. Please sign in again." };
+    default:
+      return null;
+  }
 }
 
 /* -------------------------------------
-   Feature cards (same visuals as before)
+   Feature cards (unchanged visuals)
 -------------------------------------- */
 const FEATURES: Record<
   FeatureKey,
@@ -72,14 +89,9 @@ const FEATURES: Record<
   },
 };
 
-/* =========================
-   Page
-   ========================= */
 export default function Login() {
   const router = useRouter();
-  const query = useQuery();
-  const nextPath = query.get("next") || "/client-dashboard"; // default where customers go
-  const reason = query.get("reason"); // set by middleware if blocked/not allowed/etc.
+  const captchaRef = useRef<HCaptchaType>(null);
 
   // form
   const [email, setEmail] = useState("");
@@ -95,11 +107,13 @@ export default function Login() {
   const [msg, setMsg] = useState<Msg | null>(null);
 
   // hCaptcha
-  const captchaRef = useRef<HCaptchaType>(null);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
   // feature modal
   const [openFeature, setOpenFeature] = useState<FeatureKey | null>(null);
+
+  // avoid double-redirect loops: only attempt auto-route once per mount
+  const [autoRouted, setAutoRouted] = useState(false);
 
   /* -------------------------
      Helpers
@@ -107,75 +121,113 @@ export default function Login() {
   function handleCaps(e: React.KeyboardEvent<HTMLInputElement>) {
     setCapsOn(e.getModifierState && e.getModifierState("CapsLock"));
   }
+
   function resetCaptcha() {
     captchaRef.current?.resetCaptcha();
     setCaptchaToken(null);
   }
 
-  /** After a successful sign-in, decide where to go. */
-  async function routeAfterLogin(explicitEmail?: string) {
-    // Always re-fetch the fresh user after sign-in
-    const { data: auth } = await supabase.auth.getUser();
-    const lower = (explicitEmail || auth?.user?.email || "").toLowerCase();
+  async function routeAfterLogin(explicit?: string) {
+    // Get the user email from param or current session
+    let lower = (explicit || "").toLowerCase();
 
-    // Admins → admin dashboard
-    const { data: adminRow } = await supabase
-      .from("admins")
-      .select("email")
-      .eq("email", lower)
-      .maybeSingle();
-
-    if (adminRow?.email) {
-      window.location.replace("/admin-dashboard");
-      return;
+    if (!lower) {
+      const { data: auth } = await supabase.auth.getUser();
+      lower = (auth?.user?.email || "").toLowerCase();
     }
 
-    // Everyone else → requested page or client dashboard
-    window.location.replace(nextPath || "/client-dashboard");
+    // If still no email, stay on the login page (do NOT redirect to /login again).
+    if (!lower) return;
+
+    // 1) Blocked check
+    try {
+      const { data: blk } = await supabase
+        .from("blocked_users")
+        .select("email")
+        .eq("email", lower)
+        .maybeSingle();
+
+      if (blk?.email) {
+        await supabase.auth.signOut();
+        setMsg({ type: "error", text: "Your account is blocked. Please contact support." });
+        return;
+      }
+    } catch {
+      // if this fails, do not block; just continue
+    }
+
+    // 2) Admin check
+    let isAdmin = false;
+    try {
+      const { data: arow } = await supabase
+        .from("admins")
+        .select("email")
+        .eq("email", lower)
+        .maybeSingle();
+      isAdmin = !!arow?.email;
+    } catch {
+      isAdmin = false;
+    }
+
+    const safeNext = safeNextFromSearch();
+    const dest = safeNext || (isAdmin ? "/admin-dashboard" : "/client-dashboard");
+
+    setMsg({ type: "success", text: "Login successful! Redirecting…" });
+    router.replace(dest);
   }
 
   /* -------------------------
      Effects
   -------------------------- */
-  // Pre-fill & remember email
+
+  // seed saved email
   useEffect(() => {
     const saved = localStorage.getItem("ff_login_email");
     if (saved) setEmail(saved);
   }, []);
+
+  // remember toggle
   useEffect(() => {
     if (remember && email) localStorage.setItem("ff_login_email", email);
     if (!remember) localStorage.removeItem("ff_login_email");
   }, [remember, email]);
 
-  // If we arrive with a "reason" (blocked/not allowed), show a nice message and DO NOT auto-redirect.
+  // show any message from ?reason=
   useEffect(() => {
-    if (!reason) return;
-    const friendly =
-      reason === "blocked"
-        ? "Your account is currently blocked. Please contact support."
-        : reason === "not_allowed"
-        ? "Your email isn’t approved yet."
-        : reason === "not_admin"
-        ? "Admin access is required to view that page."
-        : "Please sign in.";
-    setMsg({ type: "error", text: friendly });
-  }, [reason]);
+    const reason = new URLSearchParams(window.location.search).get("reason");
+    const m = setMessageForReason(reason);
+    if (m) setMsg(m);
+  }, []);
 
-  // If already signed in AND there is no blocking reason, route away immediately
+  // If already logged in and not blocked, route away (only once)
   useEffect(() => {
+    if (autoRouted) return;
     (async () => {
-      if (reason) return; // middleware sent us here for a reason — don’t loop
-      const { data: auth } = await supabase.auth.getUser();
-      if (auth?.user?.email) {
-        await routeAfterLogin(auth.user.email);
+      // Give Supabase a short moment to hydrate session
+      const deadline = Date.now() + 2500;
+      while (Date.now() < deadline) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user?.email) break;
+        await new Promise((r) => setTimeout(r, 120));
       }
+
+      const { data: { session } } = await supabase.auth.getSession();
+      const sesEmail = session?.user?.email || "";
+      if (!sesEmail) {
+        setAutoRouted(true);
+        return;
+      }
+
+      // If they’re logged-in, try to route them now.
+      await routeAfterLogin(sesEmail);
+      setAutoRouted(true);
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // run once
+  }, [autoRouted]);
 
   /* -------------------------
      Actions
   -------------------------- */
+
   async function handleLogin() {
     try {
       setLoading(true);
@@ -202,7 +254,7 @@ export default function Login() {
         return;
       }
 
-      setMsg({ type: "success", text: "Login successful! Redirecting…" });
+      // success -> route by role/blocked/users with optional ?next
       await routeAfterLogin(email);
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
@@ -253,6 +305,7 @@ export default function Login() {
   /* -------------------------
      Render
   -------------------------- */
+
   return (
     <div className="relative flex min-h-[100svh] md:min-h-screen flex-col bg-[#0b1220] text-white">
       {/* Header */}
@@ -512,6 +565,7 @@ function MailIcon({ className }: { className?: string }) {
   );
 }
 
+/* Minimal, elegant SVGs */
 function ChartArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
@@ -565,4 +619,5 @@ function HeadsetArt({ className }: { className?: string }) {
     </svg>
   );
 }
+
 
