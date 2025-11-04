@@ -50,6 +50,27 @@ type AdminCustomerRow = {
   last_order_at: string | null;
 };
 
+/** ===== Tickets (new) ===== */
+type TicketListRow = {
+  id: string;
+  ticket_code: string;
+  status: string | null;
+  created_at: string;
+  last_msg_ts: string | null;
+  last_msg_direction: string | null; // 'in' | 'out'
+  last_msg_subject: string | null;
+  last_msg_sender: string | null;
+};
+
+type TicketMessageRow = {
+  ticket_id: string;
+  ts: string;
+  direction: "in" | "out" | string;
+  sender_email: string | null;
+  body_text: string | null;
+  body_html: string | null;
+};
+
 /* =========================
    Helpers
    ========================= */
@@ -127,6 +148,7 @@ export default function AdminDashboard() {
   const [openOrders, setOpenOrders] = useState(true);
   const [openPayments, setOpenPayments] = useState(false);
   const [openInvoices, setOpenInvoices] = useState(false);
+  const [openTickets, setOpenTickets] = useState(true); // NEW
 
   // Pagination (orders)
   const ORDERS_STEP = 20;
@@ -196,7 +218,7 @@ export default function AdminDashboard() {
             return;
           }
         } catch {
-          // ignore soft DB failure and continue; do not block just because of a transient error
+          // ignore soft DB failure and continue
         }
 
         // 3) Admin membership
@@ -207,7 +229,6 @@ export default function AdminDashboard() {
           .maybeSingle();
 
         if (error || !data?.email) {
-          // Not an admin -> send to client
           window.location.replace("/client-dashboard");
           return;
         }
@@ -535,6 +556,100 @@ export default function AdminDashboard() {
   }
 
   /* =========================
+     TICKETS (new section)
+     ========================= */
+
+  const [ticketSearch, setTicketSearch] = useState("");
+  const [ticketStatus, setTicketStatus] = useState<"all" | "open" | "closed">("all");
+  const [tickets, setTickets] = useState<TicketListRow[]>([]);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
+  const [ticketsError, setTicketsError] = useState<string | null>(null);
+
+  const [selectedTicket, setSelectedTicket] = useState<TicketListRow | null>(null);
+  const [thread, setThread] = useState<TicketMessageRow[]>([]);
+  const [threadLoading, setThreadLoading] = useState(false);
+
+  async function loadTickets() {
+    if (isAdmin !== true) return;
+    setTicketsLoading(true);
+    setTicketsError(null);
+    try {
+      let q = supabase
+        .from("v_ticket_admin_list")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(500);
+
+      if (ticketStatus !== "all") {
+        q = q.eq("status", ticketStatus);
+      }
+
+      const { data, error } = await q;
+      if (error) throw error;
+      setTickets((data || []) as TicketListRow[]);
+    } catch (e: any) {
+      setTicketsError(e?.message || "Failed to load tickets");
+    } finally {
+      setTicketsLoading(false);
+    }
+  }
+
+  async function loadThread(ticketId: string) {
+    setThread([]);
+    setThreadLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("v_ticket_messages")
+        .select("*")
+        .eq("ticket_id", ticketId)
+        .order("ts", { ascending: true })
+        .limit(200);
+      if (error) throw error;
+      setThread((data || []) as TicketMessageRow[]);
+    } catch (e: any) {
+      setTicketsError(e?.message || "Failed to load messages");
+    } finally {
+      setThreadLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAdmin === true) loadTickets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, ticketStatus]);
+
+  const filteredTickets = useMemo(() => {
+    const s = ticketSearch.trim().toLowerCase();
+    if (!s) return tickets;
+    return tickets.filter((t) =>
+      [t.ticket_code, t.status || "", t.last_msg_subject || "", t.last_msg_sender || ""]
+        .join(" ")
+        .toLowerCase()
+        .includes(s)
+    );
+  }, [tickets, ticketSearch]);
+
+  async function closeSelectedTicket() {
+    if (!selectedTicket) return;
+    try {
+      const { data: sessionRes } = await supabase.auth.getSession();
+      const token = sessionRes.session?.access_token;
+      if (!token) throw new Error("Missing session token");
+
+      const res = await fetch(`/api/tickets/${selectedTicket.id}/close`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(await res.text());
+
+      await loadTickets();
+      await loadThread(selectedTicket.id);
+    } catch (e: any) {
+      setTicketsError(e?.message || "Failed to close ticket");
+    }
+  }
+
+  /* =========================
      Render
      ========================= */
 
@@ -737,7 +852,7 @@ export default function AdminDashboard() {
           <div className="sm:col-span-7 xl:col-span-8">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <label className="flex-1 inline-flex items-center gap-2 text-sm">
-                <span className="text-white/70 shrink-0">Customer:</span>
+                <span className="text-white/70">Customer:</span>
                 <select
                   value={customerFilter}
                   onChange={(e) => setCustomerFilter(e.target.value)}
@@ -1074,6 +1189,172 @@ export default function AdminDashboard() {
                 )}
               </tbody>
             </table>
+          </div>
+        </Accordion>
+
+        {/* ===== Support Tickets (NEW) ===== */}
+        <Accordion
+          title="Support Tickets"
+          subtitle={`${filteredTickets.length} row(s)`}
+          open={openTickets}
+          onToggle={() => setOpenTickets((s) => !s)}
+          loading={ticketsLoading}
+          error={ticketsError}
+          right={
+            <div className="flex items-center gap-2">
+              <input
+                className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                placeholder="Search code / subject / sender"
+                value={ticketSearch}
+                onChange={(e) => setTicketSearch(e.target.value)}
+              />
+              <label className="flex items-center gap-2 text-sm">
+                <span className="text-white/70">Status:</span>
+                <select
+                  value={ticketStatus}
+                  onChange={(e) => setTicketStatus(e.target.value as "all" | "open" | "closed")}
+                  className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                >
+                  <option value="all">All</option>
+                  <option value="open">open</option>
+                  <option value="closed">closed</option>
+                </select>
+              </label>
+              <button onClick={loadTickets} className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
+                Refresh
+              </button>
+            </div>
+          }
+        >
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+            {/* Left: list */}
+            <div className="lg:col-span-5 rounded-lg border border-white/10 bg-white/[0.03] overflow-hidden">
+              <table className="w-full text-left text-sm">
+                <thead className="text-white/70">
+                  <tr className="border-b border-white/10">
+                    <th className="py-2 px-3">Code</th>
+                    <th className="py-2 px-3">Status</th>
+                    <th className="py-2 px-3">Last msg</th>
+                    <th className="py-2 px-3">From</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredTickets.map((t) => (
+                    <tr
+                      key={t.id}
+                      className={cx(
+                        "border-b border-white/5 cursor-pointer hover:bg-white/[0.06]",
+                        selectedTicket?.id === t.id && "bg-white/[0.08]"
+                      )}
+                      onClick={() => {
+                        setSelectedTicket(t);
+                        loadThread(t.id);
+                      }}
+                    >
+                      <td className="py-2 px-3 font-mono text-[11px]">{t.ticket_code}</td>
+                      <td className="py-2 px-3">
+                        <span
+                          className={cx(
+                            "inline-flex items-center rounded px-2 py-0.5 text-xs",
+                            (t.status || "") === "open" ? "bg-yellow-600/70" : "bg-gray-600/70"
+                          )}
+                        >
+                          {t.status || "—"}
+                        </span>
+                      </td>
+                      <td className="py-2 px-3">
+                        <div className="text-xs">{t.last_msg_subject || "—"}</div>
+                        <div className="text-[11px] text-white/60">
+                          {(t.last_msg_direction || "in")}/{new Date(t.last_msg_ts || t.created_at).toLocaleString()}
+                        </div>
+                      </td>
+                      <td className="py-2 px-3 text-xs">{t.last_msg_sender || "—"}</td>
+                    </tr>
+                  ))}
+                  {filteredTickets.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="py-3 px-3 text-white/60">
+                        No tickets.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Right: thread */}
+            <div className="lg:col-span-7 rounded-lg border border-white/10 bg-white/[0.03] p-3">
+              {!selectedTicket ? (
+                <div className="text-white/60 text-sm">Select a ticket from the list.</div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-2">
+                    <div className="text-sm">
+                      <div className="font-semibold">Ticket {selectedTicket.ticket_code}</div>
+                      <div className="text-white/60">
+                        Status: {selectedTicket.status || "—"} • Created{" "}
+                        {new Date(selectedTicket.created_at).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => loadThread(selectedTicket.id)}
+                        className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+                      >
+                        Refresh
+                      </button>
+                      <button
+                        disabled={(selectedTicket.status || "") === "closed"}
+                        onClick={closeSelectedTicket}
+                        className={cx(
+                          "rounded-lg px-3 py-1.5 text-sm",
+                          (selectedTicket.status || "") === "closed"
+                            ? "bg-white/10 text-white/50 cursor-not-allowed"
+                            : "bg-yellow-500 text-[#041F3E] font-semibold hover:bg-yellow-400"
+                        )}
+                      >
+                        Close ticket
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 space-y-3">
+                    {threadLoading ? (
+                      <div className="text-white/70">Loading thread…</div>
+                    ) : thread.length === 0 ? (
+                      <div className="text-white/60 text-sm">No messages.</div>
+                    ) : (
+                      thread.map((m, idx) => (
+                        <div
+                          key={idx}
+                          className={cx(
+                            "rounded border px-3 py-2",
+                            m.direction === "in"
+                              ? "border-white/10 bg-white/[0.04]"
+                              : "border-yellow-500/40 bg-yellow-500/10"
+                          )}
+                        >
+                          <div className="text-xs text-white/70 mb-1">
+                            <span className="uppercase">{m.direction}</span> •{" "}
+                            {new Date(m.ts).toLocaleString()} • {m.sender_email || "—"}
+                          </div>
+                          {m.body_text ? (
+                            <pre className="whitespace-pre-wrap text-sm">{m.body_text}</pre>
+                          ) : m.body_html ? (
+                            <div
+                              className="prose prose-invert max-w-none text-sm"
+                              dangerouslySetInnerHTML={{ __html: m.body_html }}
+                            />
+                          ) : (
+                            <div className="text-sm">—</div>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </Accordion>
 
