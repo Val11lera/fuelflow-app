@@ -14,6 +14,10 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
+/* =========================
+   Types
+   ========================= */
+
 type Fuel = "diesel" | "petrol" | string;
 
 type OrderRow = {
@@ -39,7 +43,6 @@ type PaymentRow = {
   created_at?: string | null;
 };
 
-/** Admin approvals view row (from public.admin_customers_v) */
 type AdminCustomerRow = {
   email: string;
   status: "pending" | "approved" | "blocked" | string;
@@ -50,23 +53,22 @@ type AdminCustomerRow = {
   last_order_at: string | null;
 };
 
-/** ===== Tickets (new) ===== */
+/** Support tickets */
 type TicketListRow = {
   id: string;
-  ticket_code: string;
+  email: string | null;
   status: string | null;
   created_at: string;
-  last_msg_ts: string | null;
-  last_msg_direction: string | null; // 'in' | 'out'
-  last_msg_subject: string | null;
-  last_msg_sender: string | null;
+  last_msg_ts?: string | null;
+  last_in_ts?: string | null;
+  last_out_ts?: string | null;
+  unanswered_minutes?: number | null;
 };
 
-type TicketMessageRow = {
-  ticket_id: string;
-  ts: string;
-  direction: "in" | "out" | string;
+type TicketMsgRow = {
+  direction: "in" | "out";
   sender_email: string | null;
+  ts: string;
   body_text: string | null;
   body_html: string | null;
 };
@@ -97,27 +99,18 @@ function daysAgo(n: number) {
 }
 function labelForRange(r: "month" | "90d" | "ytd" | "all") {
   switch (r) {
-    case "month":
-      return "This month";
-    case "90d":
-      return "Last 90 days";
-    case "ytd":
-      return "Year to date";
-    default:
-      return "All time";
+    case "month": return "This month";
+    case "90d":   return "Last 90 days";
+    case "ytd":   return "Year to date";
+    default:      return "All time";
   }
 }
 function dateRange(r: "month" | "90d" | "ytd" | "all") {
   switch (r) {
-    case "month":
-      return { from: startOfMonth(), to: null as Date | null };
-    case "90d":
-      return { from: daysAgo(90), to: null as Date | null };
-    case "ytd":
-      return { from: startOfYear(), to: null as Date | null };
-    case "all":
-    default:
-      return { from: null as Date | null, to: null as Date | null };
+    case "month": return { from: startOfMonth(), to: null as Date | null };
+    case "90d":   return { from: daysAgo(90),    to: null as Date | null };
+    case "ytd":   return { from: startOfYear(),  to: null as Date | null };
+    default:      return { from: null as Date | null, to: null as Date | null };
   }
 }
 
@@ -148,7 +141,6 @@ export default function AdminDashboard() {
   const [openOrders, setOpenOrders] = useState(true);
   const [openPayments, setOpenPayments] = useState(false);
   const [openInvoices, setOpenInvoices] = useState(false);
-  const [openTickets, setOpenTickets] = useState(true); // NEW
 
   // Pagination (orders)
   const ORDERS_STEP = 20;
@@ -165,7 +157,6 @@ export default function AdminDashboard() {
   const [approvalsLoading, setApprovalsLoading] = useState(false);
   const [approvalsError, setApprovalsError] = useState<string | null>(null);
 
-  // counts for the badge
   const approvalsCounts = useMemo(() => {
     let p = 0, a = 0, b = 0;
     approvals.forEach((r) => {
@@ -177,7 +168,7 @@ export default function AdminDashboard() {
     return { pending: p, approved: a, blocked: b };
   }, [approvals]);
 
-  // Invoice browser (by customer email)
+  // Invoice browser
   const [invEmail, setInvEmail] = useState<string>("");
   const [invYear, setInvYear] = useState<string>("");
   const [invMonth, setInvMonth] = useState<string>("");
@@ -186,11 +177,23 @@ export default function AdminDashboard() {
   const [invFiles, setInvFiles] = useState<{ name: string; path: string; last_modified?: string; size?: number }[]>([]);
   const [invLoading, setInvLoading] = useState<boolean>(false);
 
-  /* ---------- New robust auth/admin/blocked guard ---------- */
+  /* ====== Support Tickets (NEW) ====== */
+
+  const [tickets, setTickets] = useState<TicketListRow[]>([]);
+  const [ticketSearch, setTicketSearch] = useState<string>("");
+  const [ticketStatus, setTicketStatus] = useState<string>("all");
+  const [ticketSinceDays, setTicketSinceDays] = useState<number>(1); // 1 = Today
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
+  const [selectedTicketMsgs, setSelectedTicketMsgs] = useState<TicketMsgRow[]>([]);
+  const [ticketsLoading, setTicketsLoading] = useState<boolean>(false);
+  const [ticketsError, setTicketsError] = useState<string | null>(null);
+
+  const [todayUnanswered, setTodayUnanswered] = useState<{tickets:number, over1h:number, over4h:number, over24h:number} | null>(null);
+
+  /* ---------- Robust auth/admin/blocked guard ---------- */
   useEffect(() => {
     (async () => {
       try {
-        // 1) Wait for Supabase session to appear (max ~4s)
         const deadline = Date.now() + 4000;
         while (Date.now() < deadline) {
           const { data: { session } } = await supabase.auth.getSession();
@@ -205,28 +208,20 @@ export default function AdminDashboard() {
           return;
         }
 
-        // 2) Blocked users cannot access anything
+        // blocked?
         try {
           const { data: blk } = await supabase
-            .from("blocked_users")
-            .select("email")
-            .eq("email", email)
-            .maybeSingle();
+            .from("blocked_users").select("email").eq("email", email).maybeSingle();
           if (blk?.email) {
             await supabase.auth.signOut();
             window.location.replace("/login?reason=blocked");
             return;
           }
-        } catch {
-          // ignore soft DB failure and continue
-        }
+        } catch {}
 
-        // 3) Admin membership
+        // admin?
         const { data, error } = await supabase
-          .from("admins")
-          .select("email")
-          .eq("email", email)
-          .maybeSingle();
+          .from("admins").select("email").eq("email", email).maybeSingle();
 
         if (error || !data?.email) {
           window.location.replace("/client-dashboard");
@@ -241,7 +236,7 @@ export default function AdminDashboard() {
     })();
   }, []);
 
-  // ---------- Load business data ----------
+  // ---------- Load orders/payments ----------
   useEffect(() => {
     if (isAdmin !== true) return;
 
@@ -285,7 +280,7 @@ export default function AdminDashboard() {
     })();
   }, [isAdmin, range]);
 
-  // ---------- Load approvals (from view) ----------
+  // ---------- Approvals ----------
   async function loadApprovals() {
     if (isAdmin !== true) return;
     setApprovalsLoading(true);
@@ -298,10 +293,7 @@ export default function AdminDashboard() {
         .order("last_order_at", { ascending: false })
         .limit(1000);
 
-      if (approvalsFilter !== "all") {
-        q = q.eq("status", approvalsFilter);
-      }
-
+      if (approvalsFilter !== "all") q = q.eq("status", approvalsFilter);
       const { data, error } = await q;
       if (error) throw error;
       setApprovals((data || []) as AdminCustomerRow[]);
@@ -311,13 +303,9 @@ export default function AdminDashboard() {
       setApprovalsLoading(false);
     }
   }
+  useEffect(() => { if (isAdmin === true) loadApprovals(); }, [isAdmin, approvalsFilter]);
 
-  useEffect(() => {
-    if (isAdmin === true) loadApprovals();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, approvalsFilter]);
-
-  // ---------- Customer list for dropdown ----------
+  // Customer list for dropdown
   const customerOptions = useMemo(() => {
     const s = new Set<string>();
     orders.forEach((o) => (o.user_email ? s.add(o.user_email.toLowerCase()) : null));
@@ -325,38 +313,26 @@ export default function AdminDashboard() {
     return ["all", ...Array.from(s).sort((a, b) => a.localeCompare(b))];
   }, [orders, payments]);
 
-  // ---------- Derived KPIs + status options ----------
+  // Status options
   const orderStatusOptions = useMemo(() => {
     const set = new Set<string>();
-    orders.forEach((o) => {
-      const s = (o.status || "").toLowerCase();
-      if (s) set.add(s);
-    });
+    orders.forEach((o) => { const s = (o.status || "").toLowerCase(); if (s) set.add(s); });
     return ["all", ...Array.from(set).sort()];
   }, [orders]);
-
   const paymentStatusOptions = useMemo(() => {
     const set = new Set<string>();
-    payments.forEach((p) => {
-      const s = (p.status || "").toLowerCase();
-      if (s) set.add(s);
-    });
+    payments.forEach((p) => { const s = (p.status || "").toLowerCase(); if (s) set.add(s); });
     return ["all", ...Array.from(set).sort()];
   }, [payments]);
 
-  // Apply filters to Orders
+  // Filtered orders
   const filteredOrders = useMemo(() => {
     const s = search.trim().toLowerCase();
     return orders.filter((o) => {
       const statusOk = orderStatusFilter === "all" || (o.status || "").toLowerCase() === orderStatusFilter;
       if (!statusOk) return false;
-
-      const customerOk =
-        customerFilter === "all" ||
-        (o.user_email || "").toLowerCase() === customerFilter;
-
+      const customerOk = customerFilter === "all" || (o.user_email || "").toLowerCase() === customerFilter;
       if (!customerOk) return false;
-
       if (!s) return true;
       return (
         (o.user_email || "").toLowerCase().includes(s) ||
@@ -366,21 +342,16 @@ export default function AdminDashboard() {
       );
     });
   }, [orders, search, orderStatusFilter, customerFilter]);
-  const visibleOrders = useMemo(
-    () => filteredOrders.slice(0, ordersShown),
-    [filteredOrders, ordersShown]
-  );
+  const visibleOrders = useMemo(() => filteredOrders.slice(0, ordersShown), [filteredOrders, ordersShown]);
 
-  // Apply filters to Payments
+  // Filtered payments
   const filteredPayments = useMemo(() => {
     const s = search.trim().toLowerCase();
     return payments.filter((p) => {
       const statusOk = paymentStatusFilter === "all" || (p.status || "").toLowerCase() === paymentStatusFilter;
       if (!statusOk) return false;
-
       const customerOk = customerFilter === "all" || (p.email || "").toLowerCase() === customerFilter;
       if (!customerOk) return false;
-
       if (!s) return true;
       return (
         (p.email || "").toLowerCase().includes(s) ||
@@ -395,8 +366,7 @@ export default function AdminDashboard() {
   const sumRevenue = filteredOrders.reduce((a, b) => a + toGBP(b.total_pence), 0);
   const paidCount = filteredOrders.filter((o) => (o.status || "").toLowerCase() === "paid").length;
 
-  /* ===== Usage & Spend (yearly view) ===== */
-
+  // Usage & Spend (yearly)
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
   const currentYear = new Date().getFullYear();
   const currentMonthIdx = new Date().getMonth();
@@ -406,10 +376,7 @@ export default function AdminDashboard() {
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
   const usageByMonth: MonthAgg[] = useMemo(() => {
     const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({
-      monthIdx: i,
-      monthLabel: months[i],
-      litres: 0,
-      spend: 0,
+      monthIdx: i, monthLabel: months[i], litres: 0, spend: 0,
     }));
     orders.forEach((o) => {
       const d = new Date(o.created_at);
@@ -421,20 +388,13 @@ export default function AdminDashboard() {
     return base;
   }, [orders, selectedYear]);
 
-  const rowsToShow = showAllMonths
-    ? usageByMonth
-    : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
-
+  const rowsToShow = showAllMonths ? usageByMonth : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
   const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
   const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
 
-  // ---------- Invoice browser helpers ----------
+  // Invoice helpers
   function resetInvoiceBrowser() {
-    setInvYears([]);
-    setInvMonths([]);
-    setInvFiles([]);
-    setInvYear("");
-    setInvMonth("");
+    setInvYears([]); setInvMonths([]); setInvFiles([]); setInvYear(""); setInvMonth("");
   }
   async function loadYears() {
     resetInvoiceBrowser();
@@ -443,71 +403,41 @@ export default function AdminDashboard() {
     try {
       const email = invEmail.toLowerCase();
       const { data, error } = await supabase.storage.from("invoices").list(`${email}`, {
-        limit: 1000,
-        sortBy: { column: "name", order: "asc" },
+        limit: 1000, sortBy: { column: "name", order: "asc" },
       });
       if (error) throw error;
-      const years = (data || [])
-        .filter((x) => x.name.match(/^\d{4}$/))
-        .map((x) => x.name);
+      const years = (data || []).filter((x) => x.name.match(/^\d{4}$/)).map((x) => x.name);
       setInvYears(years);
-    } catch (e: any) {
-      setError(e?.message || "Failed to list years");
-    } finally {
-      setInvLoading(false);
-    }
+    } catch (e: any) { setError(e?.message || "Failed to list years"); } finally { setInvLoading(false); }
   }
   async function loadMonths(year: string) {
-    setInvYear(year);
-    setInvMonths([]);
-    setInvFiles([]);
-    if (!invEmail || !year) return;
+    setInvYear(year); setInvMonths([]); setInvFiles([]); if (!invEmail || !year) return;
     setInvLoading(true);
     try {
       const email = invEmail.toLowerCase();
       const { data, error } = await supabase.storage.from("invoices").list(`${email}/${year}`, {
-        limit: 1000,
-        sortBy: { column: "name", order: "asc" },
+        limit: 1000, sortBy: { column: "name", order: "asc" },
       });
       if (error) throw error;
-      const monthsList = (data || [])
-        .filter((x) => x.name.match(/^(0[1-9]|1[0-2])$/))
-        .map((x) => x.name);
+      const monthsList = (data || []).filter((x) => x.name.match(/^(0[1-9]|1[0-2])$/)).map((x) => x.name);
       setInvMonths(monthsList);
-    } catch (e: any) {
-      setError(e?.message || "Failed to list months");
-    } finally {
-      setInvLoading(false);
-    }
+    } catch (e: any) { setError(e?.message || "Failed to list months"); } finally { setInvLoading(false); }
   }
   async function loadFiles(month: string) {
-    setInvMonth(month);
-    setInvFiles([]);
-    if (!invEmail || !invYear || !month) return;
+    setInvMonth(month); setInvFiles([]); if (!invEmail || !invYear || !month) return;
     setInvLoading(true);
     try {
       const email = invEmail.toLowerCase();
       const prefix = `${email}/${invYear}/${month}`;
       const { data, error } = await supabase.storage.from("invoices").list(prefix, {
-        limit: 1000,
-        sortBy: { column: "name", order: "desc" },
+        limit: 1000, sortBy: { column: "name", order: "desc" },
       });
       if (error) throw error;
-      const files =
-        (data || [])
-          .filter((x) => x.name.toLowerCase().endsWith(".pdf"))
-          .map((x) => ({
-            name: x.name,
-            path: `${prefix}/${x.name}`,
-            last_modified: (x as any).updated_at || undefined,
-            size: x.metadata?.size,
-          })) || [];
-      setInvFiles(files);
-    } catch (e: any) {
-      setError(e?.message || "Failed to list invoices");
-    } finally {
-      setInvLoading(false);
-    }
+      const files = (data || [])
+        .filter((x) => x.name.toLowerCase().endsWith(".pdf"))
+        .map((x) => ({ name: x.name, path: `${prefix}/${x.name}`, last_modified: (x as any).updated_at || undefined, size: x.metadata?.size }));
+      setInvFiles(files || []);
+    } catch (e: any) { setError(e?.message || "Failed to list invoices"); } finally { setInvLoading(false); }
   }
   async function getSignedUrl(path: string) {
     const { data, error } = await supabase.storage.from("invoices").createSignedUrl(path, 60 * 10);
@@ -515,7 +445,104 @@ export default function AdminDashboard() {
     return data.signedUrl;
   }
 
-  /* ====== Approve / Block / Unblock ====== */
+  /* ===== Support Tickets (NEW): data loaders ===== */
+
+  async function loadTickets() {
+    if (isAdmin !== true) return;
+    setTicketsLoading(true);
+    setTicketsError(null);
+    try {
+      const from = new Date();
+      from.setDate(from.getDate() - (ticketSinceDays - 1));
+      from.setHours(0, 0, 0, 0);
+
+      let q = supabase
+        .from("tickets")
+        .select("id, created_at, email, status")
+        .gte("created_at", from.toISOString())
+        .order("created_at", { ascending: false })
+        .limit(1000);
+
+      if (ticketStatus !== "all") q = q.eq("status", ticketStatus);
+
+      const { data: base, error } = await q;
+      if (error) throw error;
+
+      const ids = (base ?? []).map((r) => r.id);
+      let enriched: TicketListRow[] = (base || []) as TicketListRow[];
+
+      if (ids.length) {
+        const { data: io } = await supabase
+          .from("v_ticket_last_io")
+          .select("ticket_id, last_msg_ts, last_in_ts, last_out_ts, unanswered_minutes")
+          .in("ticket_id", ids);
+
+        const map = new Map(io?.map((x: any) => [x.ticket_id, x]) || []);
+        enriched = enriched.map((r) => {
+          const m = map.get(r.id);
+          return {
+            ...r,
+            last_msg_ts: m?.last_msg_ts || null,
+            last_in_ts: m?.last_in_ts || null,
+            last_out_ts: m?.last_out_ts || null,
+            unanswered_minutes: m?.unanswered_minutes ?? null,
+          };
+        });
+      }
+
+      const s = ticketSearch.trim().toLowerCase();
+      const filtered = s
+        ? enriched.filter(
+            (r) => (r.email || "").toLowerCase().includes(s) || (r.id || "").toLowerCase().includes(s)
+          )
+        : enriched;
+
+      setTickets(filtered);
+    } catch (e: any) {
+      setTicketsError(e?.message || "Failed to load tickets");
+    } finally {
+      setTicketsLoading(false);
+    }
+  }
+
+  async function loadTicketMessages(ticketId: string) {
+    setSelectedTicketMsgs([]);
+    try {
+      const { data, error } = await supabase
+        .from("v_ticket_messages")
+        .select("direction, sender_email, ts, body_text, body_html")
+        .eq("ticket_id", ticketId)
+        .order("ts", { ascending: true })
+        .limit(200);
+      if (error) throw error;
+      setSelectedTicketMsgs((data || []) as TicketMsgRow[]);
+    } catch (e: any) {
+      setTicketsError(e?.message || "Failed to load messages");
+    }
+  }
+
+  async function loadTodayUnanswered() {
+    const today = new Date().toISOString().slice(0, 10);
+    const { data } = await supabase
+      .from("v_unanswered_by_day")
+      .select("*")
+      .eq("day", today)
+      .maybeSingle();
+    if (data) {
+      setTodayUnanswered({
+        tickets: data.tickets || 0,
+        over1h: data.over_1h || 0,
+        over4h: data.over_4h || 0,
+        over24h: data.over_24h || 0,
+      });
+    } else {
+      setTodayUnanswered({ tickets: 0, over1h: 0, over4h: 0, over24h: 0 });
+    }
+  }
+
+  useEffect(() => { if (isAdmin === true) { loadTickets(); loadTodayUnanswered(); } }, [isAdmin, ticketSinceDays, ticketStatus]);
+
+  /* ===== Approve / Block / Unblock ===== */
 
   async function callApprovalAction(email: string, action: "approve" | "block" | "unblock", reason?: string | null) {
     try {
@@ -526,128 +553,19 @@ export default function AdminDashboard() {
 
       const res = await fetch("/api/admin/approvals/set", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ email, action, reason: reason || null }),
       });
 
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || `Failed (${res.status})`);
-      }
-
+      if (!res.ok) throw new Error((await res.text()) || `Failed (${res.status})`);
       await loadApprovals();
     } catch (e: any) {
       setApprovalsError(e?.message || "Action failed");
     }
   }
-
-  function onApprove(email: string) {
-    callApprovalAction(email, "approve");
-  }
-  function onBlock(email: string) {
-    const reason = window.prompt("Reason for blocking (optional):") || null;
-    callApprovalAction(email, "block", reason);
-  }
-  function onUnblock(email: string) {
-    callApprovalAction(email, "unblock");
-  }
-
-  /* =========================
-     TICKETS (new section)
-     ========================= */
-
-  const [ticketSearch, setTicketSearch] = useState("");
-  const [ticketStatus, setTicketStatus] = useState<"all" | "open" | "closed">("all");
-  const [tickets, setTickets] = useState<TicketListRow[]>([]);
-  const [ticketsLoading, setTicketsLoading] = useState(false);
-  const [ticketsError, setTicketsError] = useState<string | null>(null);
-
-  const [selectedTicket, setSelectedTicket] = useState<TicketListRow | null>(null);
-  const [thread, setThread] = useState<TicketMessageRow[]>([]);
-  const [threadLoading, setThreadLoading] = useState(false);
-
-  async function loadTickets() {
-    if (isAdmin !== true) return;
-    setTicketsLoading(true);
-    setTicketsError(null);
-    try {
-      let q = supabase
-        .from("v_ticket_admin_list")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(500);
-
-      if (ticketStatus !== "all") {
-        q = q.eq("status", ticketStatus);
-      }
-
-      const { data, error } = await q;
-      if (error) throw error;
-      setTickets((data || []) as TicketListRow[]);
-    } catch (e: any) {
-      setTicketsError(e?.message || "Failed to load tickets");
-    } finally {
-      setTicketsLoading(false);
-    }
-  }
-
-  async function loadThread(ticketId: string) {
-    setThread([]);
-    setThreadLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from("v_ticket_messages")
-        .select("*")
-        .eq("ticket_id", ticketId)
-        .order("ts", { ascending: true })
-        .limit(200);
-      if (error) throw error;
-      setThread((data || []) as TicketMessageRow[]);
-    } catch (e: any) {
-      setTicketsError(e?.message || "Failed to load messages");
-    } finally {
-      setThreadLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    if (isAdmin === true) loadTickets();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, ticketStatus]);
-
-  const filteredTickets = useMemo(() => {
-    const s = ticketSearch.trim().toLowerCase();
-    if (!s) return tickets;
-    return tickets.filter((t) =>
-      [t.ticket_code, t.status || "", t.last_msg_subject || "", t.last_msg_sender || ""]
-        .join(" ")
-        .toLowerCase()
-        .includes(s)
-    );
-  }, [tickets, ticketSearch]);
-
-  async function closeSelectedTicket() {
-    if (!selectedTicket) return;
-    try {
-      const { data: sessionRes } = await supabase.auth.getSession();
-      const token = sessionRes.session?.access_token;
-      if (!token) throw new Error("Missing session token");
-
-      const res = await fetch(`/api/tickets/${selectedTicket.id}/close`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(await res.text());
-
-      await loadTickets();
-      await loadThread(selectedTicket.id);
-    } catch (e: any) {
-      setTicketsError(e?.message || "Failed to close ticket");
-    }
-  }
+  function onApprove(email: string) { callApprovalAction(email, "approve"); }
+  function onBlock(email: string) { const reason = window.prompt("Reason for blocking (optional):") || null; callApprovalAction(email, "block", reason); }
+  function onUnblock(email: string) { callApprovalAction(email, "unblock"); }
 
   /* =========================
      Render
@@ -676,10 +594,7 @@ export default function AdminDashboard() {
               Client view
             </a>
             <button
-              onClick={async () => {
-                await supabase.auth.signOut();
-                window.location.href = "/login";
-              }}
+              onClick={async () => { await supabase.auth.signOut(); window.location.href = "/login"; }}
               className="rounded-lg bg-yellow-500 px-3 py-1.5 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
             >
               Log out
@@ -692,18 +607,13 @@ export default function AdminDashboard() {
         {/* ====== Client Approvals ====== */}
         <section className="rounded-xl border border-white/10 bg-white/[0.03]">
           <div className="w-full flex flex-col gap-2 px-4 pt-3 sm:flex-row sm:items-center sm:justify-between">
-            <button
-              onClick={() => setOpenApprovals((s) => !s)}
-              className="flex items-center gap-3 text-left"
-              aria-expanded={openApprovals}
-            >
+            <button onClick={() => setOpenApprovals((s) => !s)} className="flex items-center gap-3 text-left" aria-expanded={openApprovals}>
               <Chevron open={openApprovals} />
               <div className="font-semibold">Client Approvals</div>
               <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/80">
                 {`${approvalsCounts.pending} pending • ${approvalsCounts.approved} approved • ${approvalsCounts.blocked} blocked`}
               </span>
             </button>
-
             <div className="flex items-center gap-2 pb-3 sm:pb-0">
               <label className="flex items-center gap-2 text-sm">
                 <span className="text-white/70">Status:</span>
@@ -718,23 +628,15 @@ export default function AdminDashboard() {
                   <option value="blocked">Blocked</option>
                 </select>
               </label>
-              <button
-                onClick={loadApprovals}
-                className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-              >
-                Refresh
-              </button>
+              <button onClick={loadApprovals} className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">Refresh</button>
             </div>
           </div>
 
           {openApprovals && (
             <div className="px-3 pb-3">
               {approvalsError && (
-                <div className="mx-1 mb-3 rounded border border-rose-400/40 bg-rose-500/10 p-3 text-rose-200 text-sm">
-                  {approvalsError}
-                </div>
+                <div className="mx-1 mb-3 rounded border border-rose-400/40 bg-rose-500/10 p-3 text-rose-200 text-sm">{approvalsError}</div>
               )}
-
               {approvalsLoading ? (
                 <div className="px-1 py-2 text-white/70">Loading…</div>
               ) : approvals.length === 0 ? (
@@ -761,16 +663,12 @@ export default function AdminDashboard() {
                           <tr key={r.email} className="border-b border-white/5">
                             <td className="py-2 pr-4">{r.email}</td>
                             <td className="py-2 pr-4">
-                              <span
-                                className={cx(
-                                  "inline-flex items-center rounded px-2 py-0.5 text-xs capitalize",
-                                  s === "pending" && "bg-yellow-600/70",
-                                  s === "approved" && "bg-green-600/70",
-                                  s === "blocked" && "bg-rose-600/70"
-                                )}
-                              >
-                                {s || "—"}
-                              </span>
+                              <span className={cx(
+                                "inline-flex items-center rounded px-2 py-0.5 text-xs capitalize",
+                                s === "pending" && "bg-yellow-600/70",
+                                s === "approved" && "bg-green-600/70",
+                                s === "blocked" && "bg-rose-600/70"
+                              )}>{s || "—"}</span>
                             </td>
                             <td className="py-2 pr-4">{r.first_order_at ? new Date(r.first_order_at).toLocaleString() : "—"}</td>
                             <td className="py-2 pr-4">{r.last_order_at ? new Date(r.last_order_at).toLocaleString() : "—"}</td>
@@ -780,28 +678,13 @@ export default function AdminDashboard() {
                             <td className="py-2 pr-2">
                               <div className="flex justify-end gap-2">
                                 {s === "pending" && (
-                                  <button
-                                    onClick={() => onApprove(r.email)}
-                                    className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-3 py-1 hover:bg-yellow-400"
-                                  >
-                                    Approve
-                                  </button>
+                                  <button onClick={() => onApprove(r.email)} className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-3 py-1 hover:bg-yellow-400">Approve</button>
                                 )}
                                 {(s === "pending" || s === "approved") && (
-                                  <button
-                                    onClick={() => onBlock(r.email)}
-                                    className="rounded bg-white/10 text-white text-xs px-3 py-1 hover:bg-white/15"
-                                  >
-                                    Block
-                                  </button>
+                                  <button onClick={() => onBlock(r.email)} className="rounded bg-white/10 text-white text-xs px-3 py-1 hover:bg-white/15">Block</button>
                                 )}
                                 {s === "blocked" && (
-                                  <button
-                                    onClick={() => onUnblock(r.email)}
-                                    className="rounded bg-white/10 text-white text-xs px-3 py-1 hover:bg-white/15"
-                                  >
-                                    Unblock
-                                  </button>
+                                  <button onClick={() => onUnblock(r.email)} className="rounded bg-white/10 text-white text-xs px-3 py-1 hover:bg-white/15">Unblock</button>
                                 )}
                               </div>
                             </td>
@@ -812,25 +695,29 @@ export default function AdminDashboard() {
                   </table>
                 </div>
               )}
-
-              <p className="mt-2 text-xs text-white/60">
-                Approve adds the email to the allow-list. Block adds it to the block list and signs the user out.
-              </p>
+              <p className="mt-2 text-xs text-white/60">Approve adds the email to the allow-list. Block adds it to the block list and signs the user out.</p>
             </div>
           )}
         </section>
 
         {/* ===== KPIs ===== */}
-        <section className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+        <section className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4">
           <KpiCard label="Revenue" value={gbpFmt.format(sumRevenue)} />
           <KpiCard label="Litres" value={Math.round(sumLitres).toLocaleString()} />
           <KpiCard label="Orders" value={filteredOrders.length.toLocaleString()} />
           <KpiCard label="Paid Orders" value={paidCount.toLocaleString()} />
+          <KpiCard
+            label="Unanswered today"
+            value={
+              todayUnanswered
+                ? `${todayUnanswered.tickets} • ${todayUnanswered.over1h}≥1h • ${todayUnanswered.over4h}≥4h • ${todayUnanswered.over24h}≥24h`
+                : "—"
+            }
+          />
         </section>
 
-        {/* Controls (mobile-first layout) */}
+        {/* Controls */}
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-12 sm:items-end">
-          {/* Date range group */}
           <div className="sm:col-span-5 xl:col-span-4">
             <div className="rounded-lg bg-white/5 p-1 flex flex-wrap gap-1">
               {(["month", "90d", "ytd", "all"] as const).map((r) => (
@@ -848,11 +735,10 @@ export default function AdminDashboard() {
             </div>
           </div>
 
-          {/* Customer picker */}
           <div className="sm:col-span-7 xl:col-span-8">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <label className="flex-1 inline-flex items-center gap-2 text-sm">
-                <span className="text-white/70">Customer:</span>
+                <span className="text-white/70 shrink-0">Customer:</span>
                 <select
                   value={customerFilter}
                   onChange={(e) => setCustomerFilter(e.target.value)}
@@ -866,7 +752,6 @@ export default function AdminDashboard() {
                 </select>
               </label>
 
-              {/* Use in Invoice Browser */}
               <button
                 type="button"
                 disabled={customerFilter === "all"}
@@ -875,27 +760,19 @@ export default function AdminDashboard() {
                     setInvEmail(customerFilter);
                     loadYears();
                     setOpenInvoices(true);
-                    setTimeout(() => {
-                      const el = document.getElementById("invoices-accordion");
-                      el?.scrollIntoView({ behavior: "smooth", block: "start" });
-                    }, 10);
+                    setTimeout(() => { document.getElementById("invoices-accordion")?.scrollIntoView({ behavior: "smooth" }); }, 10);
                   }
                 }}
                 className={cx(
                   "w-full sm:w-auto whitespace-nowrap rounded-lg px-3 py-2 text-sm",
-                  customerFilter === "all"
-                    ? "bg-white/10 text-white/60 cursor-not-allowed"
-                    : "bg-white/10 hover:bg-white/15"
+                  customerFilter === "all" ? "bg-white/10 text-white/60 cursor-not-allowed" : "bg-white/10 hover:bg-white/15"
                 )}
-                aria-label="Open the invoice browser for the selected customer"
-                title="Opens the invoice list for this customer"
               >
                 Use in invoice browser
               </button>
             </div>
           </div>
 
-          {/* Search */}
           <div className="sm:col-span-12 xl:col-span-12">
             <div className="relative w-full">
               <input
@@ -905,12 +782,7 @@ export default function AdminDashboard() {
                 onChange={(e) => setSearch(e.target.value)}
               />
               {!!search && (
-                <button
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-white/60 text-xs"
-                  onClick={() => setSearch("")}
-                >
-                  clear
-                </button>
+                <button className="absolute right-2 top-1/2 -translate-y-1/2 text-white/60 text-xs" onClick={() => setSearch("")}>clear</button>
               )}
             </div>
           </div>
@@ -923,35 +795,16 @@ export default function AdminDashboard() {
             <div className="flex items-center gap-2">
               <span className="text-sm text-white/70">Year:</span>
               <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
-                <button
-                  onClick={() => setSelectedYear(currentYear - 1)}
-                  disabled={selectedYear === currentYear - 1}
-                  className={cx(
-                    "px-3 py-1.5",
-                    selectedYear === currentYear - 1
-                      ? "bg-yellow-500 text-[#041F3E] font-semibold"
-                      : "hover:bg-white/15"
-                  )}
-                >
+                <button onClick={() => setSelectedYear(currentYear - 1)} disabled={selectedYear === currentYear - 1}
+                  className={cx("px-3 py-1.5", selectedYear === currentYear - 1 ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15")}>
                   {currentYear - 1}
                 </button>
-                <button
-                  onClick={() => setSelectedYear(currentYear)}
-                  disabled={selectedYear === currentYear}
-                  className={cx(
-                    "px-3 py-1.5",
-                    selectedYear === currentYear
-                      ? "bg-yellow-500 text-[#041F3E] font-semibold"
-                      : "hover:bg-white/15"
-                  )}
-                >
+                <button onClick={() => setSelectedYear(currentYear)} disabled={selectedYear === currentYear}
+                  className={cx("px-3 py-1.5", selectedYear === currentYear ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15")}>
                   {currentYear}
                 </button>
               </div>
-              <button
-                onClick={() => setShowAllMonths((s) => !s)}
-                className="ml-2 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-              >
+              <button onClick={() => setShowAllMonths((s) => !s)} className="ml-2 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
                 {showAllMonths ? "Show current month" : "Show 12 months"}
               </button>
             </div>
@@ -969,25 +822,17 @@ export default function AdminDashboard() {
               <tbody>
                 {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
                   <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
-                    <td className="py-2 pr-4">
-                      {months[r.monthIdx]} {String(selectedYear).slice(2)}
-                    </td>
+                    <td className="py-2 pr-4">{months[r.monthIdx]} {String(selectedYear).slice(2)}</td>
                     <td className="py-2 pr-4 align-middle">
                       {Math.round(r.litres).toLocaleString()}
                       <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                        <div
-                          className="h-1.5 rounded bg-yellow-500/80"
-                          style={{ width: `${(r.litres / maxL) * 100}%` }}
-                        />
+                        <div className="h-1.5 rounded bg-yellow-500/80" style={{ width: `${(r.litres / maxL) * 100}%` }} />
                       </div>
                     </td>
                     <td className="py-2 pr-4 align-middle">
                       {gbpFmt.format(r.spend)}
                       <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                        <div
-                          className="h-1.5 rounded bg-white/40"
-                          style={{ width: `${(r.spend / maxS) * 100}%` }}
-                        />
+                        <div className="h-1.5 rounded bg-white/40" style={{ width: `${(r.spend / maxS) * 100}%` }} />
                       </div>
                     </td>
                   </tr>
@@ -1005,44 +850,8 @@ export default function AdminDashboard() {
           onToggle={() => setOpenOrders((s) => !s)}
           loading={loading}
           error={error}
-          right={
-            <StatusSelect
-              value={orderStatusFilter}
-              onChange={setOrderStatusFilter}
-              options={orderStatusOptions}
-              label="Status"
-            />
-          }
+          right={<StatusSelect value={orderStatusFilter} onChange={setOrderStatusFilter} options={orderStatusOptions} label="Status" />}
         >
-          {/* Mobile cards */}
-          <div className="space-y-3 md:hidden">
-            {visibleOrders.map((o) => (
-              <div key={o.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-medium">{(o.fuel || "—").toString().toUpperCase()}</div>
-                  <span
-                    className={cx(
-                      "inline-flex items-center rounded px-2 py-0.5 text-[11px]",
-                      (o.status || "").toLowerCase() === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
-                    )}
-                  >
-                    {(o.status || "pending").toLowerCase()}
-                  </span>
-                </div>
-                <div className="mt-1 text-[13px] text-white/80">{o.user_email || "—"}</div>
-                <div className="mt-2 flex flex-wrap gap-2 text-sm">
-                  <Badge label="Litres" value={String(o.litres ?? "—")} />
-                  <Badge label="Amount" value={gbpFmt.format(toGBP(o.total_pence))} />
-                  <Badge label="Date" value={new Date(o.created_at).toLocaleString()} />
-                </div>
-                <div className="mt-2 grid grid-cols-1 gap-1">
-                  <CodeRow label="Order" value={o.id} />
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Desktop table */}
           <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="text-white/70">
@@ -1065,12 +874,10 @@ export default function AdminDashboard() {
                     <td className="py-2 pr-4">{o.litres ?? "—"}</td>
                     <td className="py-2 pr-4">{gbpFmt.format(toGBP(o.total_pence))}</td>
                     <td className="py-2 pr-4">
-                      <span
-                        className={cx(
-                          "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                          (o.status || "").toLowerCase() === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
-                        )}
-                      >
+                      <span className={cx(
+                        "inline-flex items-center rounded px-2 py-0.5 text-xs",
+                        (o.status || "").toLowerCase() === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
+                      )}>
                         {(o.status || "pending").toLowerCase()}
                       </span>
                     </td>
@@ -1083,10 +890,7 @@ export default function AdminDashboard() {
 
           {visibleOrders.length < filteredOrders.length && (
             <div className="mt-3 text-center">
-              <button
-                onClick={() => setOrdersShown((n) => n + ORDERS_STEP)}
-                className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
-              >
+              <button onClick={() => setOrdersShown((n) => n + ORDERS_STEP)} className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15">
                 Load 20 more
               </button>
             </div>
@@ -1099,50 +903,8 @@ export default function AdminDashboard() {
           subtitle={`${filteredPayments.length} rows`}
           open={openPayments}
           onToggle={() => setOpenPayments((s) => !s)}
-          right={
-            <StatusSelect
-              value={paymentStatusFilter}
-              onChange={setPaymentStatusFilter}
-              options={paymentStatusOptions}
-              label="Status"
-            />
-          }
+          right={<StatusSelect value={paymentStatusFilter} onChange={setPaymentStatusFilter} options={paymentStatusOptions} label="Status" />}
         >
-          {/* Mobile cards */}
-          <div className="space-y-3 md:hidden">
-            {filteredPayments.length === 0 ? (
-              <div className="text-white/60 text-sm">No rows.</div>
-            ) : (
-              filteredPayments.map((p, i) => (
-                <div key={i} className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-medium">{gbpFmt.format(toGBP(p.amount))}</div>
-                    <span
-                      className={cx(
-                        "inline-flex items-center rounded px-2 py-0.5 text-[11px]",
-                        p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
-                      )}
-                    >
-                      {(p.status || "—").toLowerCase()}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[13px] text-white/80">{p.email || "—"}</div>
-
-                  <div className="mt-2 flex flex-wrap gap-2 text-sm">
-                    <Badge label="Date" value={p.created_at ? new Date(p.created_at).toLocaleString() : "—"} />
-                    <Badge label="Order" value={p.order_id || "—"} />
-                  </div>
-
-                  <div className="mt-2 grid grid-cols-1 gap-1">
-                    <CodeRow label="PI" value={p.pi_id || "—"} />
-                    <CodeRow label="Session" value={p.cs_id || "—"} />
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          {/* Desktop table */}
           <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="text-white/70">
@@ -1158,28 +920,18 @@ export default function AdminDashboard() {
               </thead>
               <tbody>
                 {filteredPayments.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="py-3 text-white/60">
-                      No rows.
-                    </td>
-                  </tr>
+                  <tr><td colSpan={7} className="py-3 text-white/60">No rows.</td></tr>
                 ) : (
                   filteredPayments.map((p, i) => (
                     <tr key={i} className="border-b border-white/5">
-                      <td className="py-2 pr-4 whitespace-nowrap">
-                        {p.created_at ? new Date(p.created_at).toLocaleString() : "—"}
-                      </td>
+                      <td className="py-2 pr-4 whitespace-nowrap">{p.created_at ? new Date(p.created_at).toLocaleString() : "—"}</td>
                       <td className="py-2 pr-4">{p.email || "—"}</td>
                       <td className="py-2 pr-4">{gbpFmt.format(toGBP(p.amount))}</td>
                       <td className="py-2 pr-4">
-                        <span
-                          className={cx(
-                            "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                            p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
-                          )}
-                        >
-                          {(p.status || "—").toLowerCase()}
-                        </span>
+                        <span className={cx(
+                          "inline-flex items-center rounded px-2 py-0.5 text-xs",
+                          p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70"
+                        )}>{(p.status || "—").toLowerCase()}</span>
                       </td>
                       <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.order_id || "—"}</td>
                       <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.pi_id || "—"}</td>
@@ -1192,43 +944,62 @@ export default function AdminDashboard() {
           </div>
         </Accordion>
 
-        {/* ===== Support Tickets (NEW) ===== */}
+        {/* Support Tickets (NEW) */}
         <Accordion
           title="Support Tickets"
-          subtitle={`${filteredTickets.length} row(s)`}
-          open={openTickets}
-          onToggle={() => setOpenTickets((s) => !s)}
-          loading={ticketsLoading}
-          error={ticketsError}
+          subtitle={`${tickets.length} row(s)`}
+          open={true}
+          onToggle={() => {}}
           right={
-            <div className="flex items-center gap-2">
-              <input
-                className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
-                placeholder="Search code / subject / sender"
-                value={ticketSearch}
-                onChange={(e) => setTicketSearch(e.target.value)}
-              />
-              <label className="flex items-center gap-2 text-sm">
+            <div className="flex gap-2 items-center">
+              <label className="text-sm flex items-center gap-2">
                 <span className="text-white/70">Status:</span>
                 <select
                   value={ticketStatus}
-                  onChange={(e) => setTicketStatus(e.target.value as "all" | "open" | "closed")}
-                  className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                  onChange={(e) => setTicketStatus(e.target.value)}
+                  className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm"
                 >
                   <option value="all">All</option>
-                  <option value="open">open</option>
+                  <option value="new">new</option>
+                  <option value="in_progress">in_progress</option>
                   <option value="closed">closed</option>
                 </select>
               </label>
-              <button onClick={loadTickets} className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
-                Refresh
-              </button>
+              <label className="text-sm flex items-center gap-2">
+                <span className="text-white/70">Since:</span>
+                <select
+                  value={ticketSinceDays}
+                  onChange={(e) => setTicketSinceDays(parseInt(e.target.value, 10))}
+                  className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm"
+                >
+                  <option value={1}>Today</option>
+                  <option value={3}>Last 3 days</option>
+                  <option value={7}>Last 7 days</option>
+                  <option value={30}>Last 30 days</option>
+                  <option value={365}>Last 12 months</option>
+                </select>
+              </label>
+              <button onClick={loadTickets} className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">Refresh</button>
             </div>
           }
         >
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-            {/* Left: list */}
-            <div className="lg:col-span-5 rounded-lg border border-white/10 bg-white/[0.03] overflow-hidden">
+          <div className="mb-3 flex gap-2">
+            <input
+              value={ticketSearch}
+              onChange={(e) => setTicketSearch(e.target.value)}
+              placeholder="Search email or ticket id"
+              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+            />
+            <button onClick={loadTickets} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Search</button>
+          </div>
+
+          {ticketsError && (
+            <div className="mx-1 mb-3 rounded border border-rose-400/40 bg-rose-500/10 p-3 text-rose-200 text-sm">{ticketsError}</div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* left list */}
+            <div className="rounded-lg border border-white/10 bg-white/[0.03] overflow-hidden">
               <table className="w-full text-left text-sm">
                 <thead className="text-white/70">
                   <tr className="border-b border-white/10">
@@ -1238,133 +1009,105 @@ export default function AdminDashboard() {
                     <th className="py-2 px-3">From</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {filteredTickets.map((t) => (
-                    <tr
-                      key={t.id}
-                      className={cx(
-                        "border-b border-white/5 cursor-pointer hover:bg-white/[0.06]",
-                        selectedTicket?.id === t.id && "bg-white/[0.08]"
-                      )}
-                      onClick={() => {
-                        setSelectedTicket(t);
-                        loadThread(t.id);
-                      }}
-                    >
-                      <td className="py-2 px-3 font-mono text-[11px]">{t.ticket_code}</td>
-                      <td className="py-2 px-3">
-                        <span
-                          className={cx(
-                            "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                            (t.status || "") === "open" ? "bg-yellow-600/70" : "bg-gray-600/70"
-                          )}
-                        >
-                          {t.status || "—"}
-                        </span>
-                      </td>
-                      <td className="py-2 px-3">
-                        <div className="text-xs">{t.last_msg_subject || "—"}</div>
-                        <div className="text-[11px] text-white/60">
-                          {(t.last_msg_direction || "in")}/{new Date(t.last_msg_ts || t.created_at).toLocaleString()}
-                        </div>
-                      </td>
-                      <td className="py-2 px-3 text-xs">{t.last_msg_sender || "—"}</td>
-                    </tr>
-                  ))}
-                  {filteredTickets.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className="py-3 px-3 text-white/60">
-                        No tickets.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
               </table>
+              <div className="max-h-[460px] overflow-auto">
+                <table className="w-full text-left text-sm">
+                  <tbody>
+                    {ticketsLoading ? (
+                      <tr><td className="py-3 px-3 text-white/70">Loading…</td></tr>
+                    ) : tickets.length === 0 ? (
+                      <tr><td className="py-3 px-3 text-white/60">No rows.</td></tr>
+                    ) : (
+                      tickets.map((t) => {
+                        const code = (t.id || "").slice(0, 8).toUpperCase();
+                        return (
+                          <tr
+                            key={t.id}
+                            className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
+                            onClick={() => { setSelectedTicketId(t.id); loadTicketMessages(t.id); }}
+                          >
+                            <td className="py-2 px-3 font-mono text-[11px]">{code}</td>
+                            <td className="py-2 px-3">
+                              <span
+                                className={cx(
+                                  "inline-flex items-center rounded px-2 py-0.5 text-[11px] capitalize",
+                                  (t.status || "") === "new" ? "bg-yellow-600/70" :
+                                  (t.status || "") === "in_progress" ? "bg-blue-600/70" :
+                                  (t.status || "") === "closed" ? "bg-gray-600/70" : "bg-white/10"
+                                )}
+                              >
+                                {(t.status || "").toLowerCase() || "—"}
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 whitespace-nowrap">
+                              {t.last_msg_ts ? new Date(t.last_msg_ts).toLocaleString() : "—"}
+                              {t.unanswered_minutes && t.unanswered_minutes > 0 && (
+                                <span className="ml-2 text-xs text-rose-200/80">
+                                  • {Math.round(t.unanswered_minutes)} min unanswered
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3">{t.email || "—"}</td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
-            {/* Right: thread */}
-            <div className="lg:col-span-7 rounded-lg border border-white/10 bg-white/[0.03] p-3">
-              {!selectedTicket ? (
-                <div className="text-white/60 text-sm">Select a ticket from the list.</div>
-              ) : (
-                <>
-                  <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-2">
-                    <div className="text-sm">
-                      <div className="font-semibold">Ticket {selectedTicket.ticket_code}</div>
-                      <div className="text-white/60">
-                        Status: {selectedTicket.status || "—"} • Created{" "}
-                        {new Date(selectedTicket.created_at).toLocaleString()}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => loadThread(selectedTicket.id)}
-                        className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-                      >
-                        Refresh
-                      </button>
-                      <button
-                        disabled={(selectedTicket.status || "") === "closed"}
-                        onClick={closeSelectedTicket}
-                        className={cx(
-                          "rounded-lg px-3 py-1.5 text-sm",
-                          (selectedTicket.status || "") === "closed"
-                            ? "bg-white/10 text-white/50 cursor-not-allowed"
-                            : "bg-yellow-500 text-[#041F3E] font-semibold hover:bg-yellow-400"
-                        )}
-                      >
-                        Close ticket
-                      </button>
-                    </div>
-                  </div>
+            {/* right thread */}
+            <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-semibold">
+                  Ticket {selectedTicketId ? selectedTicketId.slice(0, 8).toUpperCase() : "—"}
+                </div>
+                {selectedTicketId && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const { data: sessionRes } = await supabase.auth.getSession();
+                        const token = sessionRes.session?.access_token;
+                        if (!token) throw new Error("Missing session token");
+                        const note = window.prompt("Optional note (visible in log):", "") || "";
+                        const res = await fetch(`/api/tickets/${selectedTicketId}/close`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                          body: JSON.stringify({ note }),
+                        });
+                        if (!res.ok) throw new Error(await res.text());
+                        await loadTickets();
+                        await loadTicketMessages(selectedTicketId);
+                        await loadTodayUnanswered();
+                      } catch (e: any) {
+                        alert(e?.message || "Failed to close ticket");
+                      }
+                    }}
+                    className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-3 py-1 hover:bg-yellow-400"
+                  >
+                    Close ticket
+                  </button>
+                )}
+              </div>
 
-                  <div className="mt-3 space-y-3">
-                    {threadLoading ? (
-                      <div className="text-white/70">Loading thread…</div>
-                    ) : thread.length === 0 ? (
-                      <div className="text-white/60 text-sm">No messages.</div>
-                    ) : (
-                      thread.map((m, idx) => (
-                        <div
-                          key={idx}
-                          className={cx(
-                            "rounded border px-3 py-2",
-                            m.direction === "in"
-                              ? "border-white/10 bg-white/[0.04]"
-                              : "border-yellow-500/40 bg-yellow-500/10"
-                          )}
-                        >
-                          <div className="text-xs text-white/70 mb-1">
-                            <span className="uppercase">{m.direction}</span> •{" "}
-                            {new Date(m.ts).toLocaleString()} • {m.sender_email || "—"}
-                          </div>
-                          {m.body_text ? (
-                            <pre className="whitespace-pre-wrap text-sm">{m.body_text}</pre>
-                          ) : m.body_html ? (
-                            <div
-                              className="prose prose-invert max-w-none text-sm"
-                              dangerouslySetInnerHTML={{ __html: m.body_html }}
-                            />
-                          ) : (
-                            <div className="text-sm">—</div>
-                          )}
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </>
-              )}
+              <div className="mt-3 max-h-[520px] overflow-auto space-y-3">
+                {selectedTicketId ? (
+                  selectedTicketMsgs.length === 0 ? (
+                    <div className="text-white/60 text-sm">No messages.</div>
+                  ) : (
+                    selectedTicketMsgs.map((m, i) => <MessageBubble key={i} msg={m} />)
+                  )
+                ) : (
+                  <div className="text-white/60 text-sm">Select a ticket to view messages.</div>
+                )}
+              </div>
             </div>
           </div>
         </Accordion>
 
         {/* Invoice browser */}
-        <Accordion
-          title="Invoice Browser"
-          subtitle="Pick email → year → month"
-          open={openInvoices}
-          onToggle={() => setOpenInvoices((s) => !s)}
-        >
+        <Accordion title="Invoice Browser" subtitle="Pick email → year → month" open={openInvoices} onToggle={() => setOpenInvoices((s) => !s)}>
           <div id="invoices-accordion" />
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
@@ -1378,47 +1121,25 @@ export default function AdminDashboard() {
                   list="all-customers"
                 />
                 <datalist id="all-customers">
-                  {customerOptions
-                    .filter((e) => e !== "all")
-                    .map((email) => (
-                      <option key={email} value={email} />
-                    ))}
+                  {customerOptions.filter((e) => e !== "all").map((email) => (<option key={email} value={email} />))}
                 </datalist>
-                <button onClick={loadYears} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
-                  Load
-                </button>
+                <button onClick={loadYears} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Load</button>
               </div>
             </div>
 
             <div>
               <label className="block text-xs text-white/70 mb-1">Year</label>
-              <select
-                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm"
-                value={invYear}
-                onChange={(e) => loadMonths(e.target.value)}
-              >
+              <select className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm" value={invYear} onChange={(e) => loadMonths(e.target.value)}>
                 <option value="">—</option>
-                {invYears.map((y) => (
-                  <option key={y} value={y}>
-                    {y}
-                  </option>
-                ))}
+                {invYears.map((y) => (<option key={y} value={y}>{y}</option>))}
               </select>
             </div>
 
             <div>
               <label className="block text-xs text-white/70 mb-1">Month</label>
-              <select
-                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm"
-                value={invMonth}
-                onChange={(e) => loadFiles(e.target.value)}
-              >
+              <select className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm" value={invMonth} onChange={(e) => loadFiles(e.target.value)}>
                 <option value="">—</option>
-                {invMonths.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
+                {invMonths.map((m) => (<option key={m} value={m}>{m}</option>))}
               </select>
             </div>
           </div>
@@ -1442,20 +1163,14 @@ export default function AdminDashboard() {
                   {invFiles.map((f) => (
                     <tr key={f.path} className="border-b border-white/5">
                       <td className="py-2 pr-4">{f.name}</td>
-                      <td className="py-2 pr-4">
-                        {f.last_modified ? new Date(f.last_modified).toLocaleString() : "—"}
-                      </td>
+                      <td className="py-2 pr-4">{f.last_modified ? new Date(f.last_modified).toLocaleString() : "—"}</td>
                       <td className="py-2 pr-4">{f.size ? `${Math.round(f.size / 1024)} KB` : "—"}</td>
                       <td className="py-2 pr-4">
                         <button
                           className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-2 py-1 hover:bg-yellow-400"
                           onClick={async () => {
-                            try {
-                              const url = await getSignedUrl(f.path);
-                              window.open(url, "_blank");
-                            } catch (e: any) {
-                              setError(e?.message || "Failed to open");
-                            }
+                            try { const url = await getSignedUrl(f.path); window.open(url, "_blank"); }
+                            catch (e: any) { setError(e?.message || "Failed to open"); }
                           }}
                         >
                           View
@@ -1469,15 +1184,9 @@ export default function AdminDashboard() {
           </div>
         </Accordion>
 
-        <footer className="py-6 text-center text-xs text-white/50">
-          FuelFlow Admin • {new Date().getFullYear()}
-        </footer>
+        <footer className="py-6 text-center text-xs text-white/50">FuelFlow Admin • {new Date().getFullYear()}</footer>
 
-        {error && (
-          <div className="rounded-lg border border-rose-400/40 bg-rose-500/10 p-2 text-sm text-rose-200">
-            {error}
-          </div>
-        )}
+        {error && <div className="rounded-lg border border-rose-400/40 bg-rose-500/10 p-2 text-sm text-rose-200">{error}</div>}
       </div>
     </div>
   );
@@ -1489,27 +1198,15 @@ export default function AdminDashboard() {
 
 function Chevron({ open }: { open: boolean }) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      className={cx("h-5 w-5 transition-transform", open ? "rotate-90" : "rotate-0")}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
+    <svg viewBox="0 0 24 24" className={cx("h-5 w-5 transition-transform", open ? "rotate-90" : "rotate-0")}
+         fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M8 5l8 7-8 7" />
     </svg>
   );
 }
 
 function Accordion({
-  title,
-  subtitle,
-  right,
-  open,
-  onToggle,
-  loading,
-  error,
-  children,
+  title, subtitle, right, open, onToggle, loading, error, children,
 }: {
   title: string;
   subtitle?: string;
@@ -1526,9 +1223,7 @@ function Accordion({
         <button onClick={onToggle} className="flex items-center gap-3 text-left" aria-expanded={open}>
           <Chevron open={open} />
           <div className="font-semibold">{title}</div>
-          {subtitle && (
-            <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/80">{subtitle}</span>
-          )}
+          {subtitle && (<span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/80">{subtitle}</span>)}
         </button>
         {right && <div className="pb-3 sm:pb-0">{right}</div>}
       </div>
@@ -1537,9 +1232,7 @@ function Accordion({
           {loading ? (
             <div className="px-1 py-2 text-white/70">Loading…</div>
           ) : error ? (
-            <div className="mx-1 rounded border border-rose-400/40 bg-rose-500/10 p-3 text-rose-200 text-sm">
-              {error}
-            </div>
+            <div className="mx-1 rounded border border-rose-400/40 bg-rose-500/10 p-3 text-rose-200 text-sm">{error}</div>
           ) : (
             children
           )}
@@ -1558,21 +1251,8 @@ function KpiCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Badge({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded bg-white/5 px-2.5 py-1 text-[12px]">
-      <span className="text-white/60">{label}: </span>
-      <span>{value}</span>
-    </div>
-  );
-}
-
-/** Small select used for status filters */
 function StatusSelect({
-  value,
-  onChange,
-  options,
-  label,
+  value, onChange, options, label,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -1587,40 +1267,47 @@ function StatusSelect({
         onChange={(e) => onChange(e.target.value)}
         className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
       >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
+        {options.map((o) => (<option key={o} value={o}>{o}</option>))}
       </select>
     </label>
   );
 }
 
-/** A mobile-friendly code line with copy button that wraps safely */
-function CodeRow({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = useState(false);
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {}
-  }
+function MessageBubble({ msg }: { msg: TicketMsgRow }) {
+  const isOut = msg.direction === "out";
+  const body = (msg.body_text || msg.body_html || "").trim();
+  const [showQuotes, setShowQuotes] = useState(false);
+
+  const lines = body.split(/\r?\n/);
+  const nonQuoted = lines.filter((l) => !l.trim().startsWith(">"));
+  const quoted = lines.filter((l) => l.trim().startsWith(">"));
+
   return (
-    <div className="flex items-start gap-2">
-      <span className="mt-0.5 shrink-0 text-xs text-white/60">{label}:</span>
-      <div className="min-w-0 flex-1 rounded bg-white/5 px-2 py-1">
-        <code className="block font-mono text-[11px] break-all leading-5">{value}</code>
+    <div className={cx("rounded-lg p-3 border", isOut ? "bg-yellow-500/10 border-yellow-500/30" : "bg-white/[0.03] border-white/10")}>
+      <div className="flex items-center justify-between gap-2 text-[12px] text-white/70">
+        <div className="truncate">
+          {isOut ? "OUT" : "IN"} • {msg.ts ? new Date(msg.ts).toLocaleString() : "—"} • {msg.sender_email || "—"}
+        </div>
       </div>
-      <button
-        onClick={copy}
-        className="shrink-0 rounded bg-white/10 px-2 py-1 text-[11px] hover:bg-white/15"
-        aria-label={`Copy ${label}`}
-        title={`Copy ${label}`}
-      >
-        {copied ? "✓" : "Copy"}
-      </button>
+
+      {nonQuoted.length > 0 && (
+        <pre className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-white/90">
+          {nonQuoted.join("\n")}
+        </pre>
+      )}
+
+      {quoted.length > 0 && (
+        <div className="mt-2">
+          <button onClick={() => setShowQuotes((s) => !s)} className="text-xs rounded bg-white/10 px-2 py-1 hover:bg-white/15">
+            {showQuotes ? "Hide previous quoted text" : `Show quoted text (${quoted.length} lines)`}
+          </button>
+          {showQuotes && (
+            <pre className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-6 text-white/70 border border-white/10 rounded p-2 bg-black/20">
+              {quoted.join("\n")}
+            </pre>
+          )}
+        </div>
+      )}
     </div>
   );
 }
