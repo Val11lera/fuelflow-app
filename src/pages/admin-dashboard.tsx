@@ -38,8 +38,8 @@ type PaymentRow = {
   currency: string | null;
   status: string | null;
   email: string | null;
-  cs_id?: string | null; // checkout session
-  pi_id?: string | null; // payment intent
+  cs_id?: string | null;
+  pi_id?: string | null;
   created_at?: string | null;
 };
 
@@ -53,16 +53,18 @@ type AdminCustomerRow = {
   last_order_at: string | null;
 };
 
-/** Support tickets */
+/** Support tickets — matches v_ticket_admin_list & v_ticket_messages */
 type TicketListRow = {
-  id: string;
-  email: string | null;
+  id: string;                 // ticket uuid
+  ticket_code: string | null; // short human code (e.g. C9E2DAB2)
   status: string | null;
   created_at: string;
   last_msg_ts?: string | null;
   last_in_ts?: string | null;
   last_out_ts?: string | null;
   unanswered_minutes?: number | null;
+  last_msg_sender?: string | null;
+  email?: string | null;      // optional, if present in the view
 };
 
 type TicketMsgRow = {
@@ -112,6 +114,12 @@ function dateRange(r: "month" | "90d" | "ytd" | "all") {
     case "ytd":   return { from: startOfYear(),  to: null as Date | null };
     default:      return { from: null as Date | null, to: null as Date | null };
   }
+}
+function startOfDayNDaysAgo(n: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - (n - 1));
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
 }
 
 /* =========================
@@ -177,7 +185,7 @@ export default function AdminDashboard() {
   const [invFiles, setInvFiles] = useState<{ name: string; path: string; last_modified?: string; size?: number }[]>([]);
   const [invLoading, setInvLoading] = useState<boolean>(false);
 
-  /* ====== Support Tickets (NEW) ====== */
+  /* ====== Support Tickets (uses v_ticket_admin_list & v_ticket_messages) ====== */
 
   const [tickets, setTickets] = useState<TicketListRow[]>([]);
   const [ticketSearch, setTicketSearch] = useState<string>("");
@@ -445,59 +453,51 @@ export default function AdminDashboard() {
     return data.signedUrl;
   }
 
-  /* ===== Support Tickets (NEW): data loaders ===== */
+  /* ===== Support Tickets: data loaders (NOW USING VIEWS) ===== */
 
   async function loadTickets() {
     if (isAdmin !== true) return;
     setTicketsLoading(true);
     setTicketsError(null);
     try {
-      const from = new Date();
-      from.setDate(from.getDate() - (ticketSinceDays - 1));
-      from.setHours(0, 0, 0, 0);
+      const sinceIso = startOfDayNDaysAgo(ticketSinceDays);
 
+      // Primary list comes from v_ticket_admin_list
       let q = supabase
-        .from("tickets")
-        .select("id, created_at, email, status")
-        .gte("created_at", from.toISOString())
-        .order("created_at", { ascending: false })
-        .limit(1000);
+        .from("v_ticket_admin_list")
+        .select("*")
+        .order("last_msg_ts", { ascending: false })
+        .limit(500);
 
       if (ticketStatus !== "all") q = q.eq("status", ticketStatus);
+      // Filter by last message time (fallback to created_at inside the view if needed)
+      q = q.gte("last_msg_ts", sinceIso);
 
-      const { data: base, error } = await q;
-      if (error) throw error;
-
-      const ids = (base ?? []).map((r) => r.id);
-      let enriched: TicketListRow[] = (base || []) as TicketListRow[];
-
-      if (ids.length) {
-        const { data: io } = await supabase
-          .from("v_ticket_last_io")
-          .select("ticket_id, last_msg_ts, last_in_ts, last_out_ts, unanswered_minutes")
-          .in("ticket_id", ids);
-
-        const map = new Map(io?.map((x: any) => [x.ticket_id, x]) || []);
-        enriched = enriched.map((r) => {
-          const m = map.get(r.id);
-          return {
-            ...r,
-            last_msg_ts: m?.last_msg_ts || null,
-            last_in_ts: m?.last_in_ts || null,
-            last_out_ts: m?.last_out_ts || null,
-            unanswered_minutes: m?.unanswered_minutes ?? null,
-          };
-        });
+      if (ticketSearch.trim()) {
+        const st = `%${ticketSearch.trim()}%`;
+        q = q.or(
+          [
+            `ticket_code.ilike.${st}`,
+            `last_msg_sender.ilike.${st}`,
+            `last_msg_subject.ilike.${st}`,
+            `email.ilike.${st}`,
+          ].join(",")
+        );
       }
 
-      const s = ticketSearch.trim().toLowerCase();
-      const filtered = s
-        ? enriched.filter(
-            (r) => (r.email || "").toLowerCase().includes(s) || (r.id || "").toLowerCase().includes(s)
-          )
-        : enriched;
+      const { data, error } = await q;
+      if (error) throw error;
 
-      setTickets(filtered);
+      setTickets((data || []) as TicketListRow[]);
+      // Auto-select first ticket
+      const first = (data || [])[0];
+      if (first?.id) {
+        setSelectedTicketId(first.id);
+        await loadTicketMessages(first.id);
+      } else {
+        setSelectedTicketId(null);
+        setSelectedTicketMsgs([]);
+      }
     } catch (e: any) {
       setTicketsError(e?.message || "Failed to load tickets");
     } finally {
@@ -513,7 +513,7 @@ export default function AdminDashboard() {
         .select("direction, sender_email, ts, body_text, body_html")
         .eq("ticket_id", ticketId)
         .order("ts", { ascending: true })
-        .limit(200);
+        .limit(500);
       if (error) throw error;
       setSelectedTicketMsgs((data || []) as TicketMsgRow[]);
     } catch (e: any) {
@@ -540,7 +540,9 @@ export default function AdminDashboard() {
     }
   }
 
-  useEffect(() => { if (isAdmin === true) { loadTickets(); loadTodayUnanswered(); } }, [isAdmin, ticketSinceDays, ticketStatus]);
+  useEffect(() => {
+    if (isAdmin === true) { loadTickets(); loadTodayUnanswered(); }
+  }, [isAdmin, ticketSinceDays, ticketStatus]);
 
   /* ===== Approve / Block / Unblock ===== */
 
@@ -619,7 +621,7 @@ export default function AdminDashboard() {
                 <span className="text-white/70">Status:</span>
                 <select
                   value={approvalsFilter}
-                  onChange={(e) => setApprovalsFilter(e.target.value as ApprovalsFilter)}
+                  onChange={(e) => setApprovalsFilter(e.target.value as any)}
                   className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
                 >
                   <option value="all">All</option>
@@ -944,7 +946,7 @@ export default function AdminDashboard() {
           </div>
         </Accordion>
 
-        {/* Support Tickets (NEW) */}
+        {/* Support Tickets */}
         <Accordion
           title="Support Tickets"
           subtitle={`${tickets.length} row(s)`}
@@ -987,7 +989,7 @@ export default function AdminDashboard() {
             <input
               value={ticketSearch}
               onChange={(e) => setTicketSearch(e.target.value)}
-              placeholder="Search email or ticket id"
+              placeholder="Search code, subject, sender, email"
               className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
             />
             <button onClick={loadTickets} className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Search</button>
@@ -1019,7 +1021,7 @@ export default function AdminDashboard() {
                       <tr><td className="py-3 px-3 text-white/60">No rows.</td></tr>
                     ) : (
                       tickets.map((t) => {
-                        const code = (t.id || "").slice(0, 8).toUpperCase();
+                        const code = (t.ticket_code || t.id?.slice(0, 8) || "").toUpperCase();
                         return (
                           <tr
                             key={t.id}
@@ -1047,7 +1049,7 @@ export default function AdminDashboard() {
                                 </span>
                               )}
                             </td>
-                            <td className="py-2 px-3">{t.email || "—"}</td>
+                            <td className="py-2 px-3">{t.last_msg_sender || t.email || "—"}</td>
                           </tr>
                         );
                       })
@@ -1061,7 +1063,7 @@ export default function AdminDashboard() {
             <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="font-semibold">
-                  Ticket {selectedTicketId ? selectedTicketId.slice(0, 8).toUpperCase() : "—"}
+                  Ticket {selectedTicketId ? (tickets.find(t=>t.id===selectedTicketId)?.ticket_code || selectedTicketId.slice(0,8)).toUpperCase() : "—"}
                 </div>
                 {selectedTicketId && (
                   <button
@@ -1311,5 +1313,4 @@ function MessageBubble({ msg }: { msg: TicketMsgRow }) {
     </div>
   );
 }
-
 
