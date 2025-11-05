@@ -8,12 +8,14 @@ import { createClient } from "@supabase/supabase-js";
 /* =========================
    Supabase
    ========================= */
-
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
+/* =========================
+   Types
+   ========================= */
 type Fuel = "diesel" | "petrol" | string;
 
 type OrderRow = {
@@ -39,7 +41,6 @@ type PaymentRow = {
   created_at?: string | null;
 };
 
-/** Admin approvals view row (from public.admin_customers_v) */
 type AdminCustomerRow = {
   email: string;
   status: "pending" | "approved" | "blocked" | string;
@@ -50,11 +51,11 @@ type AdminCustomerRow = {
   last_order_at: string | null;
 };
 
-/** ===== Tickets (uses v_ticket_admin_list & v_ticket_messages) ===== */
+/** Tickets */
 type TicketListRow = {
   id: string;
   ticket_code: string;
-  status: string | null;
+  status: string | null; // 'open' | 'closed'
   created_at: string;
   last_msg_ts: string | null;
   last_msg_direction: string | null; // 'in' | 'out'
@@ -74,7 +75,6 @@ type TicketMessageRow = {
 /* =========================
    Helpers
    ========================= */
-
 const gbpFmt = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
 
 function cx(...c: (string | false | null | undefined)[]) {
@@ -108,22 +108,13 @@ function dateRange(r: "month" | "90d" | "ytd" | "all") {
     case "month": return { from: startOfMonth(), to: null as Date | null };
     case "90d":   return { from: daysAgo(90),    to: null as Date | null };
     case "ytd":   return { from: startOfYear(),  to: null as Date | null };
-    case "all":
     default:      return { from: null as Date | null, to: null as Date | null };
   }
-}
-/** start of day N days back (1 = today) */
-function startOfDayNDaysAgo(n: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - (n - 1));
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
 }
 
 /* =========================
    Page
    ========================= */
-
 export default function AdminDashboard() {
   const [me, setMe] = useState<string>("");
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
@@ -147,7 +138,7 @@ export default function AdminDashboard() {
   const [openOrders, setOpenOrders] = useState(true);
   const [openPayments, setOpenPayments] = useState(false);
   const [openInvoices, setOpenInvoices] = useState(false);
-  const [openTickets, setOpenTickets] = useState(true); // Tickets
+  const [openTickets, setOpenTickets] = useState(true);
 
   // Pagination (orders)
   const ORDERS_STEP = 20;
@@ -164,7 +155,6 @@ export default function AdminDashboard() {
   const [approvalsLoading, setApprovalsLoading] = useState(false);
   const [approvalsError, setApprovalsError] = useState<string | null>(null);
 
-  // counts for the badge
   const approvalsCounts = useMemo(() => {
     let p = 0, a = 0, b = 0;
     approvals.forEach((r) => {
@@ -185,10 +175,13 @@ export default function AdminDashboard() {
   const [invFiles, setInvFiles] = useState<{ name: string; path: string; last_modified?: string; size?: number }[]>([]);
   const [invLoading, setInvLoading] = useState<boolean>(false);
 
-  /* ---------- Robust auth/admin/blocked guard ---------- */
+  /* =========================
+     Auth / Admin check
+     ========================= */
   useEffect(() => {
     (async () => {
       try {
+        // wait up to ~4s for session to appear
         const deadline = Date.now() + 4000;
         while (Date.now() < deadline) {
           const { data: { session } } = await supabase.auth.getSession();
@@ -205,11 +198,7 @@ export default function AdminDashboard() {
 
         // blocked?
         try {
-          const { data: blk } = await supabase
-            .from("blocked_users")
-            .select("email")
-            .eq("email", email)
-            .maybeSingle();
+          const { data: blk } = await supabase.from("blocked_users").select("email").eq("email", email).maybeSingle();
           if (blk?.email) {
             await supabase.auth.signOut();
             window.location.replace("/login?reason=blocked");
@@ -218,12 +207,7 @@ export default function AdminDashboard() {
         } catch {}
 
         // admin?
-        const { data, error } = await supabase
-          .from("admins")
-          .select("email")
-          .eq("email", email)
-          .maybeSingle();
-
+        const { data, error } = await supabase.from("admins").select("email").eq("email", email).maybeSingle();
         if (error || !data?.email) {
           window.location.replace("/client-dashboard");
           return;
@@ -237,10 +221,11 @@ export default function AdminDashboard() {
     })();
   }, []);
 
-  // ---------- Load business data ----------
+  /* =========================
+     Load Orders & Payments
+     ========================= */
   useEffect(() => {
     if (isAdmin !== true) return;
-
     (async () => {
       try {
         setLoading(true);
@@ -281,7 +266,9 @@ export default function AdminDashboard() {
     })();
   }, [isAdmin, range]);
 
-  // ---------- Load approvals ----------
+  /* =========================
+     Approvals (load + actions)
+     ========================= */
   async function loadApprovals() {
     if (isAdmin !== true) return;
     setApprovalsLoading(true);
@@ -295,6 +282,7 @@ export default function AdminDashboard() {
         .limit(1000);
 
       if (approvalsFilter !== "all") q = q.eq("status", approvalsFilter);
+
       const { data, error } = await q;
       if (error) throw error;
       setApprovals((data || []) as AdminCustomerRow[]);
@@ -306,7 +294,33 @@ export default function AdminDashboard() {
   }
   useEffect(() => { if (isAdmin === true) loadApprovals(); }, [isAdmin, approvalsFilter]);
 
-  // Customer list for dropdown
+  // actions via API (kept exactly like you had)
+  async function callApprovalAction(email: string, action: "approve" | "block" | "unblock", reason?: string | null) {
+    try {
+      setApprovalsError(null);
+      const { data: sessionRes } = await supabase.auth.getSession();
+      const token = sessionRes.session?.access_token;
+      if (!token) throw new Error("Missing session token");
+
+      const res = await fetch("/api/admin/approvals/set", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email, action, reason: reason || null }),
+      });
+
+      if (!res.ok) throw new Error((await res.text()) || `Failed (${res.status})`);
+      await loadApprovals();
+    } catch (e: any) {
+      setApprovalsError(e?.message || "Action failed");
+    }
+  }
+  function onApprove(email: string) { callApprovalAction(email, "approve"); }
+  function onBlock(email: string) { const reason = window.prompt("Reason for blocking (optional):") || null; callApprovalAction(email, "block", reason); }
+  function onUnblock(email: string) { callApprovalAction(email, "unblock"); }
+
+  /* =========================
+     Customer dropdown options
+     ========================= */
   const customerOptions = useMemo(() => {
     const s = new Set<string>();
     orders.forEach((o) => (o.user_email ? s.add(o.user_email.toLowerCase()) : null));
@@ -314,19 +328,22 @@ export default function AdminDashboard() {
     return ["all", ...Array.from(s).sort((a, b) => a.localeCompare(b))];
   }, [orders, payments]);
 
-  // Status options
+  /* =========================
+     Derived KPIs & options
+     ========================= */
   const orderStatusOptions = useMemo(() => {
     const set = new Set<string>();
     orders.forEach((o) => { const s = (o.status || "").toLowerCase(); if (s) set.add(s); });
     return ["all", ...Array.from(set).sort()];
   }, [orders]);
+
   const paymentStatusOptions = useMemo(() => {
     const set = new Set<string>();
     payments.forEach((p) => { const s = (p.status || "").toLowerCase(); if (s) set.add(s); });
     return ["all", ...Array.from(set).sort()];
   }, [payments]);
 
-  // Filtered orders
+  // Orders (filtered)
   const filteredOrders = useMemo(() => {
     const s = search.trim().toLowerCase();
     return orders.filter((o) => {
@@ -345,7 +362,7 @@ export default function AdminDashboard() {
   }, [orders, search, orderStatusFilter, customerFilter]);
   const visibleOrders = useMemo(() => filteredOrders.slice(0, ordersShown), [filteredOrders, ordersShown]);
 
-  // Filtered payments
+  // Payments (filtered)
   const filteredPayments = useMemo(() => {
     const s = search.trim().toLowerCase();
     return payments.filter((p) => {
@@ -367,8 +384,7 @@ export default function AdminDashboard() {
   const sumRevenue = filteredOrders.reduce((a, b) => a + toGBP(b.total_pence), 0);
   const paidCount = filteredOrders.filter((o) => (o.status || "").toLowerCase() === "paid").length;
 
-  /* ===== Usage & Spend (yearly) ===== */
-
+  /* ===== Usage & Spend (yearly view) ===== */
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
   const currentYear = new Date().getFullYear();
   const currentMonthIdx = new Date().getMonth();
@@ -377,9 +393,7 @@ export default function AdminDashboard() {
 
   type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
   const usageByMonth: MonthAgg[] = useMemo(() => {
-    const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({
-      monthIdx: i, monthLabel: months[i], litres: 0, spend: 0,
-    }));
+    const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({ monthIdx: i, monthLabel: months[i], litres: 0, spend: 0 }));
     orders.forEach((o) => {
       const d = new Date(o.created_at);
       if (d.getFullYear() !== selectedYear) return;
@@ -394,19 +408,17 @@ export default function AdminDashboard() {
   const maxL = Math.max(1, ...usageByMonth.map((x) => x.litres));
   const maxS = Math.max(1, ...usageByMonth.map((x) => x.spend));
 
-  // ---------- Invoice helpers ----------
-  function resetInvoiceBrowser() {
-    setInvYears([]); setInvMonths([]); setInvFiles([]); setInvYear(""); setInvMonth("");
-  }
+  /* =========================
+     Invoice Browser helpers
+     ========================= */
+  function resetInvoiceBrowser() { setInvYears([]); setInvMonths([]); setInvFiles([]); setInvYear(""); setInvMonth(""); }
   async function loadYears() {
     resetInvoiceBrowser();
     if (!invEmail) return;
     setInvLoading(true);
     try {
       const email = invEmail.toLowerCase();
-      const { data, error } = await supabase.storage.from("invoices").list(`${email}`, {
-        limit: 1000, sortBy: { column: "name", order: "asc" },
-      });
+      const { data, error } = await supabase.storage.from("invoices").list(`${email}`, { limit: 1000, sortBy: { column: "name", order: "asc" } });
       if (error) throw error;
       const years = (data || []).filter((x) => x.name.match(/^\d{4}$/)).map((x) => x.name);
       setInvYears(years);
@@ -417,9 +429,7 @@ export default function AdminDashboard() {
     setInvLoading(true);
     try {
       const email = invEmail.toLowerCase();
-      const { data, error } = await supabase.storage.from("invoices").list(`${email}/${year}`, {
-        limit: 1000, sortBy: { column: "name", order: "asc" },
-      });
+      const { data, error } = await supabase.storage.from("invoices").list(`${email}/${year}`, { limit: 1000, sortBy: { column: "name", order: "asc" } });
       if (error) throw error;
       const monthsList = (data || []).filter((x) => x.name.match(/^(0[1-9]|1[0-2])$/)).map((x) => x.name);
       setInvMonths(monthsList);
@@ -431,9 +441,7 @@ export default function AdminDashboard() {
     try {
       const email = invEmail.toLowerCase();
       const prefix = `${email}/${invYear}/${month}`;
-      const { data, error } = await supabase.storage.from("invoices").list(prefix, {
-        limit: 1000, sortBy: { column: "name", order: "desc" },
-      });
+      const { data, error } = await supabase.storage.from("invoices").list(prefix, { limit: 1000, sortBy: { column: "name", order: "desc" } });
       if (error) throw error;
       const files = (data || [])
         .filter((x) => x.name.toLowerCase().endsWith(".pdf"))
@@ -448,12 +456,14 @@ export default function AdminDashboard() {
   }
 
   /* =========================
-     TICKETS (working + prettier + date filter)
+     TICKETS (list + thread)
      ========================= */
-
   const [ticketSearch, setTicketSearch] = useState("");
   const [ticketStatus, setTicketStatus] = useState<"all" | "open" | "closed">("all");
-  const [ticketSinceDays, setTicketSinceDays] = useState<number>(7); // NEW: date filter (default 7 days)
+
+  // NEW: date filter for tickets
+  const [ticketSinceDays, setTicketSinceDays] = useState<number>(7); // default last 7 days
+
   const [tickets, setTickets] = useState<TicketListRow[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsError, setTicketsError] = useState<string | null>(null);
@@ -467,32 +477,22 @@ export default function AdminDashboard() {
     setTicketsLoading(true);
     setTicketsError(null);
     try {
-      const sinceIso = startOfDayNDaysAgo(ticketSinceDays);
+      const from = new Date();
+      from.setDate(from.getDate() - (ticketSinceDays - 1));
+      from.setHours(0, 0, 0, 0);
 
       let q = supabase
         .from("v_ticket_admin_list")
         .select("*")
-        .order("last_msg_ts", { ascending: false })
+        .gte("created_at", from.toISOString())
+        .order("created_at", { ascending: false })
         .limit(500);
 
       if (ticketStatus !== "all") q = q.eq("status", ticketStatus);
-      // Show tickets with activity since the selected day (fallback to created_at if last_msg_ts is null)
-      q = q.or(`last_msg_ts.gte.${sinceIso},created_at.gte.${sinceIso}`);
 
       const { data, error } = await q;
       if (error) throw error;
-
-      const rows = (data || []) as TicketListRow[];
-      setTickets(rows);
-
-      // auto-select first after reload
-      if (rows[0]) {
-        setSelectedTicket(rows[0]);
-        await loadThread(rows[0].id);
-      } else {
-        setSelectedTicket(null);
-        setThread([]);
-      }
+      setTickets((data || []) as TicketListRow[]);
     } catch (e: any) {
       setTicketsError(e?.message || "Failed to load tickets");
     } finally {
@@ -519,9 +519,7 @@ export default function AdminDashboard() {
     }
   }
 
-  useEffect(() => {
-    if (isAdmin === true) loadTickets();
-  }, [isAdmin, ticketStatus, ticketSinceDays]);
+  useEffect(() => { if (isAdmin === true) loadTickets(); }, [isAdmin, ticketStatus, ticketSinceDays]);
 
   const filteredTickets = useMemo(() => {
     const s = ticketSearch.trim().toLowerCase();
@@ -540,11 +538,13 @@ export default function AdminDashboard() {
       const { data: sessionRes } = await supabase.auth.getSession();
       const token = sessionRes.session?.access_token;
       if (!token) throw new Error("Missing session token");
+
       const res = await fetch(`/api/tickets/${selectedTicket.id}/close`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error(await res.text());
+
       await loadTickets();
       await loadThread(selectedTicket.id);
     } catch (e: any) {
@@ -555,7 +555,6 @@ export default function AdminDashboard() {
   /* =========================
      Render
      ========================= */
-
   if (isAdmin === null) {
     return (
       <div className="min-h-screen grid place-items-center bg-[#0b1220] text-white">
@@ -575,9 +574,7 @@ export default function AdminDashboard() {
             Signed in as <span className="font-medium">{me}</span>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">
-              Client view
-            </a>
+            <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">Client view</a>
             <button
               onClick={async () => { await supabase.auth.signOut(); window.location.href = "/login"; }}
               className="rounded-lg bg-yellow-500 px-3 py-1.5 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
@@ -590,7 +587,6 @@ export default function AdminDashboard() {
 
       <div className="max-w-7xl mx-auto px-4 py-5 space-y-6">
         {/* ====== Client Approvals ====== */}
-        {/* (unchanged) */}
         <section className="rounded-xl border border-white/10 bg-white/[0.03]">
           <div className="w-full flex flex-col gap-2 px-4 pt-3 sm:flex-row sm:items-center sm:justify-between">
             <button onClick={() => setOpenApprovals((s) => !s)} className="flex items-center gap-3 text-left" aria-expanded={openApprovals}>
@@ -600,6 +596,7 @@ export default function AdminDashboard() {
                 {`${approvalsCounts.pending} pending • ${approvalsCounts.approved} approved • ${approvalsCounts.blocked} blocked`}
               </span>
             </button>
+
             <div className="flex items-center gap-2 pb-3 sm:pb-0">
               <label className="flex items-center gap-2 text-sm">
                 <span className="text-white/70">Status:</span>
@@ -620,9 +617,8 @@ export default function AdminDashboard() {
 
           {openApprovals && (
             <div className="px-3 pb-3">
-              {approvalsError && (
-                <div className="mx-1 mb-3 rounded border border-rose-400/40 bg-rose-500/10 p-3 text-rose-200 text-sm">{approvalsError}</div>
-              )}
+              {approvalsError && <div className="mx-1 mb-3 rounded border border-rose-400/40 bg-rose-500/10 p-3 text-rose-200 text-sm">{approvalsError}</div>}
+
               {approvalsLoading ? (
                 <div className="px-1 py-2 text-white/70">Loading…</div>
               ) : approvals.length === 0 ? (
@@ -686,7 +682,7 @@ export default function AdminDashboard() {
           )}
         </section>
 
-        {/* ===== KPIs (unchanged) ===== */}
+        {/* ===== KPIs ===== */}
         <section className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
           <KpiCard label="Revenue" value={gbpFmt.format(sumRevenue)} />
           <KpiCard label="Litres" value={Math.round(sumLitres).toLocaleString()} />
@@ -694,7 +690,7 @@ export default function AdminDashboard() {
           <KpiCard label="Paid Orders" value={paidCount.toLocaleString()} />
         </section>
 
-        {/* Controls (unchanged) */}
+        {/* Controls */}
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-12 sm:items-end">
           <div className="sm:col-span-5 xl:col-span-4">
             <div className="rounded-lg bg-white/5 p-1 flex flex-wrap gap-1">
@@ -766,7 +762,7 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* Usage & Spend (unchanged) */}
+        {/* Usage & Spend */}
         <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 md:p-6">
           <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <h2 className="text-2xl font-semibold">Usage &amp; Spend</h2>
@@ -820,13 +816,107 @@ export default function AdminDashboard() {
           </div>
         </section>
 
-        {/* Orders (unchanged) */}
-        {/* ... (your Orders + Payments sections stay the same as before) ... */}
+        {/* Orders */}
+        <Accordion
+          title="Orders"
+          subtitle={`${visibleOrders.length} of ${filteredOrders.length}`}
+          open={openOrders}
+          onToggle={() => setOpenOrders((s) => !s)}
+          loading={loading}
+          error={error}
+          right={<StatusSelect value={orderStatusFilter} onChange={setOrderStatusFilter} options={orderStatusOptions} label="Status" />}
+        >
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-white/70">
+                <tr className="border-b border-white/10">
+                  <th className="py-2 pr-4">Date</th>
+                  <th className="py-2 pr-4">Email</th>
+                  <th className="py-2 pr-4">Product</th>
+                  <th className="py-2 pr-4">Litres</th>
+                  <th className="py-2 pr-4">Amount</th>
+                  <th className="py-2 pr-4">Status</th>
+                  <th className="py-2 pr-4">Order ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleOrders.map((o) => (
+                  <tr key={o.id} className="border-b border-white/5">
+                    <td className="py-2 pr-4 whitespace-nowrap">{new Date(o.created_at).toLocaleString()}</td>
+                    <td className="py-2 pr-4">{o.user_email}</td>
+                    <td className="py-2 pr-4 capitalize">{o.fuel || "—"}</td>
+                    <td className="py-2 pr-4">{o.litres ?? "—"}</td>
+                    <td className="py-2 pr-4">{gbpFmt.format(toGBP(o.total_pence))}</td>
+                    <td className="py-2 pr-4">
+                      <span className={cx("inline-flex items-center rounded px-2 py-0.5 text-xs",
+                        (o.status || "").toLowerCase() === "paid" ? "bg-green-600/70" : "bg-gray-600/70")}>
+                        {(o.status || "pending").toLowerCase()}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-4 font-mono text-[11px] break-all">{o.id}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-        {/* Payments (unchanged) */}
-        {/* ... */}
+          {visibleOrders.length < filteredOrders.length && (
+            <div className="mt-3 text-center">
+              <button onClick={() => setOrdersShown((n) => n + ORDERS_STEP)} className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15">
+                Load 20 more
+              </button>
+            </div>
+          )}
+        </Accordion>
 
-        {/* ===== Support Tickets (prettier + date filter) ===== */}
+        {/* Payments */}
+        <Accordion
+          title="Payments"
+          subtitle={`${filteredPayments.length} rows`}
+          open={openPayments}
+          onToggle={() => setOpenPayments((s) => !s)}
+          right={<StatusSelect value={paymentStatusFilter} onChange={setPaymentStatusFilter} options={paymentStatusOptions} label="Status" />}
+        >
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-white/70">
+                <tr className="border-b border-white/10">
+                  <th className="py-2 pr-4">Date</th>
+                  <th className="py-2 pr-4">Email</th>
+                  <th className="py-2 pr-4">Amount</th>
+                  <th className="py-2 pr-4">Status</th>
+                  <th className="py-2 pr-4">Order ID</th>
+                  <th className="py-2 pr-4">PI</th>
+                  <th className="py-2 pr-4">Session</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredPayments.length === 0 ? (
+                  <tr><td colSpan={7} className="py-3 text-white/60">No rows.</td></tr>
+                ) : (
+                  filteredPayments.map((p, i) => (
+                    <tr key={i} className="border-b border-white/5">
+                      <td className="py-2 pr-4 whitespace-nowrap">{p.created_at ? new Date(p.created_at).toLocaleString() : "—"}</td>
+                      <td className="py-2 pr-4">{p.email || "—"}</td>
+                      <td className="py-2 pr-4">{gbpFmt.format(toGBP(p.amount))}</td>
+                      <td className="py-2 pr-4">
+                        <span className={cx("inline-flex items-center rounded px-2 py-0.5 text-xs",
+                          p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70")}>
+                          {(p.status || "—").toLowerCase()}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.order_id || "—"}</td>
+                      <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.pi_id || "—"}</td>
+                      <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.cs_id || "—"}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Accordion>
+
+        {/* ===== Support Tickets ===== */}
         <Accordion
           title="Support Tickets"
           subtitle={`${filteredTickets.length} row(s)`}
@@ -835,7 +925,7 @@ export default function AdminDashboard() {
           loading={ticketsLoading}
           error={ticketsError}
           right={
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2">
               <input
                 className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
                 placeholder="Search code / subject / sender"
@@ -854,6 +944,8 @@ export default function AdminDashboard() {
                   <option value="closed">closed</option>
                 </select>
               </label>
+
+              {/* NEW: Since filter */}
               <label className="flex items-center gap-2 text-sm">
                 <span className="text-white/70">Since:</span>
                 <select
@@ -868,12 +960,13 @@ export default function AdminDashboard() {
                   <option value={365}>Last 12 months</option>
                 </select>
               </label>
+
               <button onClick={loadTickets} className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">Refresh</button>
             </div>
           }
         >
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-            {/* Left: list */}
+            {/* List */}
             <div className="lg:col-span-5 rounded-lg border border-white/10 bg-white/[0.03] overflow-hidden">
               <table className="w-full text-left text-sm">
                 <thead className="text-white/70">
@@ -898,12 +991,13 @@ export default function AdminDashboard() {
                       <td className="py-2 px-3">
                         <span className={cx(
                           "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                          (t.status || "") === "open" ? "bg-yellow-600/70" :
-                          (t.status || "") === "closed" ? "bg-gray-600/70" : "bg-white/10"
-                        )}>{t.status || "—"}</span>
+                          (t.status || "") === "open" ? "bg-yellow-600/70" : "bg-gray-600/70"
+                        )}>
+                          {t.status || "—"}
+                        </span>
                       </td>
                       <td className="py-2 px-3">
-                        <div className="text-xs truncate max-w-[18rem]">{t.last_msg_subject || "—"}</div>
+                        <div className="text-xs truncate">{t.last_msg_subject || "—"}</div>
                         <div className="text-[11px] text-white/60">
                           {(t.last_msg_direction || "in")}/{new Date(t.last_msg_ts || t.created_at).toLocaleString()}
                         </div>
@@ -918,7 +1012,7 @@ export default function AdminDashboard() {
               </table>
             </div>
 
-            {/* Right: thread */}
+            {/* Thread */}
             <div className="lg:col-span-7 rounded-lg border border-white/10 bg-white/[0.03] p-3">
               {!selectedTicket ? (
                 <div className="text-white/60 text-sm">Select a ticket from the list.</div>
@@ -927,9 +1021,7 @@ export default function AdminDashboard() {
                   <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-2">
                     <div className="text-sm">
                       <div className="font-semibold">Ticket {selectedTicket.ticket_code}</div>
-                      <div className="text-white/60">
-                        Status: {selectedTicket.status || "—"} • Created {new Date(selectedTicket.created_at).toLocaleString()}
-                      </div>
+                      <div className="text-white/60">Status: {selectedTicket.status || "—"} • Created {new Date(selectedTicket.created_at).toLocaleString()}</div>
                     </div>
                     <div className="flex items-center gap-2">
                       <button onClick={() => loadThread(selectedTicket.id)} className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">Refresh</button>
@@ -959,14 +1051,16 @@ export default function AdminDashboard() {
                           key={idx}
                           className={cx(
                             "rounded border px-3 py-2",
-                            m.direction === "in" ? "border-white/10 bg-white/[0.04]" : "border-yellow-500/40 bg-yellow-500/10"
+                            m.direction === "in"
+                              ? "border-white/10 bg-white/[0.04]"
+                              : "border-yellow-500/40 bg-yellow-500/10"
                           )}
                         >
                           <div className="text-xs text-white/70 mb-1">
                             <span className="uppercase">{m.direction}</span> • {new Date(m.ts).toLocaleString()} • {m.sender_email || "—"}
                           </div>
                           {m.body_text ? (
-                            <pre className="whitespace-pre-wrap text-sm">{m.body_text}</pre>
+                            <pre className="whitespace-pre-wrap text-sm leading-6">{m.body_text}</pre>
                           ) : m.body_html ? (
                             <div className="prose prose-invert max-w-none text-sm" dangerouslySetInnerHTML={{ __html: m.body_html }} />
                           ) : (
@@ -982,7 +1076,7 @@ export default function AdminDashboard() {
           </div>
         </Accordion>
 
-        {/* Invoice browser (unchanged) */}
+        {/* Invoice browser */}
         <Accordion title="Invoice Browser" subtitle="Pick email → year → month" open={openInvoices} onToggle={() => setOpenInvoices((s) => !s)}>
           <div id="invoices-accordion" />
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -1069,9 +1163,8 @@ export default function AdminDashboard() {
 }
 
 /* =========================
-   Components (unchanged)
+   Components
    ========================= */
-
 function Chevron({ open }: { open: boolean }) {
   return (
     <svg viewBox="0 0 24 24" className={cx("h-5 w-5 transition-transform", open ? "rotate-90" : "rotate-0")}
@@ -1124,6 +1217,28 @@ function KpiCard({ label, value }: { label: string; value: string }) {
       <div className="text-xs sm:text-sm text-white/70">{label}</div>
       <div className="mt-1 text-xl sm:text-2xl font-semibold">{value}</div>
     </div>
+  );
+}
+
+function StatusSelect({
+  value, onChange, options, label,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  label: string;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <span className="text-white/70">{label}:</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+      >
+        {options.map((o) => (<option key={o} value={o}>{o}</option>))}
+      </select>
+    </label>
   );
 }
 
