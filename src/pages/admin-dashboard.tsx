@@ -294,7 +294,7 @@ export default function AdminDashboard() {
   }
   useEffect(() => { if (isAdmin === true) loadApprovals(); }, [isAdmin, approvalsFilter]);
 
-  // actions via API (kept exactly like you had)
+  // actions via API
   async function callApprovalAction(email: string, action: "approve" | "block" | "unblock", reason?: string | null) {
     try {
       setApprovalsError(null);
@@ -460,14 +460,10 @@ export default function AdminDashboard() {
      ========================= */
   const [ticketSearch, setTicketSearch] = useState("");
   const [ticketStatus, setTicketStatus] = useState<"all" | "open" | "closed">("all");
-
-  // NEW: date filter for tickets
   const [ticketSinceDays, setTicketSinceDays] = useState<number>(7); // default last 7 days
-
   const [tickets, setTickets] = useState<TicketListRow[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsError, setTicketsError] = useState<string | null>(null);
-
   const [selectedTicket, setSelectedTicket] = useState<TicketListRow | null>(null);
   const [thread, setThread] = useState<TicketMessageRow[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
@@ -568,16 +564,16 @@ export default function AdminDashboard() {
     <div className="min-h-screen bg-[#0b1220] text-white overflow-x-hidden">
       {/* Header */}
       <div className="sticky top-0 z-30 border-b border-white/10 bg-[#0b1220]/80 backdrop-blur">
-        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-3">
-          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 h-14 flex items-center gap-3">
+          <img src="/logo-email.png" alt="FuelFlow" className="h-6 sm:h-7 w-auto" />
           <div className="hidden sm:block text-sm text-white/70">
             Signed in as <span className="font-medium">{me}</span>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <a href="/client-dashboard" className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">Client view</a>
+            <a href="/client-dashboard" className="rounded-lg bg-white/10 px-2.5 py-1.5 text-xs sm:text-sm hover:bg-white/15">Client view</a>
             <button
               onClick={async () => { await supabase.auth.signOut(); window.location.href = "/login"; }}
-              className="rounded-lg bg-yellow-500 px-3 py-1.5 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
+              className="rounded-lg bg-yellow-500 px-2.5 sm:px-3 py-1.5 text-xs sm:text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
             >
               Log out
             </button>
@@ -585,14 +581,14 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 py-5 space-y-6">
+      <div className="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-5 space-y-5 sm:space-y-6">
         {/* ====== Client Approvals ====== */}
         <section className="rounded-xl border border-white/10 bg-white/[0.03]">
-          <div className="w-full flex flex-col gap-2 px-4 pt-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="w-full flex flex-col gap-2 px-3 sm:px-4 pt-3 sm:flex-row sm:items-center sm:justify-between">
             <button onClick={() => setOpenApprovals((s) => !s)} className="flex items-center gap-3 text-left" aria-expanded={openApprovals}>
               <Chevron open={openApprovals} />
               <div className="font-semibold">Client Approvals</div>
-              <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/80">
+              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] sm:text-xs text-white/80">
                 {`${approvalsCounts.pending} pending • ${approvalsCounts.approved} approved • ${approvalsCounts.blocked} blocked`}
               </span>
             </button>
@@ -603,7 +599,7 @@ export default function AdminDashboard() {
                 <select
                   value={approvalsFilter}
                   onChange={(e) => setApprovalsFilter(e.target.value as ApprovalsFilter)}
-                  className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                  className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm outline-none focus:ring focus:ring-yellow-500/30"
                 >
                   <option value="all">All</option>
                   <option value="pending">Pending</option>
@@ -624,66 +620,107 @@ export default function AdminDashboard() {
               ) : approvals.length === 0 ? (
                 <div className="px-1 py-2 text-white/70">No rows.</div>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm min-w-[720px]">
-                    <thead className="text-white/70">
-                      <tr className="border-b border-white/10">
-                        <th className="py-2 pr-4">Email</th>
-                        <th className="py-2 pr-4">Status</th>
-                        <th className="py-2 pr-4">First order</th>
-                        <th className="py-2 pr-4">Last order</th>
-                        <th className="py-2 pr-4">Approved</th>
-                        <th className="py-2 pr-4">Blocked</th>
-                        <th className="py-2 pr-4">Reason</th>
-                        <th className="py-2 pr-2 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {approvals.map((r) => {
-                        const s = (r.status || "").toLowerCase();
-                        return (
-                          <tr key={r.email} className="border-b border-white/5">
-                            <td className="py-2 pr-4">{r.email}</td>
-                            <td className="py-2 pr-4">
-                              <span className={cx(
-                                "inline-flex items-center rounded px-2 py-0.5 text-xs capitalize",
-                                s === "pending" && "bg-yellow-600/70",
-                                s === "approved" && "bg-green-600/70",
-                                s === "blocked" && "bg-rose-600/70"
-                              )}>{s || "—"}</span>
-                            </td>
-                            <td className="py-2 pr-4">{r.first_order_at ? new Date(r.first_order_at).toLocaleString() : "—"}</td>
-                            <td className="py-2 pr-4">{r.last_order_at ? new Date(r.last_order_at).toLocaleString() : "—"}</td>
-                            <td className="py-2 pr-4">{r.approved_at ? new Date(r.approved_at).toLocaleString() : "—"}</td>
-                            <td className="py-2 pr-4">{r.blocked_at ? new Date(r.blocked_at).toLocaleString() : "—"}</td>
-                            <td className="py-2 pr-4">{r.block_reason || "—"}</td>
-                            <td className="py-2 pr-2">
-                              <div className="flex justify-end gap-2">
-                                {s === "pending" && (
-                                  <button onClick={() => onApprove(r.email)} className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-3 py-1 hover:bg-yellow-400">Approve</button>
-                                )}
-                                {(s === "pending" || s === "approved") && (
-                                  <button onClick={() => onBlock(r.email)} className="rounded bg-white/10 text-white text-xs px-3 py-1 hover:bg-white/15">Block</button>
-                                )}
-                                {s === "blocked" && (
-                                  <button onClick={() => onUnblock(r.email)} className="rounded bg-white/10 text-white text-xs px-3 py-1 hover:bg-white/15">Unblock</button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                <>
+                  {/* Mobile cards */}
+                  <div className="grid sm:hidden grid-cols-1 gap-2">
+                    {approvals.map((r) => {
+                      const s = (r.status || "").toLowerCase();
+                      return (
+                        <div key={r.email} className="rounded-lg border border-white/10 bg-white/[0.04] p-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="text-sm break-all">{r.email}</div>
+                            <span className={cx(
+                              "inline-flex items-center rounded px-2 py-0.5 text-[11px] capitalize",
+                              s === "pending" && "bg-yellow-600/70",
+                              s === "approved" && "bg-green-600/70",
+                              s === "blocked" && "bg-rose-600/70"
+                            )}>{s || "—"}</span>
+                          </div>
+                          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-white/70">
+                            <div>First: {r.first_order_at ? new Date(r.first_order_at).toLocaleString() : "—"}</div>
+                            <div>Last: {r.last_order_at ? new Date(r.last_order_at).toLocaleString() : "—"}</div>
+                            <div>Approved: {r.approved_at ? new Date(r.approved_at).toLocaleString() : "—"}</div>
+                            <div>Blocked: {r.blocked_at ? new Date(r.blocked_at).toLocaleString() : "—"}</div>
+                            <div className="col-span-2 truncate">Reason: {r.block_reason || "—"}</div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {s === "pending" && (
+                              <button onClick={() => onApprove(r.email)} className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-3 py-1.5 hover:bg-yellow-400">Approve</button>
+                            )}
+                            {(s === "pending" || s === "approved") && (
+                              <button onClick={() => onBlock(r.email)} className="rounded bg-white/10 text-white text-xs px-3 py-1.5 hover:bg-white/15">Block</button>
+                            )}
+                            {s === "blocked" && (
+                              <button onClick={() => onUnblock(r.email)} className="rounded bg-white/10 text-white text-xs px-3 py-1.5 hover:bg-white/15">Unblock</button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Desktop table */}
+                  <div className="hidden sm:block overflow-x-auto">
+                    <table className="w-full text-left text-sm min-w-[720px]">
+                      <thead className="text-white/70">
+                        <tr className="border-b border-white/10">
+                          <th className="py-2 pr-4">Email</th>
+                          <th className="py-2 pr-4">Status</th>
+                          <th className="py-2 pr-4">First order</th>
+                          <th className="py-2 pr-4">Last order</th>
+                          <th className="py-2 pr-4">Approved</th>
+                          <th className="py-2 pr-4">Blocked</th>
+                          <th className="py-2 pr-4">Reason</th>
+                          <th className="py-2 pr-2 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {approvals.map((r) => {
+                          const s = (r.status || "").toLowerCase();
+                          return (
+                            <tr key={r.email} className="border-b border-white/5">
+                              <td className="py-2 pr-4">{r.email}</td>
+                              <td className="py-2 pr-4">
+                                <span className={cx(
+                                  "inline-flex items-center rounded px-2 py-0.5 text-xs capitalize",
+                                  s === "pending" && "bg-yellow-600/70",
+                                  s === "approved" && "bg-green-600/70",
+                                  s === "blocked" && "bg-rose-600/70"
+                                )}>{s || "—"}</span>
+                              </td>
+                              <td className="py-2 pr-4">{r.first_order_at ? new Date(r.first_order_at).toLocaleString() : "—"}</td>
+                              <td className="py-2 pr-4">{r.last_order_at ? new Date(r.last_order_at).toLocaleString() : "—"}</td>
+                              <td className="py-2 pr-4">{r.approved_at ? new Date(r.approved_at).toLocaleString() : "—"}</td>
+                              <td className="py-2 pr-4">{r.blocked_at ? new Date(r.blocked_at).toLocaleString() : "—"}</td>
+                              <td className="py-2 pr-4">{r.block_reason || "—"}</td>
+                              <td className="py-2 pr-2">
+                                <div className="flex justify-end gap-2">
+                                  {s === "pending" && (
+                                    <button onClick={() => onApprove(r.email)} className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-3 py-1 hover:bg-yellow-400">Approve</button>
+                                  )}
+                                  {(s === "pending" || s === "approved") && (
+                                    <button onClick={() => onBlock(r.email)} className="rounded bg-white/10 text-white text-xs px-3 py-1 hover:bg-white/15">Block</button>
+                                  )}
+                                  {s === "blocked" && (
+                                    <button onClick={() => onUnblock(r.email)} className="rounded bg-white/10 text-white text-xs px-3 py-1 hover:bg-white/15">Unblock</button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
               )}
-              <p className="mt-2 text-xs text-white/60">Approve adds the email to the allow-list. Block adds it to the block list and signs the user out.</p>
+              <p className="mt-2 text-xs text-white/60 px-0.5">Approve adds the email to the allow-list. Block adds it to the block list and signs the user out.</p>
             </div>
           )}
         </section>
 
         {/* ===== KPIs ===== */}
-        <section className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+        <section className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-4">
           <KpiCard label="Revenue" value={gbpFmt.format(sumRevenue)} />
           <KpiCard label="Litres" value={Math.round(sumLitres).toLocaleString()} />
           <KpiCard label="Orders" value={filteredOrders.length.toLocaleString()} />
@@ -699,7 +736,7 @@ export default function AdminDashboard() {
                   key={r}
                   onClick={() => setRange(r)}
                   className={cx(
-                    "flex-1 min-w-[8rem] px-3 py-1.5 text-sm rounded-md",
+                    "flex-1 min-w-[7.5rem] px-3 py-2 text-sm rounded-md",
                     range === r ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/10"
                   )}
                 >
@@ -763,9 +800,9 @@ export default function AdminDashboard() {
         </div>
 
         {/* Usage & Spend */}
-        <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 md:p-6">
-          <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <h2 className="text-2xl font-semibold">Usage &amp; Spend</h2>
+        <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 sm:p-5">
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <h2 className="text-xl sm:text-2xl font-semibold">Usage &amp; Spend</h2>
             <div className="flex items-center gap-2">
               <span className="text-sm text-white/70">Year:</span>
               <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
@@ -826,7 +863,32 @@ export default function AdminDashboard() {
           error={error}
           right={<StatusSelect value={orderStatusFilter} onChange={setOrderStatusFilter} options={orderStatusOptions} label="Status" />}
         >
-          <div className="hidden md:block overflow-x-auto">
+          {/* Mobile cards */}
+          <div className="grid sm:hidden grid-cols-1 gap-2">
+            {visibleOrders.length === 0 ? (
+              <div className="text-white/60 text-sm px-1 py-2">No orders.</div>
+            ) : (
+              visibleOrders.map((o) => (
+                <div key={o.id} className="rounded-lg border border-white/10 bg-white/[0.04] p-3">
+                  <div className="text-xs text-white/70">{new Date(o.created_at).toLocaleString()}</div>
+                  <div className="mt-1 text-sm break-all">{o.user_email}</div>
+                  <div className="mt-1 grid grid-cols-2 gap-2 text-sm">
+                    <div className="capitalize">Product: <span className="text-white/80">{o.fuel || "—"}</span></div>
+                    <div>Litres: <span className="text-white/80">{o.litres ?? "—"}</span></div>
+                    <div>Amount: <span className="text-white/80">{gbpFmt.format(toGBP(o.total_pence))}</span></div>
+                    <div>Status: <span className={cx("inline-flex items-center rounded px-2 py-0.5 text-[11px]",
+                      (o.status || "").toLowerCase() === "paid" ? "bg-green-600/70" : "bg-gray-600/70")}>
+                      {(o.status || "pending").toLowerCase()}
+                    </span></div>
+                  </div>
+                  <div className="mt-1 text-[11px] text-white/60 break-all">Order ID: {o.id}</div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Desktop table */}
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="text-white/70">
                 <tr className="border-b border-white/10">
@@ -877,7 +939,32 @@ export default function AdminDashboard() {
           onToggle={() => setOpenPayments((s) => !s)}
           right={<StatusSelect value={paymentStatusFilter} onChange={setPaymentStatusFilter} options={paymentStatusOptions} label="Status" />}
         >
-          <div className="hidden md:block overflow-x-auto">
+          {/* Mobile cards */}
+          <div className="grid sm:hidden grid-cols-1 gap-2">
+            {filteredPayments.length === 0 ? (
+              <div className="text-white/60 text-sm px-1 py-2">No payments.</div>
+            ) : (
+              filteredPayments.map((p, i) => (
+                <div key={i} className="rounded-lg border border-white/10 bg-white/[0.04] p-3">
+                  <div className="text-xs text-white/70">{p.created_at ? new Date(p.created_at).toLocaleString() : "—"}</div>
+                  <div className="mt-1 text-sm break-all">{p.email || "—"}</div>
+                  <div className="mt-1 grid grid-cols-2 gap-2 text-sm">
+                    <div>Amount: <span className="text-white/80">{gbpFmt.format(toGBP(p.amount))}</span></div>
+                    <div>Status: <span className={cx("inline-flex items-center rounded px-2 py-0.5 text-[11px]",
+                      p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70")}>
+                      {(p.status || "—").toLowerCase()}
+                    </span></div>
+                    <div className="col-span-2 text-[11px] text-white/60 break-all">Order: {p.order_id || "—"}</div>
+                    <div className="col-span-2 text-[11px] text-white/60 break-all">PI: {p.pi_id || "—"}</div>
+                    <div className="col-span-2 text-[11px] text-white/60 break-all">Session: {p.cs_id || "—"}</div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Desktop table */}
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="text-white/70">
                 <tr className="border-b border-white/10">
@@ -925,9 +1012,9 @@ export default function AdminDashboard() {
           loading={ticketsLoading}
           error={ticketsError}
           right={
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <input
-                className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm outline-none focus:ring focus:ring-yellow-500/30"
                 placeholder="Search code / subject / sender"
                 value={ticketSearch}
                 onChange={(e) => setTicketSearch(e.target.value)}
@@ -937,7 +1024,7 @@ export default function AdminDashboard() {
                 <select
                   value={ticketStatus}
                   onChange={(e) => setTicketStatus(e.target.value as "all" | "open" | "closed")}
-                  className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                  className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm outline-none focus:ring focus:ring-yellow-500/30"
                 >
                   <option value="all">All</option>
                   <option value="open">open</option>
@@ -945,13 +1032,12 @@ export default function AdminDashboard() {
                 </select>
               </label>
 
-              {/* NEW: Since filter */}
               <label className="flex items-center gap-2 text-sm">
                 <span className="text-white/70">Since:</span>
                 <select
                   value={ticketSinceDays}
                   onChange={(e) => setTicketSinceDays(parseInt(e.target.value, 10))}
-                  className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                  className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm outline-none focus:ring focus:ring-yellow-500/30"
                 >
                   <option value={1}>Today</option>
                   <option value={3}>Last 3 days</option>
@@ -1018,7 +1104,7 @@ export default function AdminDashboard() {
                 <div className="text-white/60 text-sm">Select a ticket from the list.</div>
               ) : (
                 <>
-                  <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-white/10 pb-2">
                     <div className="text-sm">
                       <div className="font-semibold">Ticket {selectedTicket.ticket_code}</div>
                       <div className="text-white/60">Status: {selectedTicket.status || "—"} • Created {new Date(selectedTicket.created_at).toLocaleString()}</div>
@@ -1040,34 +1126,11 @@ export default function AdminDashboard() {
                     </div>
                   </div>
 
-                  <div className="mt-3 space-y-3">
+                  <div className="mt-3">
                     {threadLoading ? (
                       <div className="text-white/70">Loading thread…</div>
-                    ) : thread.length === 0 ? (
-                      <div className="text-white/60 text-sm">No messages.</div>
                     ) : (
-                      thread.map((m, idx) => (
-                        <div
-                          key={idx}
-                          className={cx(
-                            "rounded border px-3 py-2",
-                            m.direction === "in"
-                              ? "border-white/10 bg-white/[0.04]"
-                              : "border-yellow-500/40 bg-yellow-500/10"
-                          )}
-                        >
-                          <div className="text-xs text-white/70 mb-1">
-                            <span className="uppercase">{m.direction}</span> • {new Date(m.ts).toLocaleString()} • {m.sender_email || "—"}
-                          </div>
-                          {m.body_text ? (
-                            <pre className="whitespace-pre-wrap text-sm leading-6">{m.body_text}</pre>
-                          ) : m.body_html ? (
-                            <div className="prose prose-invert max-w-none text-sm" dangerouslySetInnerHTML={{ __html: m.body_html }} />
-                          ) : (
-                            <div className="text-sm">—</div>
-                          )}
-                        </div>
-                      ))
+                      <TicketMessagesPanel messages={thread} />
                     )}
                   </div>
                 </>
@@ -1188,7 +1251,7 @@ function Accordion({
 }) {
   return (
     <section className="rounded-xl border border-white/10 bg-white/[0.03]">
-      <div className="w-full flex flex-col gap-2 px-4 pt-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="w-full flex flex-col gap-2 px-3 sm:px-4 pt-3 sm:flex-row sm:items-center sm:justify-between">
         <button onClick={onToggle} className="flex items-center gap-3 text-left" aria-expanded={open}>
           <Chevron open={open} />
           <div className="font-semibold">{title}</div>
@@ -1197,7 +1260,7 @@ function Accordion({
         {right && <div className="pb-3 sm:pb-0">{right}</div>}
       </div>
       {open && (
-        <div className="px-3 pb-3">
+        <div className="px-3 sm:px-4 pb-3">
           {loading ? (
             <div className="px-1 py-2 text-white/70">Loading…</div>
           ) : error ? (
@@ -1214,8 +1277,8 @@ function Accordion({
 function KpiCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 sm:p-4">
-      <div className="text-xs sm:text-sm text-white/70">{label}</div>
-      <div className="mt-1 text-xl sm:text-2xl font-semibold">{value}</div>
+      <div className="text-[11px] sm:text-sm text-white/70">{label}</div>
+      <div className="mt-1 text-lg sm:text-2xl font-semibold">{value}</div>
     </div>
   );
 }
@@ -1234,11 +1297,58 @@ function StatusSelect({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+        className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm outline-none focus:ring focus:ring-yellow-500/30"
       >
         {options.map((o) => (<option key={o} value={o}>{o}</option>))}
       </select>
     </label>
+  );
+}
+
+/* ===== Your requested replacement: MessageBubble + wrapper ===== */
+type TicketMsgRow = TicketMessageRow;
+
+function MessageBubble({ msg }: { msg: TicketMsgRow }) {
+  const isOut = (msg.direction || "").toLowerCase() === "out";
+  const html = (msg.body_html || "").trim();
+  const text = (msg.body_text || "").trim();
+
+  return (
+    <div
+      className={cx(
+        "rounded-2xl p-4 border",
+        isOut ? "bg-yellow-500/10 border-yellow-400/30" : "bg-white/[0.05] border-white/10"
+      )}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between text-xs text-white/60 mb-2">
+        <div>{isOut ? "OUT" : "IN"} • {msg.ts ? new Date(msg.ts).toLocaleString() : "—"}</div>
+        <div className="truncate">{msg.sender_email || "—"}</div>
+      </div>
+
+      {/* Prefer HTML, then text, else placeholder */}
+      {html ? (
+        <div className="prose prose-invert max-w-none text-sm leading-6" dangerouslySetInnerHTML={{ __html: html }} />
+      ) : text ? (
+        <pre className="whitespace-pre-wrap break-words text-sm text-white/90 leading-6">
+          {text}
+        </pre>
+      ) : (
+        <div className="text-sm italic text-white/40">— (no message content) —</div>
+      )}
+    </div>
+  );
+}
+
+function TicketMessagesPanel({ messages }: { messages: TicketMsgRow[] }) {
+  return (
+    <div className="space-y-3 overflow-y-auto max-h-[520px] pr-1">
+      {messages && messages.length > 0 ? (
+        messages.map((m, i) => <MessageBubble key={i} msg={m} />)
+      ) : (
+        <div className="text-white/60 text-sm">No messages.</div>
+      )}
+    </div>
   );
 }
 
