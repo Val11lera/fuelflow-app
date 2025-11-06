@@ -6,7 +6,6 @@ import React, { useRef, useState, type ReactElement } from "react";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
 import type HCaptchaType from "@hcaptcha/react-hcaptcha";
 import { createClient } from "@supabase/supabase-js";
-import { useRouter } from "next/router";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -16,7 +15,6 @@ const supabase = createClient(
 type Msg = { type: "error" | "success" | "info"; text: string };
 
 export default function Register() {
-  const router = useRouter();
   const captchaRef = useRef<HCaptchaType>(null);
 
   // form
@@ -45,6 +43,7 @@ export default function Register() {
   }
 
   async function handleRegister() {
+    if (loading) return; // prevent double-clicks
     try {
       setLoading(true);
       setMsg(null);
@@ -65,26 +64,27 @@ export default function Register() {
       const { error } = await supabase.auth.signUp({
         email,
         password,
-        options: { captchaToken },
+        options: {
+          emailRedirectTo: "https://fuelflow.co.uk/welcome", // adjust if needed
+          captchaToken, // must be FRESH each submit
+        },
       });
 
       if (error) {
         setMsg({ type: "error", text: "Registration failed: " + error.message });
-        resetCaptcha();
         return;
       }
 
-      resetCaptcha();
       setMsg({
         type: "success",
         text:
           "Registration successful! Check your email for a verification link, then sign in.",
       });
-      // Optional redirect:
-      // setTimeout(() => router.push("/login"), 1200);
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
     } finally {
+      // IMPORTANT: never reuse a token — force a new solve next time
+      resetCaptcha();
       setLoading(false);
     }
   }
@@ -94,18 +94,24 @@ export default function Register() {
   }
 
   return (
-    <div className="relative flex min-h-[100svh] md:min-h-screen flex-col bg-[#0b1220] text-white">
-      {/* Distinct display font for Register */}
+    <div className="relative flex min-h-screen flex-col bg-[#0b1220] text-white overflow-x-hidden">
+      {/* Global fixes: ensure no white strip and dark bg everywhere */}
       <style jsx global>{`
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
+        html, body { height: 100%; background:#0b1220; }
+        body { overflow-x: hidden; }
         .ff-display { font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; }
       `}</style>
 
-      {/* Header (same logo as login) */}
+      {/* Header */}
       <header className="relative">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
           <a href="https://fuelflow.co.uk" className="flex items-center gap-3">
-            <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
+            <img
+              src="https://dashboard.fuelflow.co.uk/logo-email.png"
+              alt="FuelFlow"
+              className="h-7 w-auto"
+            />
           </a>
           <a
             href="https://fuelflow.co.uk"
@@ -221,7 +227,7 @@ export default function Register() {
                 />
               </div>
 
-              {/* Terms ONLY (Privacy removed) */}
+              {/* Terms */}
               <label className="mt-3 flex items-start gap-2 text-xs text-white/80">
                 <input
                   type="checkbox"
@@ -273,7 +279,7 @@ export default function Register() {
             </div>
           </section>
 
-          {/* Right: bold hero/benefits */}
+          {/* Right: hero/benefits */}
           <section className="order-2 flex lg:order-2 lg:col-span-7">
             <div className="relative flex-1 overflow-hidden rounded-2xl bg-[radial-gradient(1200px_400px_at_80%_-10%,rgba(253,176,34,0.18),transparent),radial-gradient(1000px_500px_at_-10%_110%,rgba(255,226,122,0.14),transparent)] p-6 md:p-8 ring-1 ring-inset ring-white/10">
               <span className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-yellow-500/15 blur-3xl" />
@@ -334,7 +340,7 @@ function Benefit({
 }: {
   title: string;
   blurb: string;
-  Icon: (p: { className?: string }) => ReactElement; // <-- fixed type
+  Icon: (p: { className?: string }) => ReactElement;
 }) {
   return (
     <div className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20">
