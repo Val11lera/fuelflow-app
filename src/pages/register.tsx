@@ -36,13 +36,14 @@ export default function Register() {
   function handleCaps(e: React.KeyboardEvent<HTMLInputElement>) {
     setCapsOn(e.getModifierState && e.getModifierState("CapsLock"));
   }
+
   function resetCaptcha() {
     captchaRef.current?.resetCaptcha();
     setCaptchaToken(null);
   }
 
   async function handleRegister() {
-    if (loading) return;
+    if (loading) return; // prevent double-clicks
     try {
       setLoading(true);
       setMsg(null);
@@ -65,15 +66,36 @@ export default function Register() {
         password,
         options: {
           emailRedirectTo: "https://fuelflow.co.uk/welcome",
-          captchaToken, // must be fresh each submit
+          captchaToken, // must be FRESH each submit
         },
       });
 
       if (error) {
+        const emsg = (error.message || "").toLowerCase();
+        const looksDuplicate = emsg.includes("already") || emsg.includes("exists") || error.status === 422;
+
+        if (looksDuplicate) {
+          // If user exists (confirmed or unconfirmed), try sending a fresh confirmation link
+          const resend = await supabase.auth.resend({
+            type: "signup",
+            email,
+            options: { emailRedirectTo: "https://fuelflow.co.uk/welcome" },
+          });
+
+          if (!resend.error) {
+            setMsg({
+              type: "info",
+              text: "This email is already registered. If you haven’t verified before, we’ve sent a new confirmation link.",
+            });
+            return;
+          }
+        }
+
         setMsg({ type: "error", text: "Registration failed: " + error.message });
         return;
       }
 
+      // success
       setMsg({
         type: "success",
         text: "Registration successful! Check your email for a verification link, then sign in.",
@@ -81,7 +103,7 @@ export default function Register() {
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
     } finally {
-      // never reuse captcha tokens
+      // IMPORTANT: never reuse a token — force a new solve next time
       resetCaptcha();
       setLoading(false);
     }
@@ -93,7 +115,7 @@ export default function Register() {
 
   return (
     <div className="relative flex min-h-screen flex-col bg-[#0b1220] text-white overflow-x-hidden">
-      {/* Global fixes & type */}
+      {/* Global fixes & font */}
       <style jsx global>{`
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
         html, body { height: 100%; background:#0b1220; }
@@ -136,7 +158,7 @@ export default function Register() {
           <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.04)_0%,rgba(255,255,255,0.02)_30%,transparent_30%),linear-gradient(0deg,transparent_0%,transparent_96%,rgba(255,255,255,0.06)_96%)]" />
         </div>
 
-        {/* Grid */}
+        {/* Form LEFT, benefits RIGHT */}
         <div className="mx-auto grid max-w-6xl grid-cols-1 items-stretch gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
           {/* Register card */}
           <section className="order-1 flex lg:order-1 lg:col-span-5">
@@ -225,7 +247,7 @@ export default function Register() {
                 />
               </div>
 
-              {/* Terms — no stray dot, better alignment */}
+              {/* Terms — (no stray dot) */}
               <label className="mt-3 flex items-start gap-2 text-[13px] text-white/80 leading-5">
                 <input
                   type="checkbox"
@@ -265,6 +287,26 @@ export default function Register() {
                   ].join(" ")}
                 >
                   {msg.text}
+
+                  {(msg.type === "info" || msg.type === "success") && (
+                    <button
+                      className="mt-2 text-xs underline text-yellow-300"
+                      onClick={async () => {
+                        const r = await supabase.auth.resend({
+                          type: "signup",
+                          email,
+                          options: { emailRedirectTo: "https://fuelflow.co.uk/welcome" },
+                        });
+                        setMsg(
+                          r.error
+                            ? { type: "error", text: "Couldn’t resend: " + r.error.message }
+                            : { type: "info", text: "Confirmation email resent. Check your inbox." }
+                        );
+                      }}
+                    >
+                      Resend confirmation email
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -278,7 +320,7 @@ export default function Register() {
             </div>
           </section>
 
-          {/* Right: hero/benefits */}
+          {/* Right: bold hero/benefits */}
           <section className="order-2 flex lg:order-2 lg:col-span-7">
             <div className="relative flex-1 overflow-hidden rounded-2xl bg-[radial-gradient(1200px_400px_at_80%_-10%,rgba(253,176,34,0.18),transparent),radial-gradient(1000px_500px_at_-10%_110%,rgba(255,226,122,0.14),transparent)] p-6 md:p-8 ring-1 ring-inset ring-white/10">
               <span className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-yellow-500/15 blur-3xl" />
@@ -331,18 +373,28 @@ function StepDot({ active = false }: { active?: boolean }) {
 function Line() {
   return <span className="h-px w-12 bg-white/15" />;
 }
+
 function Benefit({
-  title, blurb, Icon,
-}: { title: string; blurb: string; Icon: (p: { className?: string }) => ReactElement }) {
+  title,
+  blurb,
+  Icon,
+}: {
+  title: string;
+  blurb: string;
+  Icon: (p: { className?: string }) => ReactElement;
+}) {
   return (
     <div className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20">
       <span className="pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-yellow-500/10 blur-2xl" />
-      <div className="mb-3"><Icon className="h-12 w-12 opacity-90 transition group-hover:scale-105" /></div>
+      <div className="mb-3">
+        <Icon className="h-12 w-12 opacity-90 transition group-hover:scale-105" />
+      </div>
       <div className="text-lg font-semibold">{title}</div>
       <div className="mt-1 text-sm text-white/75">{blurb}</div>
     </div>
   );
 }
+
 function MailIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
