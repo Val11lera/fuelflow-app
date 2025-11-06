@@ -36,14 +36,13 @@ export default function Register() {
   function handleCaps(e: React.KeyboardEvent<HTMLInputElement>) {
     setCapsOn(e.getModifierState && e.getModifierState("CapsLock"));
   }
-
   function resetCaptcha() {
     captchaRef.current?.resetCaptcha();
     setCaptchaToken(null);
   }
 
   async function handleRegister() {
-    if (loading) return; // prevent double-clicks
+    if (loading) return;
     try {
       setLoading(true);
       setMsg(null);
@@ -65,8 +64,8 @@ export default function Register() {
         email,
         password,
         options: {
-          emailRedirectTo: "https://fuelflow.co.uk/welcome", // adjust if needed
-          captchaToken, // must be FRESH each submit
+          emailRedirectTo: "https://fuelflow.co.uk/welcome",
+          captchaToken, // must be fresh each submit
         },
       });
 
@@ -77,13 +76,12 @@ export default function Register() {
 
       setMsg({
         type: "success",
-        text:
-          "Registration successful! Check your email for a verification link, then sign in.",
+        text: "Registration successful! Check your email for a verification link, then sign in.",
       });
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
     } finally {
-      // IMPORTANT: never reuse a token — force a new solve next time
+      // never reuse captcha tokens
       resetCaptcha();
       setLoading(false);
     }
@@ -95,7 +93,7 @@ export default function Register() {
 
   return (
     <div className="relative flex min-h-screen flex-col bg-[#0b1220] text-white overflow-x-hidden">
-      {/* Global fixes: ensure no white strip and dark bg everywhere */}
+      {/* Global fixes & type */}
       <style jsx global>{`
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
         html, body { height: 100%; background:#0b1220; }
@@ -138,7 +136,7 @@ export default function Register() {
           <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.04)_0%,rgba(255,255,255,0.02)_30%,transparent_30%),linear-gradient(0deg,transparent_0%,transparent_96%,rgba(255,255,255,0.06)_96%)]" />
         </div>
 
-        {/* Form LEFT, benefits RIGHT */}
+        {/* Grid */}
         <div className="mx-auto grid max-w-6xl grid-cols-1 items-stretch gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
           {/* Register card */}
           <section className="order-1 flex lg:order-1 lg:col-span-5">
@@ -227,19 +225,20 @@ export default function Register() {
                 />
               </div>
 
-              {/* Terms */}
-              <label className="mt-3 flex items-start gap-2 text-xs text-white/80">
+              {/* Terms — no stray dot, better alignment */}
+              <label className="mt-3 flex items-start gap-2 text-[13px] text-white/80 leading-5">
                 <input
                   type="checkbox"
                   checked={agree}
                   onChange={(e) => setAgree(e.target.checked)}
                   className="mt-0.5 accent-yellow-500"
                 />
-                I agree to the{" "}
-                <a href="/terms" target="_blank" rel="noreferrer" className="text-yellow-300 underline-offset-2 hover:underline">
-                  Terms
-                </a>
-                .
+                <span>
+                  I agree to the{" "}
+                  <a href="/terms" target="_blank" rel="noreferrer" className="text-yellow-300 underline-offset-2 hover:underline">
+                    Terms
+                  </a>
+                </span>
               </label>
 
               {/* CTA */}
@@ -332,28 +331,18 @@ function StepDot({ active = false }: { active?: boolean }) {
 function Line() {
   return <span className="h-px w-12 bg-white/15" />;
 }
-
 function Benefit({
-  title,
-  blurb,
-  Icon,
-}: {
-  title: string;
-  blurb: string;
-  Icon: (p: { className?: string }) => ReactElement;
-}) {
+  title, blurb, Icon,
+}: { title: string; blurb: string; Icon: (p: { className?: string }) => ReactElement }) {
   return (
     <div className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20">
       <span className="pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-yellow-500/10 blur-2xl" />
-      <div className="mb-3">
-        <Icon className="h-12 w-12 opacity-90 transition group-hover:scale-105" />
-      </div>
+      <div className="mb-3"><Icon className="h-12 w-12 opacity-90 transition group-hover:scale-105" /></div>
       <div className="text-lg font-semibold">{title}</div>
       <div className="mt-1 text-sm text-white/75">{blurb}</div>
     </div>
   );
 }
-
 function MailIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
