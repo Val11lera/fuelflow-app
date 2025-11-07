@@ -42,6 +42,35 @@ export default function Register() {
     setCaptchaToken(null);
   }
 
+  /* NEW: resend helper that passes a fresh captcha token */
+  async function resendSignupWithCaptcha(currentEmail: string) {
+    if (!currentEmail) {
+      setMsg({ type: "error", text: "Enter your email first." });
+      return;
+    }
+    if (!captchaToken) {
+      setMsg({ type: "error", text: "Please complete the captcha, then click Resend." });
+      return;
+    }
+
+    const { error } = await supabase.auth.resend({
+      type: "signup",
+      email: currentEmail,
+      options: {
+        emailRedirectTo: "https://fuelflow.co.uk/welcome",
+        captchaToken, // ← critical when Attack Protection is on
+      },
+    });
+
+    if (error) {
+      setMsg({ type: "error", text: "Resend failed: " + error.message });
+      return;
+    }
+
+    setMsg({ type: "info", text: "Confirmation email resent. Check your inbox." });
+    resetCaptcha(); // token is single-use; force a new solve next time
+  }
+
   async function handleRegister() {
     if (loading) return; // prevent double-clicks
     try {
@@ -72,23 +101,12 @@ export default function Register() {
 
       if (error) {
         const emsg = (error.message || "").toLowerCase();
-        const looksDuplicate = emsg.includes("already") || emsg.includes("exists") || error.status === 422;
+        const looksDuplicate = emsg.includes("already") || emsg.includes("exists") || (error as any).status === 422;
 
         if (looksDuplicate) {
-          // If user exists (confirmed or unconfirmed), try sending a fresh confirmation link
-          const resend = await supabase.auth.resend({
-            type: "signup",
-            email,
-            options: { emailRedirectTo: "https://fuelflow.co.uk/welcome" },
-          });
-
-          if (!resend.error) {
-            setMsg({
-              type: "info",
-              text: "This email is already registered. If you haven’t verified before, we’ve sent a new confirmation link.",
-            });
-            return;
-          }
+          // CHANGED: use helper so resend includes captcha
+          await resendSignupWithCaptcha(email);
+          return;
         }
 
         setMsg({ type: "error", text: "Registration failed: " + error.message });
@@ -292,16 +310,8 @@ export default function Register() {
                     <button
                       className="mt-2 text-xs underline text-yellow-300"
                       onClick={async () => {
-                        const r = await supabase.auth.resend({
-                          type: "signup",
-                          email,
-                          options: { emailRedirectTo: "https://fuelflow.co.uk/welcome" },
-                        });
-                        setMsg(
-                          r.error
-                            ? { type: "error", text: "Couldn’t resend: " + r.error.message }
-                            : { type: "info", text: "Confirmation email resent. Check your inbox." }
-                        );
+                        // CHANGED: use helper so resend includes captcha
+                        await resendSignupWithCaptcha(email);
                       }}
                     >
                       Resend confirmation email
