@@ -33,6 +33,9 @@ export default function Register() {
   // hCaptcha
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
+  // NEW: local cache of email status from the server
+  const [emailExists, setEmailExists] = useState<null | { exists: boolean; confirmed?: boolean }>(null);
+
   function handleCaps(e: React.KeyboardEvent<HTMLInputElement>) {
     setCapsOn(e.getModifierState && e.getModifierState("CapsLock"));
   }
@@ -42,14 +45,33 @@ export default function Register() {
     setCaptchaToken(null);
   }
 
-  /* Helper: resend confirmation (with captcha) */
+  /* NEW: server-side check for already-registered emails */
+  async function checkEmailRegistered(currentEmail: string) {
+    try {
+      const res = await fetch("/api/auth/check-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: currentEmail }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setEmailExists(data);
+      return data as { exists: boolean; confirmed?: boolean };
+    } catch (e: any) {
+      // If check fails, we’ll proceed cautiously and still try signUp later
+      setEmailExists(null);
+      return { exists: false };
+    }
+  }
+
+  /* resend helper that passes a fresh captcha token */
   async function resendSignupWithCaptcha(currentEmail: string) {
     if (!currentEmail) {
       setMsg({ type: "error", text: "Enter your email first." });
       return;
     }
     if (!captchaToken) {
-      setMsg({ type: "error", text: "Please complete the captcha first." });
+      setMsg({ type: "error", text: "Please complete the captcha, then click Resend." });
       return;
     }
 
@@ -58,7 +80,7 @@ export default function Register() {
       email: currentEmail,
       options: {
         emailRedirectTo: "https://fuelflow.co.uk/welcome",
-        captchaToken,
+        captchaToken, // required when Attack Protection is ON
       },
     });
 
@@ -67,14 +89,10 @@ export default function Register() {
       return;
     }
 
-    setMsg({
-      type: "info",
-      text: "Confirmation email resent. Check your inbox.",
-    });
-    resetCaptcha();
+    setMsg({ type: "info", text: "Confirmation email resent. Check your inbox." });
+    resetCaptcha(); // token is single-use
   }
 
-  /** 🔐 Improved registration handler */
   async function handleRegister() {
     if (loading) return; // prevent double-clicks
     try {
@@ -94,37 +112,44 @@ export default function Register() {
         return;
       }
 
-      const { data, error } = await supabase.auth.signUp({
+      // NEW: check first if the email is already registered
+      const check = await checkEmailRegistered(email);
+
+      if (check.exists) {
+        // Stop here – don’t call signUp. Give explicit guidance.
+        if (check.confirmed) {
+          setMsg({
+            type: "info",
+            text:
+              "You already have an account with this email. Please Sign in, or reset your password if you’ve forgotten it.",
+          });
+        } else {
+          setMsg({
+            type: "info",
+            text:
+              "This email is already registered but not verified. We can resend the confirmation link below.",
+          });
+        }
+        return; // hard-stop; no signUp() call
+      }
+
+      // Proceed with normal sign-up (email is not registered)
+      const { error } = await supabase.auth.signUp({
         email,
         password,
         options: {
           emailRedirectTo: "https://fuelflow.co.uk/welcome",
-          captchaToken,
+          captchaToken, // must be FRESH each submit
         },
       });
 
       if (error) {
+        // If the backend still says duplicate (race condition), handle gracefully.
         const emsg = (error.message || "").toLowerCase();
-        const duplicate =
-          emsg.includes("already") ||
-          emsg.includes("exists") ||
-          (error as any).status === 422;
+        const looksDuplicate =
+          emsg.includes("already") || emsg.includes("exists") || (error as any).status === 422;
 
-        if (duplicate) {
-          // Check if user already confirmed:
-          const probe = await supabase.auth.signInWithPassword({ email, password });
-          if (probe.data?.user) {
-            await supabase.auth.signOut();
-            setMsg({
-              type: "error",
-              text:
-                "This email is already registered and verified. Please sign in or reset your password.",
-            });
-            resetCaptcha();
-            return;
-          }
-
-          // Otherwise resend confirmation
+        if (looksDuplicate) {
           await resendSignupWithCaptcha(email);
           return;
         }
@@ -133,20 +158,15 @@ export default function Register() {
         return;
       }
 
-      if (data.user && !data.user.confirmed_at) {
-        setMsg({
-          type: "success",
-          text: "Registration successful! Check your email for a verification link, then sign in.",
-        });
-      } else {
-        setMsg({
-          type: "info",
-          text: "Your account already exists and is verified. You can sign in now.",
-        });
-      }
+      // success
+      setMsg({
+        type: "success",
+        text: "Registration successful! Check your email for a verification link, then sign in.",
+      });
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
     } finally {
+      // IMPORTANT: never reuse a token — force a new solve next time
       resetCaptcha();
       setLoading(false);
     }
@@ -158,20 +178,12 @@ export default function Register() {
 
   return (
     <div className="relative flex min-h-screen flex-col bg-[#0b1220] text-white overflow-x-hidden">
-      {/* Global styles */}
+      {/* Global fixes & font */}
       <style jsx global>{`
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
-        html,
-        body {
-          height: 100%;
-          background: #0b1220;
-        }
-        body {
-          overflow-x: hidden;
-        }
-        .ff-display {
-          font-family: 'Outfit', ui-sans-serif, system-ui;
-        }
+        html, body { height: 100%; background:#0b1220; }
+        body { overflow-x: hidden; }
+        .ff-display { font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; }
       `}</style>
 
       {/* Header */}
@@ -200,26 +212,21 @@ export default function Register() {
         <div className="pointer-events-none absolute inset-0 -z-10">
           <div
             className="absolute -top-24 -left-16 h-72 w-72 rounded-full blur-3xl opacity-25"
-            style={{
-              background:
-                "radial-gradient(circle at 30% 30%, #FFE27A, transparent 60%)",
-            }}
+            style={{ background: "radial-gradient(circle at 30% 30%, #FFE27A, transparent 60%)" }}
           />
           <div
             className="absolute -bottom-28 -right-10 h-96 w-96 rounded-full blur-3xl opacity-20"
-            style={{
-              background:
-                "radial-gradient(circle at 30% 30%, #FDB022, transparent 60%)",
-            }}
+            style={{ background: "radial-gradient(circle at 30% 30%, #FDB022, transparent 60%)" }}
           />
           <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.04)_0%,rgba(255,255,255,0.02)_30%,transparent_30%),linear-gradient(0deg,transparent_0%,transparent_96%,rgba(255,255,255,0.06)_96%)]" />
         </div>
 
-        {/* Layout grid */}
-        <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
-          {/* Left: Register form */}
-          <section className="order-1 flex lg:col-span-5">
+        {/* Form LEFT, benefits RIGHT */}
+        <div className="mx-auto grid max-w-6xl grid-cols-1 items-stretch gap-6 px-4 py-8 lg:grid-cols-12 lg:py-12">
+          {/* Register card */}
+          <section className="order-1 flex lg:order-1 lg:col-span-5">
             <div className="flex-1 rounded-2xl bg-white/5 backdrop-blur p-6 md:p-7 ring-1 ring-inset ring-white/10">
+              {/* Stepper */}
               <ol className="ff-display mb-5 flex items-center justify-between gap-2 text-[11px] uppercase tracking-widest text-white/70">
                 <li className="flex items-center gap-2">
                   <StepDot active /> Create
@@ -234,12 +241,12 @@ export default function Register() {
                 </li>
               </ol>
 
-              <h1 className="text-2xl font-extrabold tracking-tight">
-                Register your account
-              </h1>
-              <p className="mt-1 text-sm font-medium text-white/70">
-                Quick setup — verify by email, then you’re in.
-              </p>
+              <div className="mb-2 ff-display">
+                <h1 className="text-2xl font-extrabold tracking-tight">Register your account</h1>
+                <p className="mt-1 text-sm font-medium text-white/70">
+                  Quick setup — verify by email, then you’re in.
+                </p>
+              </div>
 
               {/* Email */}
               <label className="mt-4 block text-sm">
@@ -247,14 +254,27 @@ export default function Register() {
                 <div className="relative">
                   <input
                     type="email"
-                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-10 text-white placeholder-white/45 outline-none focus:ring-2 focus:ring-yellow-500/30"
+                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-10 text-white placeholder-white/45 outline-none focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
                     placeholder="name@company.com"
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={async (e) => {
+                      setEmail(e.target.value);
+                      setEmailExists(null);
+                    }}
+                    onBlur={() => email && checkEmailRegistered(email)}
                     onKeyDown={onEnter}
                     autoComplete="email"
                   />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 opacity-70">
+                    <MailIcon className="h-4 w-4" />
+                  </span>
                 </div>
+                {/* NEW: tiny inline hint */}
+                {emailExists?.exists && (
+                  <div className="mt-1 text-xs text-amber-300">
+                    This email is already registered{emailExists.confirmed ? "" : " but not verified"}.
+                  </div>
+                )}
               </label>
 
               {/* Password */}
@@ -264,7 +284,7 @@ export default function Register() {
                   <div className="relative">
                     <input
                       type={showPassword ? "text" : "password"}
-                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-16 text-white placeholder-white/45 outline-none focus:ring-2 focus:ring-yellow-500/30"
+                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-16 text-white placeholder-white/45 outline-none focus:border-white/20 focus:ring-2 focus:ring-yellow-500/30"
                       placeholder="Minimum 8 characters"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -274,6 +294,7 @@ export default function Register() {
                     />
                     <button
                       type="button"
+                      aria-label={showPassword ? "Hide password" : "Show password"}
                       onClick={() => setShowPassword((s) => !s)}
                       className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
                     >
@@ -281,11 +302,7 @@ export default function Register() {
                     </button>
                   </div>
                 </label>
-                {capsOn && (
-                  <div className="mt-1 text-xs text-amber-300">
-                    Caps Lock is ON
-                  </div>
-                )}
+                {capsOn && <div className="mt-1 text-xs text-amber-300">Caps Lock is ON</div>}
                 <p className="mt-1 text-xs text-white/60">
                   Tip: include numbers & symbols for a stronger password.
                 </p>
@@ -313,161 +330,190 @@ export default function Register() {
                 />
                 <span>
                   I agree to the{" "}
-                  <a
-                    href="/terms"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-yellow-300 underline-offset-2 hover:underline"
-                  >
+                  <a href="/terms" target="_blank" rel="noreferrer" className="text-yellow-300 underline-offset-2 hover:underline">
                     Terms
                   </a>
                 </span>
               </label>
 
               {/* CTA */}
-              <div className="mt-4">
+              <div className="mt-4 grid grid-cols-1 gap-2">
                 <button
                   onClick={handleRegister}
                   disabled={loading}
-                  className="w-full rounded-lg bg-yellow-500 px-4 py-2 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
+                  className="ff-display rounded-lg bg-yellow-500 px-4 py-2 text-sm font-semibold tracking-wide text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
                 >
                   {loading ? "Creating account…" : "Create account"}
                 </button>
               </div>
 
-              {/* Message */}
+              {/* Message area */}
               {msg && (
                 <div
-                  className={`mt-4 rounded-lg border p-2 text-sm ${
+                  className={[
+                    "mt-4 rounded-lg border p-2 text-sm",
                     msg.type === "error"
                       ? "border-rose-400/40 bg-rose-500/10 text-rose-200"
                       : msg.type === "success"
                       ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
-                      : "border-white/15 bg-white/5 text-white/80"
-                  }`}
+                      : "border-white/15 bg-white/5 text-white/80",
+                  ].join(" ")}
                 >
                   <div>{msg.text}</div>
-                  {msg.type === "error" &&
-                    /already registered|verified/i.test(msg.text) && (
-                      <div className="mt-2 flex gap-2">
-                        <a
-                          href="/login"
-                          className="rounded-md bg-white/10 px-2.5 py-1 text-xs hover:bg-white/15"
-                        >
-                          Sign in
-                        </a>
-                        <a
-                          href="/update-password"
-                          className="rounded-md bg-white/10 px-2.5 py-1 text-xs hover:bg-white/15"
-                        >
-                          Reset password
-                        </a>
-                      </div>
-                    )}
-                  {(msg.type === "info" ||
-                    /confirmation email resent/i.test(msg.text)) && (
-                    <button
-                      className="mt-2 text-xs underline text-yellow-300"
-                      onClick={async () => {
-                        await resendSignupWithCaptcha(email);
-                      }}
-                    >
-                      Resend confirmation email
-                    </button>
+
+                  {/* When already registered, give clear next actions */}
+                  {emailExists?.exists && (
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                      <a href="/login" className="rounded bg-white/10 px-2 py-1 hover:bg-white/15">Sign in</a>
+                      <a href="/reset-password" className="rounded bg-white/10 px-2 py-1 hover:bg-white/15">Forgot password</a>
+                      <button
+                        className="rounded bg-white/10 px-2 py-1 hover:bg-white/15"
+                        onClick={() => resendSignupWithCaptcha(email)}
+                      >
+                        Resend verification
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
 
+              {/* Switch to login */}
               <p className="mt-4 text-center text-xs text-white/70">
                 Already have an account?{" "}
-                <a
-                  href="/login"
-                  className="text-yellow-300 underline-offset-2 hover:underline"
-                >
+                <a href="/login" className="text-yellow-300 underline-offset-2 hover:underline">
                   Sign in
                 </a>
               </p>
             </div>
           </section>
 
-          {/* Right: benefits */}
-          <section className="order-2 flex lg:col-span-7">
+          {/* Right: bold hero/benefits */}
+          <section className="order-2 flex lg:order-2 lg:col-span-7">
             <div className="relative flex-1 overflow-hidden rounded-2xl bg-[radial-gradient(1200px_400px_at_80%_-10%,rgba(253,176,34,0.18),transparent),radial-gradient(1000px_500px_at_-10%_110%,rgba(255,226,122,0.14),transparent)] p-6 md:p-8 ring-1 ring-inset ring-white/10">
+              <span className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-yellow-500/15 blur-3xl" />
               <div className="ff-display">
                 <h2 className="text-4xl font-extrabold leading-tight tracking-tight">
-                  Join FuelFlow <br />
+                  Join FuelFlow
+                  <br />
                   <span className="text-yellow-300">in minutes</span>
                 </h2>
                 <p className="mt-3 max-w-xl text-white/75">
-                  A modern client area for pricing, orders, and documents — built
-                  for clarity and speed.
+                  A modern client area for pricing, orders, and documents — built for clarity and speed.
                 </p>
               </div>
 
               <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <Benefit
-                  title="Clear pricing"
-                  blurb="See today’s rates and lock a price before you order."
-                />
-                <Benefit
-                  title="Secure checkout"
-                  blurb="3-D Secure payments via Stripe; card details never touch our servers."
-                />
-                <Benefit
-                  title="Flexible delivery"
-                  blurb="Pick a preferred slot — availability may vary by area and supplier."
-                />
-                <Benefit
-                  title="Human support"
-                  blurb="Email or live chat with our UK-based team during business hours."
-                />
+                <Benefit title="Clear pricing" blurb="See today’s rates and lock a price before you order." Icon={ChartIcon} />
+                <Benefit title="Secure checkout" blurb="3-D Secure payments via Stripe; card details never touch our servers." Icon={ShieldIcon} />
+                <Benefit title="Flexible delivery" blurb="Pick a preferred slot — availability may vary by area and supplier." Icon={TruckIcon} />
+                <Benefit title="Human support" blurb="Email or live chat with our UK-based team during business hours." Icon={HeadsetIcon} />
               </div>
+
               <p className="mt-6 text-xs text-white/60">
-                No marketing spam. We’ll email you only about your account and
-                orders.
+                No marketing spam. We’ll email you only about your account and orders.
               </p>
             </div>
           </section>
         </div>
       </main>
 
-      <footer className="border-t border-white/10">
+      <footer className="relative border-t border-white/10">
         <div className="mx-auto max-w-6xl px-4 py-4 text-center text-xs text-white/60">
-          © {new Date().getFullYear()} FuelFlow. Secure signup powered by
-          Supabase &amp; hCaptcha.
+          © {new Date().getFullYear()} FuelFlow. Secure signup powered by Supabase &amp; hCaptcha.
         </div>
       </footer>
     </div>
   );
 }
 
-/* Helpers */
+/* ---------- helpers & icons ---------- */
 function StepDot({ active = false }: { active?: boolean }) {
   return (
     <span
-      className={`inline-block h-2.5 w-2.5 rounded-full ${
-        active
-          ? "bg-yellow-400 shadow-[0_0_0_3px_rgba(253,176,34,0.25)]"
-          : "bg-white/30"
-      }`}
+      className={[
+        "inline-block h-2.5 w-2.5 rounded-full",
+        active ? "bg-yellow-400 shadow-[0_0_0_3px_rgba(253,176,34,0.25)]" : "bg-white/30",
+      ].join(" ")}
     />
   );
 }
 function Line() {
   return <span className="h-px w-12 bg-white/15" />;
 }
+
 function Benefit({
   title,
   blurb,
+  Icon,
 }: {
   title: string;
   blurb: string;
+  Icon: (p: { className?: string }) => ReactElement;
 }) {
   return (
-    <div className="group rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 ring-1 ring-inset ring-white/10 hover:translate-y-[-1px] hover:ring-white/20 transition">
+    <div className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-gray-800 to-gray-850 p-4 ring-1 ring-inset ring-white/10 transition hover:translate-y-[-1px] hover:ring-white/20">
+      <span className="pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-yellow-500/10 blur-2xl" />
+      <div className="mb-3">
+        <Icon className="h-12 w-12 opacity-90 transition group-hover:scale-105" />
+      </div>
       <div className="text-lg font-semibold">{title}</div>
       <div className="mt-1 text-sm text-white/75">{blurb}</div>
     </div>
+  );
+}
+
+function MailIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <rect x="3" y="5" width="18" height="14" rx="2" ry="2" />
+      <path d="M3 7l9 6 9-6" />
+    </svg>
+  );
+}
+function ChartIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className}>
+      <defs>
+        <linearGradient id="g1" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0" stopColor="#FFD000" stopOpacity="0.25" />
+          <stop offset="1" stopColor="#FFD000" stopOpacity="0.45" />
+        </linearGradient>
+      </defs>
+      <rect x="6" y="10" width="52" height="40" rx="8" fill="none" stroke="currentColor" opacity="0.3" />
+      <path d="M12 40 L24 28 L34 33 L46 20 L54 24" fill="none" stroke="url(#g1)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="24" cy="28" r="2" fill="#FFD000" />
+      <circle cx="46" cy="20" r="2" fill="#FFD000" />
+    </svg>
+  );
+}
+function ShieldIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className}>
+      <path d="M32 10l16 6v12c0 10-7 18-16 22-9-4-16-12-16-22V16l16-6z" fill="none" stroke="currentColor" opacity="0.35" />
+      <rect x="22" y="24" width="20" height="12" rx="3" fill="none" stroke="#FFD000" opacity="0.6" />
+      <circle cx="32" cy="30" r="2" fill="#FFD000" />
+    </svg>
+  );
+}
+function TruckIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className}>
+      <rect x="6" y="22" width="30" height="16" rx="3" fill="none" stroke="currentColor" opacity="0.35" />
+      <path d="M36 26h10l6 6v6H36z" fill="none" stroke="currentColor" opacity="0.35" />
+      <circle cx="18" cy="42" r="4" fill="#FFD000" />
+      <circle cx="46" cy="42" r="4" fill="#FFD000" />
+      <path d="M8 22h26" stroke="#FFD000" strokeWidth="2" opacity="0.5" />
+    </svg>
+  );
+}
+function HeadsetIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className}>
+      <path d="M12 36v-4c0-11 9-20 20-20s20 9 20 20v4" fill="none" stroke="currentColor" opacity="0.35" />
+      <rect x="10" y="34" width="10" height="12" rx="3" fill="#FFD000" />
+      <rect x="44" y="34" width="10" height="12" rx="3" fill="#FFD000" />
+      <path d="M40 48c0 3-4 6-8 6" stroke="currentColor" opacity="0.35" />
+    </svg>
   );
 }
 
