@@ -2,121 +2,152 @@
 // src/pages/update-password.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// Supabase client
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
-// ✅ Prevent static generation during build (avoids "window is not defined")
-export const dynamic = "force-dynamic";
-
-type Stage = "checking" | "ready" | "error" | "done";
+type Msg = { t: "ok" | "err" | "info"; m: string };
 
 export default function UpdatePassword() {
+  // UI state
+  const [mounted, setMounted] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg | null>(null);
+
+  // Reset flow state
+  const [sessionReady, setSessionReady] = useState(false); // true when the email link created a valid session
+  const [linkError, setLinkError] = useState<string | null>(null); // error from the link (expired/invalid/etc.)
+
+  // Form
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [show, setShow] = useState(false);
 
-  const [busy, setBusy] = useState(false);
-  const [stage, setStage] = useState<Stage>("checking");
-  const [banner, setBanner] = useState<{ t: "ok" | "err" | "info"; m: string } | null>(null);
+  // Resend box
   const [email, setEmail] = useState("");
 
-  // ✅ Only run client-side logic after mount
+  // Derived: allow the password form only if we have a session and no link error
+  const canEditPassword = useMemo(() => sessionReady && !linkError, [sessionReady, linkError]);
+
+  // --- Mount: parse the hash safely on the client, hydrate session if needed ---
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    setMounted(true);
 
     (async () => {
       try {
-        const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-        const urlError = hash.get("error");
-        const urlErrorCode = hash.get("error_code");
-        const urlErrorDesc = hash.get("error_description");
+        // Nothing SSR here — we're already in effect.
+        const rawHash = window.location.hash || "";
 
-        if (urlError || urlErrorCode) {
-          setBanner({
-            t: "err",
-            m: urlErrorDesc || "This reset link is invalid or has expired. Request a new one below.",
-          });
-          setStage("error");
-          return;
+        // 1) Interpret any error sent by Supabase in the URL fragment
+        if (rawHash.includes("error=")) {
+          const qp = new URLSearchParams(rawHash.replace(/^#/, ""));
+          const code = qp.get("error_code") || "";
+          const desc = qp.get("error_description") || "";
+          // Show a friendly banner. We still keep the resend panel enabled below.
+          setLinkError(desc || code || "The link is invalid or has expired.");
         }
 
-        const { data, error } = await supabase.auth.exchangeCodeForSession(window.location.href);
-        if (error) {
-          setBanner({ t: "err", m: error.message || "Could not verify your reset link." });
-          setStage("error");
-          return;
+        // 2) If the hash contains a recovery code, convert it into a real session.
+        //    This fixes "Auth session missing!" when you submit the new password.
+        if (rawHash.includes("type=recovery") || rawHash.includes("access_token")) {
+          const { error } = await supabase.auth.exchangeCodeForSession(rawHash);
+          if (error) {
+            // If the code was expired/used, leave canEdit disabled and show resend UI
+            setSessionReady(false);
+          } else {
+            setSessionReady(true);
+          }
+        } else {
+          // If the page was opened directly (no hash), there won't be a session yet.
+          // Leave sessionReady=false; user can use the resend box.
+          const { data } = await supabase.auth.getSession();
+          setSessionReady(!!data.session);
         }
 
-        setEmail(data.session?.user?.email || "");
-        setStage("ready");
-      } catch (e: any) {
-        setBanner({ t: "err", m: e?.message || "Could not verify your reset link." });
-        setStage("error");
+        // 3) Optional nicety: if email is in the fragment (some providers include it), prefill the resend box
+        const qp = new URLSearchParams(rawHash.replace(/^#/, ""));
+        const emailFromLink = qp.get("email") || qp.get("user_email");
+        if (emailFromLink) setEmail(emailFromLink);
+      } catch {
+        // Ignore — user can still use the resend box
       }
     })();
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setBanner(null);
+    setMsg(null);
 
-    if (stage !== "ready") {
-      setBanner({ t: "err", m: "Auth session missing. Request a new reset link below." });
-      setStage("error");
+    if (!canEditPassword) {
+      setMsg({ t: "err", m: "Password cannot be updated because your reset link is invalid or expired. Please use the resend form below." });
       return;
     }
-
     if (!password || password.length < 8) {
-      setBanner({ t: "err", m: "Use at least 8 characters." });
+      setMsg({ t: "err", m: "Use at least 8 characters." });
       return;
     }
     if (password !== confirm) {
-      setBanner({ t: "err", m: "Passwords don’t match." });
+      setMsg({ t: "err", m: "Passwords don’t match." });
       return;
     }
 
-    try {
-      setBusy(true);
-      const { error } = await supabase.auth.updateUser({ password });
-      if (error) throw error;
-      setBanner({ t: "ok", m: "Password updated. You can now sign in." });
-      setStage("done");
-    } catch (e: any) {
-      setBanner({ t: "err", m: e?.message || "Update failed." });
-      setStage("error");
-    } finally {
-      setBusy(false);
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+
+    if (error) {
+      setMsg({ t: "err", m: error.message || "Update failed." });
+      return;
     }
+    setMsg({ t: "ok", m: "Password updated. You can now sign in." });
+
+    // Clean out the sensitive fields
+    setPassword("");
+    setConfirm("");
   }
 
-  async function resendReset() {
-    try {
-      const addr = email.trim();
-      if (!addr) throw new Error("Enter your email to resend the reset link.");
-      const { error } = await supabase.auth.resetPasswordForEmail(addr, {
-        redirectTo: "https://dashboard.fuelflow.co.uk/update-password",
-      });
-      if (error) throw error;
-      setBanner({
-        t: "info",
-        m: `We’ve sent a new password reset link to ${addr}. Check your inbox and spam.`,
-      });
-    } catch (e: any) {
-      setBanner({ t: "err", m: e?.message || "Could not send reset email." });
+  async function resendReset(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg(null);
+
+    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      setMsg({ t: "err", m: "Enter a valid email address." });
+      return;
     }
+
+    setBusy(true);
+    // v2 API: resetPasswordForEmail sends a recovery email
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: "https://dashboard.fuelflow.co.uk/update-password",
+    });
+    setBusy(false);
+
+    if (error) {
+      setMsg({ t: "err", m: error.message || "Couldn’t send reset email." });
+      return;
+    }
+    setMsg({ t: "info", m: "Reset email sent. Open the link on this device to continue." });
+  }
+
+  // Avoid SSR hiccups
+  if (!mounted) {
+    return (
+      <div className="min-h-screen grid place-items-center bg-[#081a2f] text-white">
+        <div className="rounded-xl border border-white/10 bg-white/[0.03] px-6 py-4 text-white/80">Loading…</div>
+      </div>
+    );
   }
 
   return (
     <div className="min-h-screen bg-[#081a2f] text-white relative">
+      {/* soft background */}
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.06),transparent_60%)]" />
 
-      {/* Header */}
+      {/* Header — single brand only */}
       <header className="relative mx-auto max-w-5xl px-4 py-6">
         <a href="/login" className="flex items-center gap-3">
           <img src="/logo-email.png" alt="FuelFlow" className="h-9 w-auto" />
@@ -131,90 +162,94 @@ export default function UpdatePassword() {
               Reset your password
             </span>
           </h1>
-          <p className="text-white/80 mb-6">
+          <p className="text-white/80 mb-4">
             Enter a new password below. For security, use at least 8 characters.
           </p>
 
-          {banner && (
-            <div
-              className={`mb-4 rounded-md border p-2 text-sm ${
-                banner.t === "ok"
-                  ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
-                  : banner.t === "info"
-                  ? "border-white/20 bg-white/5 text-white/90"
-                  : "border-rose-400/40 bg-rose-500/10 text-rose-200"
-              }`}
-            >
-              {banner.m}
+          {/* Link error banner (expired/invalid) */}
+          {linkError && (
+            <div className="mb-4 rounded-md border border-rose-400/40 bg-rose-500/10 text-rose-200 px-3 py-2 text-sm">
+              {linkError || "Email link is invalid or has expired"}
             </div>
           )}
 
-          {stage !== "done" && (
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="text-sm mb-1 block">New password</label>
-                <div className="relative">
-                  <input
-                    type={show ? "text" : "password"}
-                    className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 outline-none focus:ring focus:ring-yellow-500/30"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    disabled={stage !== "ready"}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShow((s) => !s)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
-                  >
-                    {show ? "Hide" : "Show"}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className="text-sm mb-1 block">Confirm password</label>
+          {/* Password form */}
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="text-sm mb-1 block">New password</label>
+              <div className="relative">
                 <input
+                  disabled={!canEditPassword || busy}
                   type={show ? "text" : "password"}
-                  className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 outline-none focus:ring focus:ring-yellow-500/30"
-                  value={confirm}
-                  onChange={(e) => setConfirm(e.target.value)}
-                  disabled={stage !== "ready"}
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={busy || stage !== "ready"}
-                className="w-full rounded-xl bg-yellow-500 py-3 font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
-              >
-                {busy ? "Updating…" : "Update password"}
-              </button>
-            </form>
-          )}
-
-          {stage === "error" && (
-            <div className="mt-6 rounded-xl border border-white/10 bg-white/5 p-4">
-              <div className="text-sm mb-2">Resend a new reset link</div>
-              <div className="flex gap-2">
-                <input
-                  placeholder="email@domain.com"
-                  className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 outline-none focus:ring focus:ring-yellow-500/30 disabled:opacity-50"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
                 />
                 <button
-                  onClick={resendReset}
-                  className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
+                  type="button"
+                  disabled={!canEditPassword}
+                  onClick={() => setShow((s) => !s)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15 disabled:opacity-30"
                 >
-                  Send
+                  {show ? "Hide" : "Show"}
                 </button>
               </div>
             </div>
-          )}
 
-          {stage === "done" && (
-            <div className="mt-6 rounded-md border border-emerald-400/40 bg-emerald-500/10 p-3 text-emerald-200">
-              Password updated. You can now <a className="underline" href="/login">sign in</a>.
+            <div>
+              <label className="text-sm mb-1 block">Confirm password</label>
+              <input
+                disabled={!canEditPassword || busy}
+                type={show ? "text" : "password"}
+                className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 outline-none focus:ring focus:ring-yellow-500/30 disabled:opacity-50"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={!canEditPassword || busy}
+              className="w-full rounded-xl bg-yellow-500 py-3 font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
+            >
+              {busy ? "Updating…" : "Update password"}
+            </button>
+          </form>
+
+          {/* Resend panel */}
+          <div className="mt-6 border-t border-white/10 pt-4">
+            <form onSubmit={resendReset} className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-center">
+              <label className="text-sm text-white/80 sm:col-span-2">Resend a new reset link</label>
+              <input
+                type="email"
+                placeholder="email@domain.com"
+                className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 outline-none focus:ring focus:ring-yellow-500/30"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+              />
+              <button
+                type="submit"
+                disabled={busy}
+                className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15 disabled:opacity-60"
+              >
+                Send
+              </button>
+            </form>
+          </div>
+
+          {/* Messages */}
+          {msg && (
+            <div
+              className={`mt-4 rounded-md border p-2 text-sm ${
+                msg.t === "ok"
+                  ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
+                  : msg.t === "info"
+                  ? "border-white/20 bg-white/10 text-white/80"
+                  : "border-rose-400/40 bg-rose-500/10 text-rose-200"
+              }`}
+            >
+              {msg.m}
             </div>
           )}
 
@@ -222,7 +257,12 @@ export default function UpdatePassword() {
             <a href="/login" className="text-white/80 hover:underline">
               Back to login
             </a>
-            <a href="https://fuelflow.co.uk" target="_blank" className="text-yellow-300 hover:underline">
+            <a
+              href="https://fuelflow.co.uk"
+              target="_blank"
+              rel="noreferrer"
+              className="text-yellow-300 hover:underline"
+            >
               fuelflow.co.uk →
             </a>
           </div>
