@@ -365,7 +365,7 @@ export default function Register() {
                   {emailExists?.exists && (
                     <div className="mt-2 flex flex-wrap gap-2 text-xs">
                       <a href="/login" className="rounded bg-white/10 px-2 py-1 hover:bg-white/15">Sign in</a>
-                      <a href="/reset-password" className="rounded bg-white/10 px-2 py-1 hover:bg-white/15">Forgot password</a>
+                      <a href="/update-password" className="rounded bg-white/10 px-2 py-1 hover:bg-white/15">Forgot password</a>
                       <button
                         className="rounded bg-white/10 px-2 py-1 hover:bg-white/15"
                         onClick={() => resendSignupWithCaptcha(email)}
