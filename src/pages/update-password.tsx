@@ -2,8 +2,9 @@
 // src/pages/update-password.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import HCaptcha from "@hcaptcha/react-hcaptcha";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -14,76 +15,67 @@ type Msg = { t: "ok" | "err" | "info"; m: string };
 
 export default function UpdatePassword() {
   // UI state
-  const [mounted, setMounted] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<Msg | null>(null);
-
-  // Reset flow state
-  const [sessionReady, setSessionReady] = useState(false); // true when the email link created a valid session
-  const [linkError, setLinkError] = useState<string | null>(null); // error from the link (expired/invalid/etc.)
-
-  // Form
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [show, setShow] = useState(false);
+  const [msg, setMsg] = useState<Msg | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  // Resend box
+  // Resend section
   const [email, setEmail] = useState("");
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
-  // Derived: allow the password form only if we have a session and no link error
-  const canEditPassword = useMemo(() => sessionReady && !linkError, [sessionReady, linkError]);
+  // Link/session status
+  const [haveSession, setHaveSession] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
 
-  // --- Mount: parse the hash safely on the client, hydrate session if needed ---
+  /**
+   * Parse hash parameters only on the client.
+   * Check for a Supabase recovery session.
+   */
   useEffect(() => {
-    setMounted(true);
+    // Read hash params like #error=access_denied&error_code=otp_expired...
+    try {
+      const hash = typeof window !== "undefined" ? window.location.hash : "";
+      if (hash?.includes("error=")) {
+        const qp = new URLSearchParams(hash.replace(/^#/, ""));
+        const err = qp.get("error_description") || qp.get("error") || null;
+        if (err) setLinkError(err.replace(/\+/g, " "));
+      }
+    } catch {
+      /* ignore */
+    }
 
+    // Warm session (Supabase injects a session for valid recovery links)
     (async () => {
-      try {
-        // Nothing SSR here — we're already in effect.
-        const rawHash = window.location.hash || "";
+      const { data } = await supabase.auth.getSession();
+      const ok = !!data.session;
+      setHaveSession(ok);
 
-        // 1) Interpret any error sent by Supabase in the URL fragment
-        if (rawHash.includes("error=")) {
-          const qp = new URLSearchParams(rawHash.replace(/^#/, ""));
-          const code = qp.get("error_code") || "";
-          const desc = qp.get("error_description") || "";
-          // Show a friendly banner. We still keep the resend panel enabled below.
-          setLinkError(desc || code || "The link is invalid or has expired.");
-        }
-
-        // 2) If the hash contains a recovery code, convert it into a real session.
-        //    This fixes "Auth session missing!" when you submit the new password.
-        if (rawHash.includes("type=recovery") || rawHash.includes("access_token")) {
-          const { error } = await supabase.auth.exchangeCodeForSession(rawHash);
-          if (error) {
-            // If the code was expired/used, leave canEdit disabled and show resend UI
-            setSessionReady(false);
-          } else {
-            setSessionReady(true);
-          }
-        } else {
-          // If the page was opened directly (no hash), there won't be a session yet.
-          // Leave sessionReady=false; user can use the resend box.
-          const { data } = await supabase.auth.getSession();
-          setSessionReady(!!data.session);
-        }
-
-        // 3) Optional nicety: if email is in the fragment (some providers include it), prefill the resend box
-        const qp = new URLSearchParams(rawHash.replace(/^#/, ""));
-        const emailFromLink = qp.get("email") || qp.get("user_email");
-        if (emailFromLink) setEmail(emailFromLink);
-      } catch {
-        // Ignore — user can still use the resend box
+      // If no session and no link error supplied by hash, show a friendly hint
+      if (!ok && !linkError) {
+        setLinkError("Email link is invalid or has expired");
       }
     })();
+
+    // Also listen for auth events (sometimes the session appears after hydration)
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, sess) => {
+      setHaveSession(!!sess);
+    });
+
+    return () => {
+      sub.subscription.unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** Update password for a valid recovery session */
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setMsg(null);
 
-    if (!canEditPassword) {
-      setMsg({ t: "err", m: "Password cannot be updated because your reset link is invalid or expired. Please use the resend form below." });
+    if (!haveSession) {
+      setMsg({ t: "err", m: "Auth session missing. Please request a new link below." });
       return;
     }
     if (!password || password.length < 8) {
@@ -104,12 +96,11 @@ export default function UpdatePassword() {
       return;
     }
     setMsg({ t: "ok", m: "Password updated. You can now sign in." });
-
-    // Clean out the sensitive fields
     setPassword("");
     setConfirm("");
   }
 
+  /** Resend a new password reset email (hCaptcha required if enabled) */
   async function resendReset(e: React.FormEvent) {
     e.preventDefault();
     setMsg(null);
@@ -118,28 +109,26 @@ export default function UpdatePassword() {
       setMsg({ t: "err", m: "Enter a valid email address." });
       return;
     }
+    if (!captchaToken) {
+      setMsg({ t: "err", m: "Please complete the captcha first." });
+      return;
+    }
 
     setBusy(true);
-    // v2 API: resetPasswordForEmail sends a recovery email
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: "https://dashboard.fuelflow.co.uk/update-password",
+      captchaToken, // <- critical when CAPTCHA is required in Supabase
     });
     setBusy(false);
+
+    // clear captcha for the next attempt
+    setCaptchaToken(null);
 
     if (error) {
       setMsg({ t: "err", m: error.message || "Couldn’t send reset email." });
       return;
     }
-    setMsg({ t: "info", m: "Reset email sent. Open the link on this device to continue." });
-  }
-
-  // Avoid SSR hiccups
-  if (!mounted) {
-    return (
-      <div className="min-h-screen grid place-items-center bg-[#081a2f] text-white">
-        <div className="rounded-xl border border-white/10 bg-white/[0.03] px-6 py-4 text-white/80">Loading…</div>
-      </div>
-    );
+    setMsg({ t: "info", m: "Reset email sent. Please check your inbox." });
   }
 
   return (
@@ -147,10 +136,10 @@ export default function UpdatePassword() {
       {/* soft background */}
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.06),transparent_60%)]" />
 
-      {/* Header — single brand only */}
+      {/* Header — brand */}
       <header className="relative mx-auto max-w-5xl px-4 py-6">
         <a href="/login" className="flex items-center gap-3">
-          <img src="/logo-email.png" alt="FuelFlow" className="h-9 w-auto" />
+          <img src="https://dashboard.fuelflow.co.uk/logo-email.png" alt="FuelFlow" className="h-9 w-auto" />
           <span className="sr-only">FuelFlow</span>
         </a>
       </header>
@@ -166,30 +155,29 @@ export default function UpdatePassword() {
             Enter a new password below. For security, use at least 8 characters.
           </p>
 
-          {/* Link error banner (expired/invalid) */}
+          {/* Link/session banner */}
           {linkError && (
-            <div className="mb-4 rounded-md border border-rose-400/40 bg-rose-500/10 text-rose-200 px-3 py-2 text-sm">
-              {linkError || "Email link is invalid or has expired"}
+            <div className="mb-4 rounded-md border border-rose-400/40 bg-rose-500/10 p-2 text-sm text-rose-200">
+              {linkError}
             </div>
           )}
 
-          {/* Password form */}
+          {/* Update form */}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="text-sm mb-1 block">New password</label>
               <div className="relative">
                 <input
-                  disabled={!canEditPassword || busy}
                   type={show ? "text" : "password"}
                   className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 outline-none focus:ring focus:ring-yellow-500/30 disabled:opacity-50"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  disabled={!haveSession}
                 />
                 <button
                   type="button"
-                  disabled={!canEditPassword}
                   onClick={() => setShow((s) => !s)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15 disabled:opacity-30"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
                 >
                   {show ? "Hide" : "Show"}
                 </button>
@@ -199,44 +187,22 @@ export default function UpdatePassword() {
             <div>
               <label className="text-sm mb-1 block">Confirm password</label>
               <input
-                disabled={!canEditPassword || busy}
                 type={show ? "text" : "password"}
                 className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 outline-none focus:ring focus:ring-yellow-500/30 disabled:opacity-50"
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
+                disabled={!haveSession}
               />
             </div>
 
             <button
               type="submit"
-              disabled={!canEditPassword || busy}
+              disabled={busy || !haveSession}
               className="w-full rounded-xl bg-yellow-500 py-3 font-semibold text-[#041F3E] hover:bg-yellow-400 disabled:opacity-60"
             >
               {busy ? "Updating…" : "Update password"}
             </button>
           </form>
-
-          {/* Resend panel */}
-          <div className="mt-6 border-t border-white/10 pt-4">
-            <form onSubmit={resendReset} className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-center">
-              <label className="text-sm text-white/80 sm:col-span-2">Resend a new reset link</label>
-              <input
-                type="email"
-                placeholder="email@domain.com"
-                className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 outline-none focus:ring focus:ring-yellow-500/30"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="email"
-              />
-              <button
-                type="submit"
-                disabled={busy}
-                className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15 disabled:opacity-60"
-              >
-                Send
-              </button>
-            </form>
-          </div>
 
           {/* Messages */}
           {msg && (
@@ -245,13 +211,47 @@ export default function UpdatePassword() {
                 msg.t === "ok"
                   ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
                   : msg.t === "info"
-                  ? "border-white/20 bg-white/10 text-white/80"
+                  ? "border-white/20 bg-white/10 text-white/90"
                   : "border-rose-400/40 bg-rose-500/10 text-rose-200"
               }`}
             >
               {msg.m}
             </div>
           )}
+
+          {/* Resend panel with hCaptcha */}
+          <div className="mt-6 border-t border-white/10 pt-4">
+            <form onSubmit={resendReset} className="grid grid-cols-1 gap-3">
+              <label className="text-sm text-white/80">Resend a new reset link</label>
+
+              <input
+                type="email"
+                placeholder="email@domain.com"
+                className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 outline-none focus:ring focus:ring-yellow-500/30"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+              />
+
+              <HCaptcha
+                sitekey={process.env.NEXT_PUBLIC_HCAPTCHA_SITEKEY || ""}
+                onVerify={(token) => setCaptchaToken(token)}
+                onExpire={() => setCaptchaToken(null)}
+                onClose={() => setCaptchaToken(null)}
+                theme="dark"
+              />
+
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15 disabled:opacity-60"
+                >
+                  Send
+                </button>
+              </div>
+            </form>
+          </div>
 
           <div className="mt-6 flex items-center justify-between text-sm">
             <a href="/login" className="text-white/80 hover:underline">
@@ -275,5 +275,6 @@ export default function UpdatePassword() {
     </div>
   );
 }
+
 
 
