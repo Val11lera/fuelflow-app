@@ -2,13 +2,17 @@
 // src/pages/update-password.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+// Supabase client
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
+
+// ✅ Prevent static generation during build (avoids "window is not defined")
+export const dynamic = "force-dynamic";
 
 type Stage = "checking" | "ready" | "error" | "done";
 
@@ -20,30 +24,28 @@ export default function UpdatePassword() {
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState<Stage>("checking");
   const [banner, setBanner] = useState<{ t: "ok" | "err" | "info"; m: string } | null>(null);
-
-  // for resend
   const [email, setEmail] = useState("");
 
-  // Supabase puts params in the hash (#...). Parse it once.
-  const hash = useMemo(() => new URLSearchParams(window.location.hash.replace(/^#/, "")), []);
-  const urlError = hash.get("error");
-  const urlErrorCode = hash.get("error_code");
-  const urlErrorDesc = hash.get("error_description");
-
+  // ✅ Only run client-side logic after mount
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
     (async () => {
       try {
-        // If Supabase already said it's bad/expired, show the error immediately.
+        const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+        const urlError = hash.get("error");
+        const urlErrorCode = hash.get("error_code");
+        const urlErrorDesc = hash.get("error_description");
+
         if (urlError || urlErrorCode) {
           setBanner({
             t: "err",
-            m: urlErrorDesc || "This reset link is invalid or has expired. Request a new link below.",
+            m: urlErrorDesc || "This reset link is invalid or has expired. Request a new one below.",
           });
           setStage("error");
           return;
         }
 
-        // Exchange code from URL for an auth session (v2 flow)
         const { data, error } = await supabase.auth.exchangeCodeForSession(window.location.href);
         if (error) {
           setBanner({ t: "err", m: error.message || "Could not verify your reset link." });
@@ -51,16 +53,13 @@ export default function UpdatePassword() {
           return;
         }
 
-        // If we reach here we have a session → allow form
-        const userEmail = data.session?.user?.email || "";
-        setEmail(userEmail);
+        setEmail(data.session?.user?.email || "");
         setStage("ready");
       } catch (e: any) {
         setBanner({ t: "err", m: e?.message || "Could not verify your reset link." });
         setStage("error");
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -86,7 +85,6 @@ export default function UpdatePassword() {
       setBusy(true);
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
-
       setBanner({ t: "ok", m: "Password updated. You can now sign in." });
       setStage("done");
     } catch (e: any) {
@@ -99,19 +97,15 @@ export default function UpdatePassword() {
 
   async function resendReset() {
     try {
-      setBanner(null);
       const addr = email.trim();
-      if (!addr) {
-        setBanner({ t: "err", m: "Enter your email to resend the reset link." });
-        return;
-      }
+      if (!addr) throw new Error("Enter your email to resend the reset link.");
       const { error } = await supabase.auth.resetPasswordForEmail(addr, {
         redirectTo: "https://dashboard.fuelflow.co.uk/update-password",
       });
       if (error) throw error;
       setBanner({
         t: "info",
-        m: `We’ve sent a new password reset link to ${addr}. Please check your inbox and spam.`,
+        m: `We’ve sent a new password reset link to ${addr}. Check your inbox and spam.`,
       });
     } catch (e: any) {
       setBanner({ t: "err", m: e?.message || "Could not send reset email." });
@@ -120,10 +114,9 @@ export default function UpdatePassword() {
 
   return (
     <div className="min-h-screen bg-[#081a2f] text-white relative">
-      {/* soft background */}
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.06),transparent_60%)]" />
 
-      {/* Header — single brand only */}
+      {/* Header */}
       <header className="relative mx-auto max-w-5xl px-4 py-6">
         <a href="/login" className="flex items-center gap-3">
           <img src="/logo-email.png" alt="FuelFlow" className="h-9 w-auto" />
@@ -142,7 +135,6 @@ export default function UpdatePassword() {
             Enter a new password below. For security, use at least 8 characters.
           </p>
 
-          {/* Banner */}
           {banner && (
             <div
               className={`mb-4 rounded-md border p-2 text-sm ${
@@ -157,7 +149,6 @@ export default function UpdatePassword() {
             </div>
           )}
 
-          {/* Form (only when session is ready) */}
           {stage !== "done" && (
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
@@ -201,7 +192,6 @@ export default function UpdatePassword() {
             </form>
           )}
 
-          {/* Resend panel (shown whenever link is bad or after success if needed) */}
           {stage === "error" && (
             <div className="mt-6 rounded-xl border border-white/10 bg-white/5 p-4">
               <div className="text-sm mb-2">Resend a new reset link</div>
@@ -245,4 +235,5 @@ export default function UpdatePassword() {
     </div>
   );
 }
+
 
