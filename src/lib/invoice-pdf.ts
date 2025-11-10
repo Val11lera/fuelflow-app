@@ -1,7 +1,5 @@
 // src/lib/invoice-pdf.ts
 // src/lib/invoice-pdf.ts
-// src/lib/invoice-pdf.ts
-// src/lib/invoice-pdf.ts
 import PDFDocument from "pdfkit";
 
 export type LineItem = { description: string; quantity: number; unitPrice: number }; // unitPrice = price per litre
@@ -98,20 +96,20 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
 
   // From / Bill To blocks
   const gridLH = 14;
-  const gapUnderHeader = 24; // small nudge lower
+  const gapUnderHeader = 24;
   const gapUnderBlocks = 16;
 
   let y = topMargin + headerH - MARGIN + gapUnderHeader;
 
   const leftX  = MARGIN;
-  const rightX = W / 2 + 20;           // a little more separation
+  const rightX = W / 2 + 20;
   const leftW  = W / 2 - MARGIN - 28;
   const rightW = W - rightX - MARGIN;
 
   doc.font("Helvetica-Bold").fontSize(11).fill("#111827");
   drawText(doc, "From", leftX, y);
   drawText(doc, "Bill To", rightX, y);
-  y += 14; // extra breathing room under headings
+  y += 14;
 
   doc.font("Helvetica").fontSize(10).fill("#111827");
   const leftLines = [
@@ -174,77 +172,93 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   netTotal = r2(netTotal); vatTotal = r2(vatTotal);
   const grand = r2(netTotal + vatTotal);
 
-  // Table
+  // Table — remove VAT % column and scale columns to fit
   y += 20;
   const tableX = MARGIN + 0.5;
-  const tableW = W - MARGIN * 2 - 3;  // one more pt inwards for safety
+  const tableWAvail = W - MARGIN * 2 - 6; // tiny right safety inset
 
-  const cols = [
-    { label: "Description", w: 210, align: "left"  as const },
-    { label: "Litres",      w:  60, align: "right" as const },
-    { label: "Unit ex-VAT", w:  90, align: "right" as const },
-    { label: "Net",         w:  75, align: "right" as const },
-    { label: "VAT %",       w:  55, align: "right" as const },
-    { label: "VAT",         w:  85, align: "right" as const },
-    { label: "Total",       w:  86, align: "right" as const }, // tucked in 2pt
+  // Base visual widths WITHOUT "VAT %": [Desc, Litres, Unit, Net, VAT, Total]
+  const BASE = [210, 60, 90, 90, 85, 120];
+  const SUM_BASE = BASE.reduce((a, b) => a + b, 0);
+
+  const scale = tableWAvail / SUM_BASE;
+  const scaled = BASE.map((w) => Math.floor(w * scale));
+  const sumFirst = scaled.slice(0, scaled.length - 1).reduce((a, b) => a + b, 0);
+  const lastW = Math.max(tableWAvail - sumFirst, 48); // ensure Total stays roomy
+
+  const COLS = [
+    { label: "Description", w: scaled[0], align: "left"  as const },
+    { label: "Litres",      w: scaled[1], align: "right" as const },
+    { label: "Unit ex-VAT", w: scaled[2], align: "right" as const },
+    { label: "Net",         w: scaled[3], align: "right" as const },
+    { label: "VAT",         w: scaled[4], align: "right" as const },
+    { label: "Total",       w: lastW,     align: "right" as const },
   ];
+  const tableW = COLS.reduce((a, c) => a + c.w, 0);
 
   // header row
-  doc.rect(tableX, y, tableW, 24).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.8).stroke();
+  const PAD_L = 10, PAD_R = 10;
+  const headerRowH = 24, dataRowH = 24;
+
+  doc.rect(tableX, y, tableW, headerRowH).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.8).stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
-  let x = tableX + 10;
-  for (const c of cols) {
-    const tx = c.align === "right" ? x + c.w - 10 : x;
-    drawText(doc, c.label, tx, y + 7, { width: c.w - 20, align: c.align });
+  let x = tableX;
+  for (const c of COLS) {
+    const tx = c.align === "right" ? x + c.w - PAD_R : x + PAD_L;
+    drawText(doc, c.label, tx, y + 7, { width: c.w - (PAD_L + PAD_R), align: c.align });
     x += c.w;
   }
 
-  let rowY = y + 24;
-  const rowH = 24;
+  // data rows
+  let rowY = y + headerRowH;
   const bottomSafe = H - bottomMargin - 190;
   doc.font("Helvetica").fontSize(10).fill("#111827");
 
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    if (rowY + rowH > bottomSafe) {
+
+    if (rowY + dataRowH > bottomSafe) {
       doc.font("Helvetica-Oblique").fontSize(9).fill("#6B7280");
       drawText(
         doc,
         `(+${rows.length - i} more item${rows.length - i > 1 ? "s" : ""} not shown)`,
-        tableX + 10, rowY + 6, { width: tableW - 20 }
+        tableX + PAD_L, rowY + 6, { width: tableW - (PAD_L + PAD_R) }
       );
-      rowY += rowH;
+      rowY += dataRowH;
       break;
     }
-    if (i % 2 === 1) { doc.rect(tableX, rowY, tableW, rowH).fill("#FAFAFA"); doc.fill("#111827"); }
 
-    x = tableX + 10;
+    if (i % 2 === 1) { doc.rect(tableX, rowY, tableW, dataRowH).fill("#FAFAFA"); doc.fill("#111827"); }
+
+    x = tableX;
     const cells = [
-      { v: r.d,               w: cols[0].w, align: cols[0].align },
-      { v: qty(r.q),          w: cols[1].w, align: cols[1].align },
-      { v: money(r.ux, C),    w: cols[2].w, align: cols[2].align },
-      { v: money(r.net, C),   w: cols[3].w, align: cols[3].align },
-      { v: VAT_ENABLED ? `${Math.round(r.vp)}%` : "—", w: cols[4].w, align: cols[4].align },
-      { v: VAT_ENABLED ? money(r.vat, C) : money(0, C), w: cols[5].w, align: cols[5].align },
-      { v: money(r.gross, C), w: cols[6].w, align: cols[6].align },
+      { v: r.d,               w: COLS[0].w, align: COLS[0].align },
+      { v: qty(r.q),          w: COLS[1].w, align: COLS[1].align },
+      { v: money(r.ux, C),    w: COLS[2].w, align: COLS[2].align },
+      { v: money(r.net, C),   w: COLS[3].w, align: COLS[3].align },
+      { v: VAT_ENABLED ? money(r.vat, C) : money(0, C), w: COLS[4].w, align: COLS[4].align },
+      { v: money(r.gross, C), w: COLS[5].w, align: COLS[5].align },
     ] as const;
 
     for (const c of cells) {
-      const tx = c.align === "right" ? x + c.w - 10 : x;
-      drawText(doc, String(c.v), tx, rowY + 6, { width: c.w - 20, align: c.align });
+      const tx = c.align === "right" ? x + c.w - PAD_R : x + PAD_L;
+      drawText(doc, String(c.v), tx, rowY + 6, { width: c.w - (PAD_L + PAD_R), align: c.align });
       x += c.w;
     }
 
-    doc.rect(tableX, rowY, tableW, rowH).strokeColor("#E5E7EB").lineWidth(0.8).stroke();
-    rowY += rowH;
+    doc.rect(tableX, rowY, tableW, dataRowH).strokeColor("#E5E7EB").lineWidth(0.8).stroke();
+    rowY += dataRowH;
   }
 
-  // Totals
+  // Totals — include VAT % here (between Subtotal and VAT)
   rowY += 12;
-  const totalsW = cols.slice(-3).reduce((a, c) => a + c.w, 0);
+  const totalsW = COLS.slice(-2).reduce((a, c) => a + c.w, 0) + COLS[3].w; // Net + VAT + Total widths
   const totalsX = tableX + tableW - totalsW;
+
+  const vatRateStr = VAT_ENABLED ? `${Math.round(VAT_RATE * 100)}%` : "—";
   const totals = [
     { label: "Subtotal (Net)", value: money(netTotal, C), bold: false },
+    { label: "VAT %",          value: vatRateStr,         bold: false }, // <-- moved here
     { label: "VAT",            value: money(vatTotal, C), bold: false },
     { label: "Total",          value: money(grand,   C),  bold: true  },
   ];
