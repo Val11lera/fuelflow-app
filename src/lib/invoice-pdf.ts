@@ -97,7 +97,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
 
   // From / Bill To blocks
   const gridLH = 14;
-  const gapUnderHeader = 22; // a touch more breathing room
+  const gapUnderHeader = 24; // a touch more breathing room
   const gapUnderBlocks = 16;
 
   let y = topMargin + headerH - MARGIN + gapUnderHeader;
@@ -110,7 +110,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   doc.font("Helvetica-Bold").fontSize(11).fill("#111827");
   drawText(doc, "From", leftX, y);
   drawText(doc, "Bill To", rightX, y);
-  y += 8;
+  y += 12;
 
   doc.font("Helvetica").fontSize(10).fill("#111827");
   const leftLines = [
