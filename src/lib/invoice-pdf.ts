@@ -176,7 +176,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   // Table
   y += 20;
   const tableX = MARGIN + 0.5;
-  const tableW = W - MARGIN * 2 - 3;  // one more pt inwards for safety
+  const tableW = W - MARGIN * 2 - 7;  // moved further from right edge to avoid clipping
 
   const cols = [
     { label: "Description", w: 210, align: "left"  as const },
@@ -189,11 +189,11 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   ];
 
   // header row
-  doc.rect(tableX, y, tableW, 24).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.8).stroke();
+  doc.rect(tableX, y, tableW, 24).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.6).stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
   let x = tableX + 10;
   for (const c of cols) {
-    const tx = c.align === "right" ? x + c.w - 10 : x;
+    const tx = c.align === "right" ? x + c.w - 14 : x; // text inset for cleaner right edge
     drawText(doc, c.label, tx, y + 7, { width: c.w - 20, align: c.align });
     x += c.w;
   }
@@ -229,12 +229,12 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     ] as const;
 
     for (const c of cells) {
-      const tx = c.align === "right" ? x + c.w - 10 : x;
+      const tx = c.align === "right" ? x + c.w - 14 : x; // inset 4pt from edge for rows
       drawText(doc, String(c.v), tx, rowY + 6, { width: c.w - 20, align: c.align });
       x += c.w;
     }
 
-    doc.rect(tableX, rowY, tableW, rowH).strokeColor("#E5E7EB").lineWidth(0.8).stroke();
+    doc.rect(tableX, rowY, tableW, rowH).strokeColor("#E5E7EB").lineWidth(0.6).stroke();
     rowY += rowH;
   }
 
@@ -254,7 +254,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
       .rect(totalsX, rowY, totalsW, h)
       .fill(i === totals.length - 1 ? "#F3F4F6" : "#FFFFFF")
       .strokeColor("#E5E7EB")
-      .lineWidth(0.8)
+      .lineWidth(0.6)
       .stroke();
     doc.font(T.bold ? "Helvetica-Bold" : "Helvetica").fontSize(10).fill("#111827");
     drawText(doc, T.label, totalsX + 12, rowY + 7, { width: totalsW / 2 - 12, align: "left"  });
