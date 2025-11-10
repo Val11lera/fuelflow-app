@@ -159,11 +159,10 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   /* Table (no VAT% column) */
   y += 20;
 
-  // safety inset wider to avoid edge artefacts
   const tableX = MARGIN + 0.5;
-  const tableWAvail = W - MARGIN * 2 - 18;
+  const tableWAvail = W - MARGIN * 2 - 18; // right safety inset
 
-  // Slightly wider Litres to fit "1,000"
+  // Slightly wider Litres to ensure “1,000” never wraps
   const BASE = [220, 90, 110, 125, 85, 140]; // [Desc, Litres, Unit, Net, VAT, Total]
   const SUM_BASE = BASE.reduce((a, b) => a + b, 0);
   const scale = tableWAvail / SUM_BASE;
@@ -184,7 +183,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const PAD_L = 10, PAD_R = 12;
   const headerRowH = 24, dataRowH = 24;
 
-  // header row
+  // header
   doc.rect(tableX, y, tableW, headerRowH).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.8).stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
   let colX = tableX;
@@ -195,7 +194,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     colX += ccol.w;
   }
 
-  // helper: single-line draw (no wrapping) inside a cell, with real right alignment
+  // helper: draw single-line values (no wrapping)
   function drawCellValue(val: string, x: number, w: number, y0: number, align: "left" | "right") {
     if (align === "right") {
       const tw = doc.widthOfString(val);
@@ -206,7 +205,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     }
   }
 
-  // data rows
+  // rows
   let rowY = y + headerRowH;
   const bottomSafe = H - bottomMargin - 190;
   doc.font("Helvetica").fontSize(10).fill("#111827");
@@ -241,10 +240,12 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     rowY += dataRowH;
   }
 
-  /* Totals (fixed width, to the right) — NO VAT % line */
+  /* Totals — align amounts to the SAME right edge as the table's Total column */
   rowY += 12;
-  const totalsW = 360;
-  const totalsX = W - MARGIN - totalsW - 0.5;
+
+  const rightEdgeX = tableX + tableW - PAD_R; // hard right for all amounts
+  const totalsW = 320;                        // a bit tighter -> smaller gap label↔amount
+  const totalsX = rightEdgeX - totalsW;       // align block so its right edge matches the table
 
   const totals = [
     { label: "Subtotal (Net)", value: money(netTotal, C), bold: false },
@@ -258,9 +259,14 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
        .fill(i === totals.length - 1 ? "#F3F4F6" : "#FFFFFF")
        .strokeColor("#E5E7EB").lineWidth(0.8).stroke();
     doc.font(T.bold ? "Helvetica-Bold" : "Helvetica").fontSize(10).fill("#111827");
-    drawText(doc, T.label, totalsX + 12, rowY + 7, { width: totalsW / 2 - 12 });
+
+    // label (left)
+    drawText(doc, T.label, totalsX + 12, rowY + 7, { width: totalsW - 24 });
+
+    // value (exactly at rightEdgeX)
     const vTw = doc.widthOfString(T.value);
-    drawText(doc, T.value, totalsX + totalsW - 12 - vTw, rowY + 7); // hard right
+    drawText(doc, T.value, rightEdgeX - vTw, rowY + 7);
+
     rowY += h;
   }
 
