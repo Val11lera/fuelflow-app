@@ -92,13 +92,13 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   let y = topMargin + headerH - MARGIN + 24;
 
   const leftX  = MARGIN;
-  const rightX = W / 2 + 20;
+  const rightX = W / 2 + 20;            // same grid split as before
   const leftW  = W / 2 - MARGIN - 28;
   const rightW = W - rightX - MARGIN;
 
   doc.font("Helvetica-Bold").fontSize(11).fill("#111827");
-  drawText(doc, "From", leftX, y);
-  drawText(doc, "Bill To", rightX, y);
+  drawText(doc, "From:", leftX, y);     // ← add colon
+  drawText(doc, "Bill To:", rightX, y); // ← add colon
   y += 14;
 
   doc.font("Helvetica").fontSize(10).fill("#111827");
@@ -123,46 +123,39 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const rightEndY = drawBlock(doc, rightLines, rightX, y, rightW, gridLH);
   y = Math.max(leftEndY, rightEndY) + 16;
 
-  /* Meta */
-  doc.moveTo(MARGIN + 0.5, y).lineTo(W - MARGIN - 0.5, y).strokeColor("#E5E7EB").lineWidth(1).stroke();
+  /* ─ Meta strip — use same two-column grid; make the rule exactly table width later ─ */
+  // We'll draw the line after we know the table width so it matches perfectly.
+  // For now, advance y for the meta content.
   y += 14;
 
+  // left column (Invoice No / Order Ref) aligned with leftX
+  const metaLeftLabelW = 95;
   doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
-  drawText(doc, "Invoice No:", MARGIN, y);
-  doc.font("Helvetica"); drawText(doc, invNo, MARGIN + 95, y);
-  doc.font("Helvetica-Bold"); drawText(doc, "Date:", MARGIN + 260, y);
-  doc.font("Helvetica"); drawText(doc, invDate, MARGIN + 310, y);
+  drawText(doc, "Invoice No:", leftX, y);
+  doc.font("Helvetica").fontSize(10);
+  drawText(doc, invNo, leftX + metaLeftLabelW, y);
+
+  // right column (Date) aligned with rightX (same start as 'Bill To')
+  doc.font("Helvetica-Bold").fontSize(10);
+  drawText(doc, "Date:", rightX, y);
+  doc.font("Helvetica").fontSize(10);
+  drawText(doc, invDate, rightX + 45, y);
 
   if (input.meta?.orderId) {
     y += 16;
-    doc.font("Helvetica-Bold"); drawText(doc, "Order Ref:", MARGIN, y);
-    doc.font("Helvetica");      drawText(doc, String(input.meta.orderId), MARGIN + 95, y);
+    doc.font("Helvetica-Bold");
+    drawText(doc, "Order Ref:", leftX, y);
+    doc.font("Helvetica");
+    drawText(doc, String(input.meta.orderId), leftX + metaLeftLabelW, y);
   }
-
-  /* Compute rows */
-  type Row = { d: string; q: number; ux: number; net: number; vat: number; gross: number };
-  const rows: Row[] = [];
-  let netTotal = 0, vatTotal = 0;
-  for (const it of input.items) {
-    const q  = n(it.quantity, 0);
-    const up = n(it.unitPrice, 0);
-    const ux = VAT_ENABLED ? (PRICES_INCLUDE_VAT ? up / (1 + VAT_RATE) : up) : up;
-    const net = q * ux;
-    const v   = VAT_ENABLED ? net * VAT_RATE : 0;
-    const g   = net + v;
-    netTotal += net; vatTotal += v;
-    rows.push({ d: it.description || "Item", q, ux, net, vat: v, gross: g });
-  }
-  netTotal = r2(netTotal); vatTotal = r2(vatTotal);
-  const grand = r2(netTotal + vatTotal);
 
   /* Table (no VAT% column) */
   y += 20;
 
+  // table geometry with the same right inset we use elsewhere
   const tableX = MARGIN + 0.5;
   const tableWAvail = W - MARGIN * 2 - 18; // right safety inset
 
-  // Slightly wider Litres to ensure “1,000” never wraps
   const BASE = [220, 90, 110, 125, 85, 140]; // [Desc, Litres, Unit, Net, VAT, Total]
   const SUM_BASE = BASE.reduce((a, b) => a + b, 0);
   const scale = tableWAvail / SUM_BASE;
@@ -180,6 +173,11 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   ];
   const tableW = COLS.reduce((a, c) => a + c.w, 0);
 
+  // now draw the meta-divider line to EXACTLY match table width
+  // (place it just above the table start)
+  const ruleY = y - 20 - 10; // y moved +20 for table and we want a small gap (10) above the meta content
+  doc.moveTo(tableX, ruleY).lineTo(tableX + tableW, ruleY).strokeColor("#E5E7EB").lineWidth(1).stroke();
+
   const PAD_L = 10, PAD_R = 12;
   const headerRowH = 24, dataRowH = 24;
 
@@ -194,7 +192,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     colX += ccol.w;
   }
 
-  // helper: draw single-line values (no wrapping)
+  // single-line value draw (no wrapping)
   function drawCellValue(val: string, x: number, w: number, y0: number, align: "left" | "right") {
     if (align === "right") {
       const tw = doc.widthOfString(val);
@@ -210,6 +208,23 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const bottomSafe = H - bottomMargin - 190;
   doc.font("Helvetica").fontSize(10).fill("#111827");
 
+  // compute items
+  type Row = { d: string; q: number; ux: number; net: number; vat: number; gross: number };
+  const rows: Row[] = [];
+  let netTotal = 0, vatTotal = 0;
+  for (const it of input.items) {
+    const q  = n(it.quantity, 0);
+    const up = n(it.unitPrice, 0);
+    const ux = VAT_ENABLED ? (PRICES_INCLUDE_VAT ? up / (1 + VAT_RATE) : up) : up;
+    const net = q * ux;
+    const v   = VAT_ENABLED ? net * VAT_RATE : 0;
+    const g   = net + v;
+    netTotal += net; vatTotal += v;
+    rows.push({ d: it.description || "Item", q, ux, net, vat: v, gross: g });
+  }
+  netTotal = r2(netTotal); vatTotal = r2(vatTotal);
+  const grand = r2(netTotal + vatTotal);
+
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     if (rowY + dataRowH > bottomSafe) {
@@ -223,12 +238,12 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
 
     colX = tableX;
     const cells = [
-      { v: r.d,              w: COLS[0].w, align: COLS[0].align },
-      { v: qty(r.q),         w: COLS[1].w, align: COLS[1].align },
-      { v: money(r.ux, C),   w: COLS[2].w, align: COLS[2].align },
-      { v: money(r.net, C),  w: COLS[3].w, align: COLS[3].align },
-      { v: money(r.vat, C),  w: COLS[4].w, align: COLS[4].align },
-      { v: money(r.gross, C),w: COLS[5].w, align: COLS[5].align },
+      { v: r.d,               w: COLS[0].w, align: COLS[0].align },
+      { v: qty(r.q),          w: COLS[1].w, align: COLS[1].align },
+      { v: money(r.ux, C),    w: COLS[2].w, align: COLS[2].align },
+      { v: money(r.net, C),   w: COLS[3].w, align: COLS[3].align },
+      { v: money(r.vat, C),   w: COLS[4].w, align: COLS[4].align },
+      { v: money(r.gross, C), w: COLS[5].w, align: COLS[5].align },
     ] as const;
 
     for (const cell of cells) {
@@ -240,12 +255,11 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     rowY += dataRowH;
   }
 
-  /* Totals — align amounts to the SAME right edge as the table's Total column */
+  /* Totals — right-edge identical to table Total column; tighter gap */
   rowY += 12;
-
-  const rightEdgeX = tableX + tableW - PAD_R; // hard right for all amounts
-  const totalsW = 320;                        // a bit tighter -> smaller gap label↔amount
-  const totalsX = rightEdgeX - totalsW;       // align block so its right edge matches the table
+  const rightEdgeX = tableX + tableW - PAD_R;
+  const totalsW = 320;
+  const totalsX = rightEdgeX - totalsW;
 
   const totals = [
     { label: "Subtotal (Net)", value: money(netTotal, C), bold: false },
@@ -259,14 +273,9 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
        .fill(i === totals.length - 1 ? "#F3F4F6" : "#FFFFFF")
        .strokeColor("#E5E7EB").lineWidth(0.8).stroke();
     doc.font(T.bold ? "Helvetica-Bold" : "Helvetica").fontSize(10).fill("#111827");
-
-    // label (left)
     drawText(doc, T.label, totalsX + 12, rowY + 7, { width: totalsW - 24 });
-
-    // value (exactly at rightEdgeX)
     const vTw = doc.widthOfString(T.value);
     drawText(doc, T.value, rightEdgeX - vTw, rowY + 7);
-
     rowY += h;
   }
 
