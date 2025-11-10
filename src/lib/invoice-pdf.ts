@@ -97,7 +97,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
 
   // From / Bill To blocks
   const gridLH = 14;
-  const gapUnderHeader = 24; // a touch more breathing room
+  const gapUnderHeader = 24; // small nudge lower
   const gapUnderBlocks = 16;
 
   let y = topMargin + headerH - MARGIN + gapUnderHeader;
@@ -110,7 +110,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   doc.font("Helvetica-Bold").fontSize(11).fill("#111827");
   drawText(doc, "From", leftX, y);
   drawText(doc, "Bill To", rightX, y);
-  y += 12;
+  y += 14; // extra breathing room under headings
 
   doc.font("Helvetica").fontSize(10).fill("#111827");
   const leftLines = [
@@ -136,7 +136,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
 
   // Meta strip
   doc.moveTo(MARGIN + 0.5, y).lineTo(W - MARGIN - 0.5, y).strokeColor("#E5E7EB").lineWidth(1).stroke();
-  y += 14; // a bit more air
+  y += 14;
 
   doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
   drawText(doc, "Invoice No:", MARGIN, y);
@@ -176,7 +176,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   // Table
   y += 20;
   const tableX = MARGIN + 0.5;
-  const tableW = W - MARGIN * 2 - 2;  // ensure no right-edge clipping
+  const tableW = W - MARGIN * 2 - 3;  // one more pt inwards for safety
 
   const cols = [
     { label: "Description", w: 210, align: "left"  as const },
@@ -185,11 +185,11 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     { label: "Net",         w:  75, align: "right" as const },
     { label: "VAT %",       w:  55, align: "right" as const },
     { label: "VAT",         w:  85, align: "right" as const },
-    { label: "Total",       w:  88, align: "right" as const }, // trimmed 2pt
+    { label: "Total",       w:  86, align: "right" as const }, // tucked in 2pt
   ];
 
   // header row
-  doc.rect(tableX, y, tableW, 24).fill("#F3F4F6").strokeColor("#E5E7EB").stroke();
+  doc.rect(tableX, y, tableW, 24).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.8).stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
   let x = tableX + 10;
   for (const c of cols) {
@@ -234,7 +234,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
       x += c.w;
     }
 
-    doc.rect(tableX, rowY, tableW, rowH).strokeColor("#E5E7EB").stroke();
+    doc.rect(tableX, rowY, tableW, rowH).strokeColor("#E5E7EB").lineWidth(0.8).stroke();
     rowY += rowH;
   }
 
@@ -254,6 +254,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
       .rect(totalsX, rowY, totalsW, h)
       .fill(i === totals.length - 1 ? "#F3F4F6" : "#FFFFFF")
       .strokeColor("#E5E7EB")
+      .lineWidth(0.8)
       .stroke();
     doc.font(T.bold ? "Helvetica-Bold" : "Helvetica").fontSize(10).fill("#111827");
     drawText(doc, T.label, totalsX + 12, rowY + 7, { width: totalsW / 2 - 12, align: "left"  });
