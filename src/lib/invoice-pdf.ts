@@ -36,7 +36,6 @@ async function fetchArrayBuffer(url: string): Promise<ArrayBuffer | null> {
   try { const resp = await fetch(url); if (!resp.ok) return null; return await resp.arrayBuffer(); }
   catch { return null; }
 }
-// fixed-line block renderer
 function drawBlock(doc: any, lines: string[], x: number, y: number, width: number, lineHeight = 14) {
   let yy = y;
   for (const line of lines) {
@@ -97,20 +96,20 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
 
   // From / Bill To blocks
   const gridLH = 14;
-  const gapUnderHeader = 24; // small nudge lower
+  const gapUnderHeader = 24;
   const gapUnderBlocks = 16;
 
   let y = topMargin + headerH - MARGIN + gapUnderHeader;
 
   const leftX  = MARGIN;
-  const rightX = W / 2 + 20;           // a little more separation
+  const rightX = W / 2 + 20;
   const leftW  = W / 2 - MARGIN - 28;
   const rightW = W - rightX - MARGIN;
 
   doc.font("Helvetica-Bold").fontSize(11).fill("#111827");
   drawText(doc, "From", leftX, y);
   drawText(doc, "Bill To", rightX, y);
-  y += 14; // extra breathing room under headings
+  y += 14;
 
   doc.font("Helvetica").fontSize(10).fill("#111827");
   const leftLines = [
@@ -176,24 +175,31 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   // Table
   y += 20;
   const tableX = MARGIN + 0.5;
-  const tableW = W - MARGIN * 2 - 7;  // moved further from right edge to avoid clipping
+  const tableW = W - MARGIN * 2 - 7; // away from the right edge
 
-  const cols = [
-    { label: "Description", w: 210, align: "left"  as const },
-    { label: "Litres",      w:  60, align: "right" as const },
-    { label: "Unit ex-VAT", w:  90, align: "right" as const },
-    { label: "Net",         w:  75, align: "right" as const },
-    { label: "VAT %",       w:  55, align: "right" as const },
-    { label: "VAT",         w:  85, align: "right" as const },
-    { label: "Total",       w:  86, align: "right" as const }, // tucked in 2pt
+  // Column layout as proportions of tableW (sum ~ 1.00). Last column absorbs rounding.
+  const FRACS = [
+    { key: "description", label: "Description", frac: 0.45, align: "left"  as const },
+    { key: "litres",      label: "Litres",      frac: 0.12, align: "right" as const },
+    { key: "unit",        label: "Unit ex-VAT", frac: 0.15, align: "right" as const },
+    { key: "net",         label: "Net",         frac: 0.12, align: "right" as const },
+    { key: "vatp",        label: "VAT %",       frac: 0.06, align: "right" as const },
+    { key: "vat",         label: "VAT",         frac: 0.05, align: "right" as const },
+    { key: "total",       label: "Total",       frac: 0.05, align: "right" as const },
   ];
+  // turn fracs into pixel widths that always sum to tableW
+  const cols = FRACS.map((c, i) => ({
+    label: c.label,
+    w: i < FRACS.length - 1 ? Math.floor(c.frac * tableW) : tableW - FRACS.slice(0, -1).reduce((s, p, j) => s + Math.floor(p.frac * tableW), 0),
+    align: c.align,
+  }));
 
   // header row
   doc.rect(tableX, y, tableW, 24).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.6).stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
   let x = tableX + 10;
   for (const c of cols) {
-    const tx = c.align === "right" ? x + c.w - 14 : x; // text inset for cleaner right edge
+    const tx = c.align === "right" ? x + c.w - 14 : x; // inset for right-aligned text
     drawText(doc, c.label, tx, y + 7, { width: c.w - 20, align: c.align });
     x += c.w;
   }
@@ -229,7 +235,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     ] as const;
 
     for (const c of cells) {
-      const tx = c.align === "right" ? x + c.w - 14 : x; // inset 4pt from edge for rows
+      const tx = c.align === "right" ? x + c.w - 14 : x; // keep content away from the border
       drawText(doc, String(c.v), tx, rowY + 6, { width: c.w - 20, align: c.align });
       x += c.w;
     }
