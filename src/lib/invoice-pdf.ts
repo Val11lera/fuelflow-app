@@ -21,7 +21,7 @@ export type BuiltInvoice = { pdfBuffer: Buffer; filename: string; total: number;
 
 const MARGIN = 36;
 
-// Absolute text helper: draw and restore cursor so PDFKit never flows/paginates.
+// --- tiny helpers ---
 function drawText(doc: any, str: string, x: number, y: number, opt: any = {}) {
   const px = doc.x, py = doc.y;
   doc.text(str, x, y, { lineBreak: false, ...opt });
@@ -32,14 +32,19 @@ function r2(v: number) { return Math.round(v * 100) / 100; }
 function sym(c: string) { c = (c || "").toUpperCase(); return c === "GBP" ? "£" : c === "EUR" ? "€" : c === "USD" ? "$" : ""; }
 function money(v: number, c: string) { return `${sym(c)}${r2(v).toFixed(2)}`; }
 function qty(v: number) { return new Intl.NumberFormat("en-GB", { maximumFractionDigits: 2 }).format(v); }
-
-// --- NEW: tiny helper to load the logo once ---
 async function fetchArrayBuffer(url: string): Promise<ArrayBuffer | null> {
-  try {
-    const resp = await fetch(url);
-    if (!resp.ok) return null;
-    return await resp.arrayBuffer();
-  } catch { return null; }
+  try { const resp = await fetch(url); if (!resp.ok) return null; return await resp.arrayBuffer(); }
+  catch { return null; }
+}
+
+// --- NEW: render a block with fixed line height, returns bottom y ---
+function drawBlock(doc: any, lines: string[], x: number, y: number, width: number, lineHeight = 14) {
+  let yy = y;
+  for (const line of lines) {
+    drawText(doc, line, x, yy, { width, lineBreak: false });
+    yy += lineHeight;
+  }
+  return yy;
 }
 
 export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice> {
@@ -47,7 +52,6 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const VAT_RATE = Math.max(0, parseFloat(process.env.VAT_RATE ?? "20")) / 100;
   const PRICES_INCLUDE_VAT = process.env.PRICES_INCLUDE_VAT === "true";
 
-  // IMPORTANT: let PDFKit create the first page itself (no addPage)
   const doc: any = new PDFDocument({
     size: "A4",
     autoFirstPage: true,
@@ -72,78 +76,81 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const companyVat   = process.env.COMPANY_VAT_NUMBER || process.env.COMPANY_VAT_NO || "";
   const companyNo    = process.env.COMPANY_NUMBER     || process.env.COMPANY_REG_NO || "";
 
-  const invNo = input.meta?.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
+  const invNo   = input.meta?.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
   const invDate = new Date(input.meta?.dateISO || Date.now()).toLocaleDateString("en-GB");
 
-  // --- Header band (with logo support) ---
-  const headerH = 86; // slightly taller for logo breathing room
+  // =======================
+  // Header
+  // =======================
+  const headerH = 90; // a touch taller for clean spacing
   doc.rect(0, 0, W, headerH).fill("#0F172A");
 
-  // Try to load logo (fallback to text)
+  // Logo (fallback to name)
   const logoUrl = process.env.COMPANY_LOGO_URL || "https://dashboard.fuelflow.co.uk/logo-email.png";
   let logoDrawn = false;
   try {
     const ab = await fetchArrayBuffer(logoUrl);
-    if (ab) {
-      const buf = Buffer.from(ab);
-      // Draw left, sized nicely; if it fails we’ll fallback to text
-      doc.image(buf, MARGIN, 24, { width: 150, height: 40, fit: [150, 40] });
-      logoDrawn = true;
-    }
+    if (ab) { doc.image(Buffer.from(ab), MARGIN, 26, { width: 156, height: 42, fit: [156, 42] }); logoDrawn = true; }
   } catch { /* ignore */ }
-
   if (!logoDrawn) {
     doc.fill("#FFFFFF").font("Helvetica-Bold").fontSize(26);
-    drawText(doc, companyName, MARGIN, 28, { width: W - MARGIN * 2 });
+    drawText(doc, companyName, MARGIN, 30, { width: W - MARGIN * 2 });
   }
 
-  // Title on the right
   doc.fill("#FFFFFF").font("Helvetica").fontSize(12);
   drawText(doc, "TAX INVOICE", W - MARGIN - 200, 34, { width: 200, align: "right" });
 
-  // --- Body ---
-  doc.fill("#111827").font("Helvetica").fontSize(10);
+  // =======================
+  // From / Bill To (grid aligned)
+  // =======================
+  const gridLH = 14;          // fixed line height for both columns
+  const gapUnderHeader = 24;  // breathing room
+  const gapUnderBlocks = 16;  // space before meta strip
 
-  const leftX = MARGIN;
-  const rightX = W / 2 + 12;
-  const colW = W / 2 - MARGIN - 24;
+  let y = topMargin + headerH - MARGIN + gapUnderHeader; // anchor content relative to header
 
-  // content sits a touch below the header for consistent white-space
-  let y = topMargin + headerH - 10;
+  const leftX  = MARGIN;
+  const rightX = W / 2 + 16;           // +4 wider gap
+  const leftW  = W / 2 - MARGIN - 24;
+  const rightW = W - rightX - MARGIN;  // let right column breathe (email lines)
 
-  // Labels
-  doc.font("Helvetica-Bold").fontSize(11);
+  // labels
+  doc.font("Helvetica-Bold").fontSize(11).fill("#111827");
   drawText(doc, "From", leftX, y);
   drawText(doc, "Bill To", rightX, y);
+  y += 8;
 
-  // Two columns
-  doc.font("Helvetica").fontSize(10);
-  const left = [
+  // content
+  doc.font("Helvetica").fontSize(10).fill("#111827");
+  const leftLines = [
     companyName, ...companyAddr.split("\n"),
     companyEmail ? `Email: ${companyEmail}` : undefined,
     companyPhone ? `Tel: ${companyPhone}` : undefined,
     companyNo ? `Company No: ${companyNo}` : undefined,
     companyVat ? `VAT No: ${companyVat}` : undefined,
   ].filter(Boolean) as string[];
-  const right = [
-    input.customer.name || "Customer",
-    input.customer.address_line1 || undefined,
-    input.customer.address_line2 || undefined,
-    [input.customer.city, input.customer.postcode].filter(Boolean).join(" ") || undefined,
-    input.customer.email ? `Email: ${input.customer.email}` : undefined,
+
+  const cust = input.customer;
+  const rightLines = [
+    cust.name || "Customer",
+    cust.address_line1 || undefined,
+    cust.address_line2 || undefined,
+    [cust.city, cust.postcode].filter(Boolean).join(" ") || undefined,
+    cust.email ? `Email: ${cust.email}` : undefined,
   ].filter(Boolean) as string[];
 
-  const lh = doc.currentLineHeight();
-  let yl = y + 16, yr = y + 16;
-  for (const s of left)  { drawText(doc, s, leftX,  yl, { width: colW, lineBreak: false }); yl += lh; }
-  for (const s of right) { drawText(doc, s, rightX, yr, { width: colW, lineBreak: false }); yr += lh; }
-  y = Math.max(yl, yr) + 12;
+  const leftEndY  = drawBlock(doc, leftLines,  leftX,  y, leftW,  gridLH);
+  const rightEndY = drawBlock(doc, rightLines, rightX, y, rightW, gridLH);
 
+  y = Math.max(leftEndY, rightEndY) + gapUnderBlocks;
+
+  // =======================
   // Meta strip
-  doc.moveTo(MARGIN, y).lineTo(W - MARGIN, y).strokeColor("#E5E7EB").stroke();
-  y += 8;
+  // =======================
+  doc.moveTo(MARGIN, y).lineTo(W - MARGIN, y).strokeColor("#E5E7EB").lineWidth(1).stroke();
+  y += 12;
 
-  doc.font("Helvetica-Bold").fontSize(10);
+  doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
   drawText(doc, "Invoice No:", MARGIN, y);
   doc.font("Helvetica");
   drawText(doc, invNo, MARGIN + 95, y);
@@ -160,7 +167,9 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     drawText(doc, String(input.meta.orderId), MARGIN + 95, y);
   }
 
-  // Compute lines
+  // =======================
+  // Items calculation
+  // =======================
   type Row = { d: string; q: number; ux: number; net: number; vp: number; vat: number; gross: number };
   const rows: Row[] = [];
   let netTotal = 0, vatTotal = 0;
@@ -178,7 +187,9 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   netTotal = r2(netTotal); vatTotal = r2(vatTotal);
   const grand = r2(netTotal + vatTotal);
 
+  // =======================
   // Table
+  // =======================
   y += 20;
   const tableX = MARGIN, tableW = W - MARGIN * 2;
   const cols = [
@@ -191,7 +202,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     { label: "Total",       w:  90, align: "right" as const },
   ];
 
-  // Header row (height 24)
+  // header row
   doc.rect(tableX, y, tableW, 24).fill("#F3F4F6").strokeColor("#E5E7EB").stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
   let x = tableX + 10;
@@ -202,8 +213,8 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   }
 
   let rowY = y + 24;
-  const rowH = 22; // consistent row height
-  const bottomSafe = H - bottomMargin - 190; // keep totals/notes clear
+  const rowH = 24; // consistent row height (slightly taller)
+  const bottomSafe = H - bottomMargin - 190; // space for totals + notes
   doc.font("Helvetica").fontSize(10).fill("#111827");
 
   for (let i = 0; i < rows.length; i++) {
@@ -241,8 +252,10 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     rowY += rowH;
   }
 
+  // =======================
   // Totals
-  rowY += 10;
+  // =======================
+  rowY += 12;
   const totalsW = cols.slice(-3).reduce((a, c) => a + c.w, 0);
   const totalsX = tableX + tableW - totalsW;
   const totals = [
@@ -252,23 +265,25 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   ];
 
   for (let i = 0; i < totals.length; i++) {
-    const h = 22, T = totals[i];
+    const h = 24, T = totals[i];
     doc
       .rect(totalsX, rowY, totalsW, h)
       .fill(i === totals.length - 1 ? "#F3F4F6" : "#FFFFFF")
       .strokeColor("#E5E7EB")
       .stroke();
     doc.font(T.bold ? "Helvetica-Bold" : "Helvetica").fontSize(10).fill("#111827");
-    drawText(doc, T.label, totalsX + 12, rowY + 6, { width: totalsW / 2 - 12, align: "left"  });
-    drawText(doc, T.value, totalsX + totalsW / 2, rowY + 6, { width: totalsW / 2 - 12, align: "right" });
+    drawText(doc, T.label, totalsX + 12, rowY + 7, { width: totalsW / 2 - 12, align: "left"  });
+    drawText(doc, T.value, totalsX + totalsW / 2, rowY + 7, { width: totalsW / 2 - 12, align: "right" });
     rowY += h;
   }
 
+  // =======================
   // Notes (optional)
+  // =======================
   if (input.meta?.notes) {
-    rowY += 14;
+    rowY += 16;
     const notesMaxY = H - bottomMargin - 80;
-    doc.font("Helvetica-Bold").fontSize(10);
+    doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
     drawText(doc, "Notes", MARGIN, rowY);
     doc.font("Helvetica").fontSize(10).fill("#374151");
 
@@ -281,16 +296,15 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     }
     if (line.trim()) lines.push(line.trim());
 
-    const lh2 = doc.currentLineHeight();
     let ny = rowY + 14;
     for (const s of lines) {
-      if (ny + lh2 > notesMaxY) break;
+      if (ny + 14 > notesMaxY) break;
       drawText(doc, s, MARGIN, ny, { width: W - MARGIN * 2 });
-      ny += lh2;
+      ny += 14;
     }
   }
 
-  // Footer — anchor *inside* the bottom margin
+  // Footer
   const footerY = H - bottomMargin - 18;
   doc.font("Helvetica").fontSize(9).fill("#6B7280");
   drawText(
@@ -307,7 +321,6 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   doc.end();
   await done;
 
-  return { pdfBuffer: Buffer.concat(chunks), filename: `${invNo}.pdf`, total: grand, pages };
+  return { pdfBuffer: Buffer.concat(chunks), filename: `${invNo}.pdf`, total: r2(netTotal + vatTotal), pages };
 }
-
 
