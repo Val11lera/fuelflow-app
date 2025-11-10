@@ -2,7 +2,7 @@
 // src/lib/invoice-pdf.ts
 import PDFDocument from "pdfkit";
 
-export type LineItem = { description: string; quantity: number; unitPrice: number }; // unitPrice = price per litre
+export type LineItem = { description: string; quantity: number; unitPrice: number };
 export type InvoiceInput = {
   customer: {
     name?: string | null;
@@ -20,7 +20,7 @@ export type BuiltInvoice = { pdfBuffer: Buffer; filename: string; total: number;
 
 const MARGIN = 36;
 
-// helpers
+/* helpers */
 function drawText(doc: any, str: string, x: number, y: number, opt: any = {}) {
   const px = doc.x, py = doc.y;
   doc.text(str, x, y, { lineBreak: false, ...opt });
@@ -35,16 +35,16 @@ async function fetchArrayBuffer(url: string): Promise<ArrayBuffer | null> {
   try { const resp = await fetch(url); if (!resp.ok) return null; return await resp.arrayBuffer(); }
   catch { return null; }
 }
-// fixed-line block renderer
-function drawBlock(doc: any, lines: string[], x: number, y: number, width: number, lineHeight = 14) {
+function drawBlock(doc: any, lines: string[], x: number, y: number, width: number, lh = 14) {
   let yy = y;
   for (const line of lines) {
     drawText(doc, line, x, yy, { width, lineBreak: false });
-    yy += lineHeight;
+    yy += lh;
   }
   return yy;
 }
 
+/* main */
 export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice> {
   const VAT_ENABLED = process.env.VAT_ENABLED !== "false";
   const VAT_RATE = Math.max(0, parseFloat(process.env.VAT_RATE ?? "20")) / 100;
@@ -76,25 +76,18 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const invNo   = input.meta?.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
   const invDate = new Date(input.meta?.dateISO || Date.now()).toLocaleDateString("en-GB");
 
-  // Header bar
+  /* header band */
   const headerH = 90;
   doc.rect(0, 0, W, headerH).fill("#0F172A");
 
-  // Logo (fallback to text)
   const logoUrl = process.env.COMPANY_LOGO_URL || "https://dashboard.fuelflow.co.uk/logo-email.png";
   let logoDrawn = false;
-  try {
-    const ab = await fetchArrayBuffer(logoUrl);
-    if (ab) { doc.image(Buffer.from(ab), MARGIN, 26, { width: 156, height: 42, fit: [156, 42] }); logoDrawn = true; }
-  } catch { /* ignore */ }
-  if (!logoDrawn) {
-    doc.fill("#FFFFFF").font("Helvetica-Bold").fontSize(26);
-    drawText(doc, companyName, MARGIN, 30, { width: W - MARGIN * 2 });
-  }
+  try { const ab = await fetchArrayBuffer(logoUrl); if (ab) { doc.image(Buffer.from(ab), MARGIN, 26, { width: 156, height: 42, fit: [156, 42] }); logoDrawn = true; } } catch {}
+  if (!logoDrawn) { doc.fill("#FFFFFF").font("Helvetica-Bold").fontSize(26); drawText(doc, companyName, MARGIN, 30, { width: W - MARGIN * 2 }); }
   doc.fill("#FFFFFF").font("Helvetica").fontSize(12);
   drawText(doc, "TAX INVOICE", W - MARGIN - 200, 34, { width: 200, align: "right" });
 
-  // From / Bill To blocks
+  /* From / Bill To */
   const gridLH = 14;
   const gapUnderHeader = 24;
   const gapUnderBlocks = 16;
@@ -120,71 +113,64 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     companyVat ? `VAT No: ${companyVat}` : undefined,
   ].filter(Boolean) as string[];
 
-  const cust = input.customer;
+  const c = input.customer;
   const rightLines = [
-    cust.name || "Customer",
-    cust.address_line1 || undefined,
-    cust.address_line2 || undefined,
-    [cust.city, cust.postcode].filter(Boolean).join(" ") || undefined,
-    cust.email ? `Email: ${cust.email}` : undefined,
+    c.name || "Customer",
+    c.address_line1 || undefined,
+    c.address_line2 || undefined,
+    [c.city, c.postcode].filter(Boolean).join(" ") || undefined,
+    c.email ? `Email: ${c.email}` : undefined,
   ].filter(Boolean) as string[];
 
   const leftEndY  = drawBlock(doc, leftLines,  leftX,  y, leftW,  gridLH);
   const rightEndY = drawBlock(doc, rightLines, rightX, y, rightW, gridLH);
   y = Math.max(leftEndY, rightEndY) + gapUnderBlocks;
 
-  // Meta strip
+  /* meta */
   doc.moveTo(MARGIN + 0.5, y).lineTo(W - MARGIN - 0.5, y).strokeColor("#E5E7EB").lineWidth(1).stroke();
   y += 14;
 
   doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
   drawText(doc, "Invoice No:", MARGIN, y);
-  doc.font("Helvetica");
-  drawText(doc, invNo, MARGIN + 95, y);
-  doc.font("Helvetica-Bold");
-  drawText(doc, "Date:", MARGIN + 260, y);
-  doc.font("Helvetica");
-  drawText(doc, invDate, MARGIN + 310, y);
+  doc.font("Helvetica"); drawText(doc, invNo, MARGIN + 95, y);
+  doc.font("Helvetica-Bold"); drawText(doc, "Date:", MARGIN + 260, y);
+  doc.font("Helvetica"); drawText(doc, invDate, MARGIN + 310, y);
 
   if (input.meta?.orderId) {
     y += 16;
-    doc.font("Helvetica-Bold");
-    drawText(doc, "Order Ref:", MARGIN, y);
-    doc.font("Helvetica");
-    drawText(doc, String(input.meta.orderId), MARGIN + 95, y);
+    doc.font("Helvetica-Bold"); drawText(doc, "Order Ref:", MARGIN, y);
+    doc.font("Helvetica");      drawText(doc, String(input.meta.orderId), MARGIN + 95, y);
   }
 
-  // Compute rows
-  type Row = { d: string; q: number; ux: number; net: number; vp: number; vat: number; gross: number };
+  /* compute rows */
+  type Row = { d: string; q: number; ux: number; net: number; vat: number; gross: number };
   const rows: Row[] = [];
   let netTotal = 0, vatTotal = 0;
-
   for (const it of input.items) {
     const q  = n(it.quantity, 0);
     const up = n(it.unitPrice, 0);
-    const ux = !VAT_ENABLED ? up : (PRICES_INCLUDE_VAT ? up / (1 + VAT_RATE) : up); // ex-VAT per litre
+    const ux = VAT_ENABLED ? (PRICES_INCLUDE_VAT ? up / (1 + VAT_RATE) : up) : up;
     const net = q * ux;
     const v   = VAT_ENABLED ? net * VAT_RATE : 0;
     const g   = net + v;
     netTotal += net; vatTotal += v;
-    rows.push({ d: it.description || "Item", q, ux, net, vp: VAT_RATE * 100, vat: v, gross: g });
+    rows.push({ d: it.description || "Item", q, ux, net, vat: v, gross: g });
   }
   netTotal = r2(netTotal); vatTotal = r2(vatTotal);
   const grand = r2(netTotal + vatTotal);
 
-  // Table — remove VAT % column and scale columns to fit
+  /* table (no VAT% column) */
   y += 20;
   const tableX = MARGIN + 0.5;
-  const tableWAvail = W - MARGIN * 2 - 6; // tiny right safety inset
+  const tableWAvail = W - MARGIN * 2 - 6;
 
-  // Base visual widths WITHOUT "VAT %": [Desc, Litres, Unit, Net, VAT, Total]
-  const BASE = [210, 60, 90, 90, 85, 120];
+  // Give Net & Total more space
+  const BASE = [220, 70, 105, 125, 85, 140]; // [Desc, Litres, Unit, Net, VAT, Total]
   const SUM_BASE = BASE.reduce((a, b) => a + b, 0);
-
   const scale = tableWAvail / SUM_BASE;
-  const scaled = BASE.map((w) => Math.floor(w * scale));
+  const scaled = BASE.map(w => Math.floor(w * scale));
   const sumFirst = scaled.slice(0, scaled.length - 1).reduce((a, b) => a + b, 0);
-  const lastW = Math.max(tableWAvail - sumFirst, 48); // ensure Total stays roomy
+  const lastW = Math.max(tableWAvail - sumFirst, 60);
 
   const COLS = [
     { label: "Description", w: scaled[0], align: "left"  as const },
@@ -196,88 +182,78 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   ];
   const tableW = COLS.reduce((a, c) => a + c.w, 0);
 
-  // header row
   const PAD_L = 10, PAD_R = 10;
   const headerRowH = 24, dataRowH = 24;
 
   doc.rect(tableX, y, tableW, headerRowH).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.8).stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
   let x = tableX;
-  for (const c of COLS) {
-    const tx = c.align === "right" ? x + c.w - PAD_R : x + PAD_L;
-    drawText(doc, c.label, tx, y + 7, { width: c.w - (PAD_L + PAD_R), align: c.align });
-    x += c.w;
+  for (const ccol of COLS) {
+    const tx = ccol.align === "right" ? x + ccol.w - PAD_R : x + PAD_L;
+    drawText(doc, ccol.label, tx, y + 7, { width: ccol.w - (PAD_L + PAD_R), align: ccol.align });
+    x += ccol.w;
   }
 
-  // data rows
   let rowY = y + headerRowH;
   const bottomSafe = H - bottomMargin - 190;
   doc.font("Helvetica").fontSize(10).fill("#111827");
 
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-
     if (rowY + dataRowH > bottomSafe) {
       doc.font("Helvetica-Oblique").fontSize(9).fill("#6B7280");
-      drawText(
-        doc,
-        `(+${rows.length - i} more item${rows.length - i > 1 ? "s" : ""} not shown)`,
-        tableX + PAD_L, rowY + 6, { width: tableW - (PAD_L + PAD_R) }
-      );
+      drawText(doc, `(+${rows.length - i} more item${rows.length - i > 1 ? "s" : ""} not shown)`,
+               tableX + PAD_L, rowY + 6, { width: tableW - (PAD_L + PAD_R) });
       rowY += dataRowH;
       break;
     }
-
     if (i % 2 === 1) { doc.rect(tableX, rowY, tableW, dataRowH).fill("#FAFAFA"); doc.fill("#111827"); }
 
     x = tableX;
     const cells = [
-      { v: r.d,               w: COLS[0].w, align: COLS[0].align },
-      { v: qty(r.q),          w: COLS[1].w, align: COLS[1].align },
-      { v: money(r.ux, C),    w: COLS[2].w, align: COLS[2].align },
-      { v: money(r.net, C),   w: COLS[3].w, align: COLS[3].align },
-      { v: VAT_ENABLED ? money(r.vat, C) : money(0, C), w: COLS[4].w, align: COLS[4].align },
-      { v: money(r.gross, C), w: COLS[5].w, align: COLS[5].align },
+      { v: r.d,            w: COLS[0].w, align: COLS[0].align },
+      { v: qty(r.q),       w: COLS[1].w, align: COLS[1].align },
+      { v: money(r.ux, C), w: COLS[2].w, align: COLS[2].align },
+      { v: money(r.net, C),w: COLS[3].w, align: COLS[3].align },
+      { v: money(r.vat, C),w: COLS[4].w, align: COLS[4].align },
+      { v: money(r.gross,C),w: COLS[5].w, align: COLS[5].align },
     ] as const;
 
-    for (const c of cells) {
-      const tx = c.align === "right" ? x + c.w - PAD_R : x + PAD_L;
-      drawText(doc, String(c.v), tx, rowY + 6, { width: c.w - (PAD_L + PAD_R), align: c.align });
-      x += c.w;
+    for (const ccell of cells) {
+      const tx = ccell.align === "right" ? x + ccell.w - PAD_R : x + PAD_L;
+      drawText(doc, String(ccell.v), tx, rowY + 6, { width: ccell.w - (PAD_L + PAD_R), align: ccell.align });
+      x += ccell.w;
     }
-
     doc.rect(tableX, rowY, tableW, dataRowH).strokeColor("#E5E7EB").lineWidth(0.8).stroke();
     rowY += dataRowH;
   }
 
-  // Totals — include VAT % here (between Subtotal and VAT)
+  /* totals (fixed width, right-aligned) */
   rowY += 12;
-  const totalsW = COLS.slice(-2).reduce((a, c) => a + c.w, 0) + COLS[3].w; // Net + VAT + Total widths
-  const totalsX = tableX + tableW - totalsW;
-
+  const totalsW = 360;                        // fixed block width for stability
+  const totalsX = W - MARGIN - totalsW - 0.5; // lock to right margin
   const vatRateStr = VAT_ENABLED ? `${Math.round(VAT_RATE * 100)}%` : "—";
-  const totals = [
-    { label: "Subtotal (Net)", value: money(netTotal, C), bold: false },
-    { label: "VAT %",          value: vatRateStr,         bold: false }, // <-- moved here
-    { label: "VAT",            value: money(vatTotal, C), bold: false },
-    { label: "Total",          value: money(grand,   C),  bold: true  },
+
+  type Tot = { label: string; value: string; bold?: boolean };
+  const totals: Tot[] = [
+    { label: "Subtotal (Net)", value: money(netTotal, C) },
+    { label: "VAT %",          value: vatRateStr },
+    { label: "VAT",            value: money(vatTotal, C) },
+    { label: "Total",          value: money(grand, C), bold: true },
   ];
 
   for (let i = 0; i < totals.length; i++) {
     const h = 24, T = totals[i];
-    doc
-      .rect(totalsX, rowY, totalsW, h)
-      .fill(i === totals.length - 1 ? "#F3F4F6" : "#FFFFFF")
-      .strokeColor("#E5E7EB")
-      .lineWidth(0.8)
-      .stroke();
+    doc.rect(totalsX, rowY, totalsW, h)
+       .fill(i === totals.length - 1 ? "#F3F4F6" : "#FFFFFF")
+       .strokeColor("#E5E7EB").lineWidth(0.8).stroke();
     doc.font(T.bold ? "Helvetica-Bold" : "Helvetica").fontSize(10).fill("#111827");
     drawText(doc, T.label, totalsX + 12, rowY + 7, { width: totalsW / 2 - 12, align: "left"  });
     drawText(doc, T.value, totalsX + totalsW / 2, rowY + 7, { width: totalsW / 2 - 12, align: "right" });
     rowY += h;
   }
 
-  // Notes (optional)
+  /* notes */
   if (input.meta?.notes) {
     rowY += 16;
     const notesMaxY = H - bottomMargin - 80;
@@ -302,7 +278,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     }
   }
 
-  // Footer
+  /* footer */
   const footerY = H - bottomMargin - 18;
   doc.font("Helvetica").fontSize(9).fill("#6B7280");
   drawText(
