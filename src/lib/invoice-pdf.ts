@@ -76,7 +76,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const invNo   = input.meta?.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
   const invDate = new Date(input.meta?.dateISO || Date.now()).toLocaleDateString("en-GB");
 
-  /* header band */
+  /* Header */
   const headerH = 90;
   doc.rect(0, 0, W, headerH).fill("#0F172A");
 
@@ -126,7 +126,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const rightEndY = drawBlock(doc, rightLines, rightX, y, rightW, gridLH);
   y = Math.max(leftEndY, rightEndY) + gapUnderBlocks;
 
-  /* meta */
+  /* Meta strip */
   doc.moveTo(MARGIN + 0.5, y).lineTo(W - MARGIN - 0.5, y).strokeColor("#E5E7EB").lineWidth(1).stroke();
   y += 14;
 
@@ -142,7 +142,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     doc.font("Helvetica");      drawText(doc, String(input.meta.orderId), MARGIN + 95, y);
   }
 
-  /* compute rows */
+  /* Compute rows */
   type Row = { d: string; q: number; ux: number; net: number; vat: number; gross: number };
   const rows: Row[] = [];
   let netTotal = 0, vatTotal = 0;
@@ -159,17 +159,17 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   netTotal = r2(netTotal); vatTotal = r2(vatTotal);
   const grand = r2(netTotal + vatTotal);
 
-  /* table (no VAT% column) */
+  /* Table (no VAT % column) */
   y += 20;
   const tableX = MARGIN + 0.5;
-  const tableWAvail = W - MARGIN * 2 - 6;
+  const tableWAvail = W - MARGIN * 2 - 18; // bigger right safety inset
 
-  // Give Net & Total more space
+  // Wider Net & Total
   const BASE = [220, 70, 105, 125, 85, 140]; // [Desc, Litres, Unit, Net, VAT, Total]
   const SUM_BASE = BASE.reduce((a, b) => a + b, 0);
   const scale = tableWAvail / SUM_BASE;
   const scaled = BASE.map(w => Math.floor(w * scale));
-  const sumFirst = scaled.slice(0, scaled.length - 1).reduce((a, b) => a + b, 0);
+  const sumFirst = scaled.slice(0, -1).reduce((a, b) => a + b, 0);
   const lastW = Math.max(tableWAvail - sumFirst, 60);
 
   const COLS = [
@@ -182,18 +182,21 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   ];
   const tableW = COLS.reduce((a, c) => a + c.w, 0);
 
-  const PAD_L = 10, PAD_R = 10;
+  const PAD_L = 10, PAD_R = 12;    // slight extra right padding
   const headerRowH = 24, dataRowH = 24;
 
+  // Header row
   doc.rect(tableX, y, tableW, headerRowH).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.8).stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
   let x = tableX;
   for (const ccol of COLS) {
-    const tx = ccol.align === "right" ? x + ccol.w - PAD_R : x + PAD_L;
-    drawText(doc, ccol.label, tx, y + 7, { width: ccol.w - (PAD_L + PAD_R), align: ccol.align });
+    const tx = x + PAD_L;
+    const bw = Math.max(0, ccol.w - (PAD_L + PAD_R));
+    drawText(doc, ccol.label, tx, y + 7, { width: bw, align: ccol.align });
     x += ccol.w;
   }
 
+  // Data rows
   let rowY = y + headerRowH;
   const bottomSafe = H - bottomMargin - 190;
   doc.font("Helvetica").fontSize(10).fill("#111827");
@@ -220,27 +223,27 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     ] as const;
 
     for (const ccell of cells) {
-      const tx = ccell.align === "right" ? x + ccell.w - PAD_R : x + PAD_L;
-      drawText(doc, String(ccell.v), tx, rowY + 6, { width: ccell.w - (PAD_L + PAD_R), align: ccell.align });
+      const tx = x + PAD_L;                              // <— always from LEFT
+      const bw = Math.max(0, ccell.w - (PAD_L + PAD_R)); //     strict box width
+      drawText(doc, String(ccell.v), tx, rowY + 6, { width: bw, align: ccell.align });
       x += ccell.w;
     }
     doc.rect(tableX, rowY, tableW, dataRowH).strokeColor("#E5E7EB").lineWidth(0.8).stroke();
     rowY += dataRowH;
   }
 
-  /* totals (fixed width, right-aligned) */
+  /* Totals (fixed width, to the right) */
   rowY += 12;
-  const totalsW = 360;                        // fixed block width for stability
-  const totalsX = W - MARGIN - totalsW - 0.5; // lock to right margin
+  const totalsW = 360;
+  const totalsX = W - MARGIN - totalsW - 0.5;
   const vatRateStr = VAT_ENABLED ? `${Math.round(VAT_RATE * 100)}%` : "—";
 
-  type Tot = { label: string; value: string; bold?: boolean };
-  const totals: Tot[] = [
-    { label: "Subtotal (Net)", value: money(netTotal, C) },
-    { label: "VAT %",          value: vatRateStr },
-    { label: "VAT",            value: money(vatTotal, C) },
-    { label: "Total",          value: money(grand, C), bold: true },
-  ];
+  const totals = [
+    { label: "Subtotal (Net)", value: money(netTotal, C), bold: false },
+    { label: "VAT %",          value: vatRateStr,         bold: false },
+    { label: "VAT",            value: money(vatTotal, C), bold: false },
+    { label: "Total",          value: money(grand,   C),  bold: true  },
+  ] as const;
 
   for (let i = 0; i < totals.length; i++) {
     const h = 24, T = totals[i];
@@ -253,7 +256,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     rowY += h;
   }
 
-  /* notes */
+  /* Notes */
   if (input.meta?.notes) {
     rowY += 16;
     const notesMaxY = H - bottomMargin - 80;
@@ -278,7 +281,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     }
   }
 
-  /* footer */
+  /* Footer */
   const footerY = H - bottomMargin - 18;
   doc.font("Helvetica").fontSize(9).fill("#6B7280");
   drawText(
