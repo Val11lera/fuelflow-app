@@ -76,8 +76,8 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const invNo   = input.meta?.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
   const invDate = new Date(input.meta?.dateISO || Date.now()).toLocaleDateString("en-GB");
 
-  /* ----- header band ----- */
-  const headerH = 90; // page header height
+  /* ----- page header band ----- */
+  const headerH = 90;
   doc.rect(0, 0, W, headerH).fill("#0F172A");
 
   const logoUrl = process.env.COMPANY_LOGO_URL || "https://dashboard.fuelflow.co.uk/logo-email.png";
@@ -148,7 +148,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     doc.font("Helvetica");      drawText(doc, String(input.meta.orderId), MARGIN + 95, y);
   }
 
-  /* ----- compute rows ----- */
+  /* ----- compute item rows ----- */
   type Row = { d: string; q: number; ux: number; net: number; vp: number; vat: number; gross: number };
   const rows: Row[] = [];
   let netTotal = 0, vatTotal = 0;
@@ -166,39 +166,39 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   netTotal = r2(netTotal); vatTotal = r2(vatTotal);
   const grand = r2(netTotal + vatTotal);
 
-  /* ----- table geometry (scaled to always fit) ----- */
+  /* ----- table (proportional, fills width) ----- */
   y += 20;
-  const tableX = MARGIN + 0.5;
-  const tableW = W - MARGIN * 2 - 8; // safe gap from right edge
 
-  // Original visual widths (px) we liked earlier
+  // available width with a tiny safety inset from the right edge
+  const tableX = MARGIN + 0.5;
+  const tableWAvail = W - MARGIN * 2 - 6;
+
+  // your original visual widths (px)
   const BASE = [210, 60, 90, 75, 55, 85, 90]; // [Desc, Litres, Unit, Net, VAT%, VAT, Total]
   const SUM_BASE = BASE.reduce((a, b) => a + b, 0);
 
-  // Minimums to prevent wrapping
-  const MIN  = [140, 50, 70, 65, 40, 46, 58];
+  // scale factor so columns exactly fill the available width
+  const scale = tableWAvail / SUM_BASE;
 
-  // Scale to fit tableW, respecting mins; last column absorbs rounding
-  const widths = BASE.map(w => Math.floor((w / SUM_BASE) * tableW));
-  for (let i = 0; i < widths.length - 1; i++) widths[i] = Math.max(widths[i], MIN[i]);
-  widths[widths.length - 1] = Math.max(tableW - widths.slice(0, -1).reduce((a, b) => a + b, 0), MIN[MIN.length - 1]);
-  const over = widths.reduce((a, b) => a + b, 0) - tableW;
-  if (over > 0) widths[0] = Math.max(widths[0] - over, MIN[0]);
-
+  // final column widths (rounded) and last column adjusted to fill exactly
+  const scaled = BASE.map((w) => Math.floor(w * scale));
+  const sumFirstSix = scaled.slice(0, 6).reduce((a, b) => a + b, 0);
+  const lastW = Math.max(tableWAvail - sumFirstSix, 40); // ensure a sane last column
   const COLS = [
-    { label: "Description", w: widths[0], align: "left"  as const },
-    { label: "Litres",      w: widths[1], align: "right" as const },
-    { label: "Unit ex-VAT", w: widths[2], align: "right" as const },
-    { label: "Net",         w: widths[3], align: "right" as const },
-    { label: "VAT %",       w: widths[4], align: "right" as const },
-    { label: "VAT",         w: widths[5], align: "right" as const },
-    { label: "Total",       w: widths[6], align: "right" as const },
+    { label: "Description", w: scaled[0], align: "left"  as const },
+    { label: "Litres",      w: scaled[1], align: "right" as const },
+    { label: "Unit ex-VAT", w: scaled[2], align: "right" as const },
+    { label: "Net",         w: scaled[3], align: "right" as const },
+    { label: "VAT %",       w: scaled[4], align: "right" as const },
+    { label: "VAT",         w: scaled[5], align: "right" as const },
+    { label: "Total",       w: lastW,     align: "right" as const },
   ];
+  const tableW = COLS.reduce((a, c) => a + c.w, 0);
 
-  const PAD_L = 8, PAD_R = 8;
-  const tableHeaderH = 24, tableRowH = 24; // <- renamed to avoid clash with page header
+  const PAD_L = 10, PAD_R = 10;
+  const tableHeaderH = 24, tableRowH = 24;
 
-  // Header row
+  // header row box
   doc.rect(tableX, y, tableW, tableHeaderH).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.6).stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
   let x = tableX;
@@ -208,7 +208,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     x += c.w;
   }
 
-  // Rows
+  // data rows
   let rowY = y + tableHeaderH;
   const bottomSafe = H - bottomMargin - 190;
   doc.font("Helvetica").fontSize(10).fill("#111827");
@@ -312,6 +312,5 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
 
   return { pdfBuffer: Buffer.concat(chunks), filename: `${invNo}.pdf`, total: r2(netTotal + vatTotal), pages };
 }
-
 
 
