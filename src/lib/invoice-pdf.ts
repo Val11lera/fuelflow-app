@@ -92,13 +92,13 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   let y = topMargin + headerH - MARGIN + 24;
 
   const leftX  = MARGIN;
-  const rightX = W / 2 + 20;            // same grid split as before
+  const rightX = W / 2 + 20;
   const leftW  = W / 2 - MARGIN - 28;
   const rightW = W - rightX - MARGIN;
 
   doc.font("Helvetica-Bold").fontSize(11).fill("#111827");
-  drawText(doc, "From:", leftX, y);     // ← add colon
-  drawText(doc, "Bill To:", rightX, y); // ← add colon
+  drawText(doc, "From:", leftX, y);
+  drawText(doc, "Bill To:", rightX, y);
   y += 14;
 
   doc.font("Helvetica").fontSize(10).fill("#111827");
@@ -123,19 +123,14 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const rightEndY = drawBlock(doc, rightLines, rightX, y, rightW, gridLH);
   y = Math.max(leftEndY, rightEndY) + 16;
 
-  /* ─ Meta strip — use same two-column grid; make the rule exactly table width later ─ */
-  // We'll draw the line after we know the table width so it matches perfectly.
-  // For now, advance y for the meta content.
-  y += 14;
-
-  // left column (Invoice No / Order Ref) aligned with leftX
+  /* Meta block (two-column grid matching From/Bill To) */
   const metaLeftLabelW = 95;
+
   doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
   drawText(doc, "Invoice No:", leftX, y);
   doc.font("Helvetica").fontSize(10);
   drawText(doc, invNo, leftX + metaLeftLabelW, y);
 
-  // right column (Date) aligned with rightX (same start as 'Bill To')
   doc.font("Helvetica-Bold").fontSize(10);
   drawText(doc, "Date:", rightX, y);
   doc.font("Helvetica").fontSize(10);
@@ -149,12 +144,11 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     drawText(doc, String(input.meta.orderId), leftX + metaLeftLabelW, y);
   }
 
-  /* Table (no VAT% column) */
-  y += 20;
+  const metaBottomY = y; // ← finished meta content
 
-  // table geometry with the same right inset we use elsewhere
+  /* Table geometry (so we know exact width for the rule) */
   const tableX = MARGIN + 0.5;
-  const tableWAvail = W - MARGIN * 2 - 18; // right safety inset
+  const tableWAvail = W - MARGIN * 2 - 18;
 
   const BASE = [220, 90, 110, 125, 85, 140]; // [Desc, Litres, Unit, Net, VAT, Total]
   const SUM_BASE = BASE.reduce((a, b) => a + b, 0);
@@ -173,15 +167,17 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   ];
   const tableW = COLS.reduce((a, c) => a + c.w, 0);
 
-  // now draw the meta-divider line to EXACTLY match table width
-  // (place it just above the table start)
-  const ruleY = y - 20 - 10; // y moved +20 for table and we want a small gap (10) above the meta content
+  /* Divider rule — now placed AFTER meta, BEFORE table, exactly table width */
+  const ruleY = metaBottomY + 8; // small gap under meta
   doc.moveTo(tableX, ruleY).lineTo(tableX + tableW, ruleY).strokeColor("#E5E7EB").lineWidth(1).stroke();
 
+  /* Table */
   const PAD_L = 10, PAD_R = 12;
   const headerRowH = 24, dataRowH = 24;
 
-  // header
+  // start table header just below the rule
+  y = ruleY + 10;
+
   doc.rect(tableX, y, tableW, headerRowH).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.8).stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
   let colX = tableX;
@@ -192,7 +188,6 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     colX += ccol.w;
   }
 
-  // single-line value draw (no wrapping)
   function drawCellValue(val: string, x: number, w: number, y0: number, align: "left" | "right") {
     if (align === "right") {
       const tw = doc.widthOfString(val);
@@ -203,12 +198,10 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     }
   }
 
-  // rows
   let rowY = y + headerRowH;
   const bottomSafe = H - bottomMargin - 190;
   doc.font("Helvetica").fontSize(10).fill("#111827");
 
-  // compute items
   type Row = { d: string; q: number; ux: number; net: number; vat: number; gross: number };
   const rows: Row[] = [];
   let netTotal = 0, vatTotal = 0;
@@ -255,7 +248,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     rowY += dataRowH;
   }
 
-  /* Totals — right-edge identical to table Total column; tighter gap */
+  /* Totals — same right edge as table */
   rowY += 12;
   const rightEdgeX = tableX + tableW - PAD_R;
   const totalsW = 320;
