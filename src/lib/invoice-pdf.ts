@@ -123,32 +123,9 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const rightEndY = drawBlock(doc, rightLines, rightX, y, rightW, gridLH);
   y = Math.max(leftEndY, rightEndY) + 16;
 
-  /* Meta block (two-column grid matching From/Bill To) */
-  const metaLeftLabelW = 95;
-
-  doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
-  drawText(doc, "Invoice No:", leftX, y);
-  doc.font("Helvetica").fontSize(10);
-  drawText(doc, invNo, leftX + metaLeftLabelW, y);
-
-  doc.font("Helvetica-Bold").fontSize(10);
-  drawText(doc, "Date:", rightX, y);
-  doc.font("Helvetica").fontSize(10);
-  drawText(doc, invDate, rightX + 45, y);
-
-  if (input.meta?.orderId) {
-    y += 16;
-    doc.font("Helvetica-Bold");
-    drawText(doc, "Order Ref:", leftX, y);
-    doc.font("Helvetica");
-    drawText(doc, String(input.meta.orderId), leftX + metaLeftLabelW, y);
-  }
-
-  const metaBottomY = y; // ← finished meta content
-
-  /* Table geometry (so we know exact width for the rule) */
+  /* Table geometry (we need exact width for the divider line) */
   const tableX = MARGIN + 0.5;
-  const tableWAvail = W - MARGIN * 2 - 18;
+  const tableWAvail = W - MARGIN * 2 - 18; // right safety inset
 
   const BASE = [220, 90, 110, 125, 85, 140]; // [Desc, Litres, Unit, Net, VAT, Total]
   const SUM_BASE = BASE.reduce((a, b) => a + b, 0);
@@ -156,7 +133,6 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const scaled = BASE.map(w => Math.floor(w * scale));
   const sumFirst = scaled.slice(0, -1).reduce((a, b) => a + b, 0);
   const lastW = Math.max(tableWAvail - sumFirst, 60);
-
   const COLS = [
     { label: "Description", w: scaled[0], align: "left"  as const },
     { label: "Litres",      w: scaled[1], align: "right" as const },
@@ -167,16 +143,47 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   ];
   const tableW = COLS.reduce((a, c) => a + c.w, 0);
 
-  /* Divider rule — now placed AFTER meta, BEFORE table, exactly table width */
-  const ruleY = metaBottomY + 8; // small gap under meta
-  doc.moveTo(tableX, ruleY).lineTo(tableX + tableW, ruleY).strokeColor("#E5E7EB").lineWidth(1).stroke();
+  /* Meta block (split in two rows) */
+  const metaLeftLabelW = 95;
+
+  // Row 1: Invoice No / Date
+  doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
+  drawText(doc, "Invoice No:", leftX, y);
+  doc.font("Helvetica").fontSize(10);
+  drawText(doc, invNo, leftX + metaLeftLabelW, y);
+
+  doc.font("Helvetica-Bold").fontSize(10);
+  drawText(doc, "Date:", rightX, y);
+  doc.font("Helvetica").fontSize(10);
+  drawText(doc, invDate, rightX + 45, y);
+
+  // Divider *between* Row 1 and Row 2 (Order Ref) — exactly table width
+  const ruleY = y + 12; // small gap under row 1
+  doc
+    .moveTo(tableX, ruleY)
+    .lineTo(tableX + tableW, ruleY)
+    .strokeColor("#E5E7EB")
+    .lineWidth(1)
+    .stroke();
+
+  // Row 2: Order Ref
+  const orderY = ruleY + 10; // small gap below the rule
+  if (input.meta?.orderId) {
+    doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
+    drawText(doc, "Order Ref:", leftX, orderY);
+    doc.font("Helvetica").fontSize(10);
+    drawText(doc, String(input.meta.orderId), leftX + metaLeftLabelW, orderY);
+    y = orderY + 16; // advance past second row
+  } else {
+    y = ruleY + 6; // if no order id, keep a modest gap
+  }
 
   /* Table */
   const PAD_L = 10, PAD_R = 12;
   const headerRowH = 24, dataRowH = 24;
 
-  // start table header just below the rule
-  y = ruleY + 10;
+  // table header just below the meta section
+  y += 10;
 
   doc.rect(tableX, y, tableW, headerRowH).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.8).stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
@@ -188,6 +195,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     colX += ccol.w;
   }
 
+  // single-line value draw
   function drawCellValue(val: string, x: number, w: number, y0: number, align: "left" | "right") {
     if (align === "right") {
       const tw = doc.widthOfString(val);
@@ -198,6 +206,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     }
   }
 
+  // rows
   let rowY = y + headerRowH;
   const bottomSafe = H - bottomMargin - 190;
   doc.font("Helvetica").fontSize(10).fill("#111827");
@@ -248,7 +257,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     rowY += dataRowH;
   }
 
-  /* Totals — same right edge as table */
+  /* Totals — right edge matches table's Total column */
   rowY += 12;
   const rightEdgeX = tableX + tableW - PAD_R;
   const totalsW = 320;
@@ -316,5 +325,4 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
 
   return { pdfBuffer: Buffer.concat(chunks), filename: `${invNo}.pdf`, total: r2(netTotal + vatTotal), pages };
 }
-
 
