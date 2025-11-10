@@ -205,8 +205,8 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     const r = rows[i];
     if (rowY + rowH > bottomSafe) {
       doc.font("Helvetica-Oblique").fontSize(9).fill("#6B7280");
-      drawText(`(+${rows.length - i} more item${rows.length - i > 1 ? "s" : ""} not shown)`,
-               tableX + 10, rowY + 6, { width: tableW - 20 });
+      drawText(doc, `(+${rows.length - i} more item${rows.length - i > 1 ? "s" : ""} not shown)`,
+         tableX + 10, rowY + 6, { width: tableW - 20 });
       rowY += rowH;
       break;
     }
