@@ -1,9 +1,8 @@
 // src/lib/invoice-pdf.ts
 // src/lib/invoice-pdf.ts
-// src/lib/invoice-pdf.ts
 import PDFDocument from "pdfkit";
 
-export type LineItem = { description: string; quantity: number; unitPrice: number }; // unitPrice = price per litre
+export type LineItem = { description: string; quantity: number; unitPrice: number };
 export type InvoiceInput = {
   customer: {
     name?: string | null;
@@ -21,7 +20,6 @@ export type BuiltInvoice = { pdfBuffer: Buffer; filename: string; total: number;
 
 const MARGIN = 36;
 
-// helpers
 function drawText(doc: any, str: string, x: number, y: number, opt: any = {}) {
   const px = doc.x, py = doc.y;
   doc.text(str, x, y, { lineBreak: false, ...opt });
@@ -76,17 +74,16 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   const invNo   = input.meta?.invoiceNumber || `INV-${Math.floor(Date.now() / 1000)}`;
   const invDate = new Date(input.meta?.dateISO || Date.now()).toLocaleDateString("en-GB");
 
-  // Header bar
+  // Header
   const headerH = 90;
   doc.rect(0, 0, W, headerH).fill("#0F172A");
 
-  // Logo (fallback to text)
   const logoUrl = process.env.COMPANY_LOGO_URL || "https://dashboard.fuelflow.co.uk/logo-email.png";
   let logoDrawn = false;
   try {
     const ab = await fetchArrayBuffer(logoUrl);
     if (ab) { doc.image(Buffer.from(ab), MARGIN, 26, { width: 156, height: 42, fit: [156, 42] }); logoDrawn = true; }
-  } catch { /* ignore */ }
+  } catch {}
   if (!logoDrawn) {
     doc.fill("#FFFFFF").font("Helvetica-Bold").fontSize(26);
     drawText(doc, companyName, MARGIN, 30, { width: W - MARGIN * 2 });
@@ -94,7 +91,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   doc.fill("#FFFFFF").font("Helvetica").fontSize(12);
   drawText(doc, "TAX INVOICE", W - MARGIN - 200, 34, { width: 200, align: "right" });
 
-  // From / Bill To blocks
+  // Addresses
   const gridLH = 14;
   const gapUnderHeader = 24;
   const gapUnderBlocks = 16;
@@ -120,20 +117,20 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     companyVat ? `VAT No: ${companyVat}` : undefined,
   ].filter(Boolean) as string[];
 
-  const cust = input.customer;
+  const c = input.customer;
   const rightLines = [
-    cust.name || "Customer",
-    cust.address_line1 || undefined,
-    cust.address_line2 || undefined,
-    [cust.city, cust.postcode].filter(Boolean).join(" ") || undefined,
-    cust.email ? `Email: ${cust.email}` : undefined,
+    c.name || "Customer",
+    c.address_line1 || undefined,
+    c.address_line2 || undefined,
+    [c.city, c.postcode].filter(Boolean).join(" ") || undefined,
+    c.email ? `Email: ${c.email}` : undefined,
   ].filter(Boolean) as string[];
 
   const leftEndY  = drawBlock(doc, leftLines,  leftX,  y, leftW,  gridLH);
   const rightEndY = drawBlock(doc, rightLines, rightX, y, rightW, gridLH);
   y = Math.max(leftEndY, rightEndY) + gapUnderBlocks;
 
-  // Meta strip
+  // Meta
   doc.moveTo(MARGIN + 0.5, y).lineTo(W - MARGIN - 0.5, y).strokeColor("#E5E7EB").lineWidth(1).stroke();
   y += 14;
 
@@ -154,7 +151,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     drawText(doc, String(input.meta.orderId), MARGIN + 95, y);
   }
 
-  // Compute rows
+  // Compute items
   type Row = { d: string; q: number; ux: number; net: number; vp: number; vat: number; gross: number };
   const rows: Row[] = [];
   let netTotal = 0, vatTotal = 0;
@@ -162,7 +159,7 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   for (const it of input.items) {
     const q  = n(it.quantity, 0);
     const up = n(it.unitPrice, 0);
-    const ux = !VAT_ENABLED ? up : (PRICES_INCLUDE_VAT ? up / (1 + VAT_RATE) : up); // ex-VAT per litre
+    const ux = !VAT_ENABLED ? up : (PRICES_INCLUDE_VAT ? up / (1 + VAT_RATE) : up);
     const net = q * ux;
     const v   = VAT_ENABLED ? net * VAT_RATE : 0;
     const g   = net + v;
@@ -175,35 +172,53 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
   // Table
   y += 20;
   const tableX = MARGIN + 0.5;
-  const tableW = W - MARGIN * 2 - 7; // away from the right edge
+  const tableW = W - MARGIN * 2 - 7; // keep away from right edge
 
-  // Column layout as proportions of tableW (sum ~ 1.00). Last column absorbs rounding.
-  const FRACS = [
-    { key: "description", label: "Description", frac: 0.45, align: "left"  as const },
-    { key: "litres",      label: "Litres",      frac: 0.12, align: "right" as const },
-    { key: "unit",        label: "Unit ex-VAT", frac: 0.15, align: "right" as const },
-    { key: "net",         label: "Net",         frac: 0.12, align: "right" as const },
-    { key: "vatp",        label: "VAT %",       frac: 0.06, align: "right" as const },
-    { key: "vat",         label: "VAT",         frac: 0.05, align: "right" as const },
-    { key: "total",       label: "Total",       frac: 0.05, align: "right" as const },
+  // Proportional columns with sensible minimums (px)
+  const PAD_R = 10;              // right padding for right-aligned cells
+  const PAD_L = 10;              // left padding
+  const MIN_VATP = 38;           // ensures "VAT %" fits in header
+  const MIN_VAT  = 40;           // ensures "VAT" fits
+  const MIN_TOTAL = 48;          // space for totals
+
+  // Base fractions (~1.00)
+  const base = [
+    { label: "Description", frac: 0.38, align: "left"  as const, min: 140 },
+    { label: "Litres",      frac: 0.12, align: "right" as const, min: 56  },
+    { label: "Unit ex-VAT", frac: 0.15, align: "right" as const, min: 72  },
+    { label: "Net",         frac: 0.14, align: "right" as const, min: 68  },
+    { label: "VAT %",       frac: 0.07, align: "right" as const, min: MIN_VATP },
+    { label: "VAT",         frac: 0.07, align: "right" as const, min: MIN_VAT  },
+    { label: "Total",       frac: 0.07, align: "right" as const, min: MIN_TOTAL },
   ];
-  // turn fracs into pixel widths that always sum to tableW
-  const cols = FRACS.map((c, i) => ({
-    label: c.label,
-    w: i < FRACS.length - 1 ? Math.floor(c.frac * tableW) : tableW - FRACS.slice(0, -1).reduce((s, p, j) => s + Math.floor(p.frac * tableW), 0),
-    align: c.align,
-  }));
 
-  // header row
+  // Convert to exact pixel widths (respect mins, last column absorbs rounding)
+  const firstSix = base.slice(0, -1).map(c => Math.max(Math.floor(c.frac * tableW), c.min));
+  let used = firstSix.reduce((a, b) => a + b, 0);
+  // If mins overflow table, scale them down proportionally (rare on A4, but safe)
+  if (used > tableW - MIN_TOTAL) {
+    const scale = (tableW - MIN_TOTAL) / used;
+    for (let i = 0; i < firstSix.length; i++) firstSix[i] = Math.floor(firstSix[i] * scale);
+    used = firstSix.reduce((a, b) => a + b, 0);
+  }
+  const lastW = Math.max(tableW - used, MIN_TOTAL);
+  const cols = [
+    ...firstSix.map((w, i) => ({ label: base[i].label, w, align: base[i].align })),
+    { label: base.at(-1)!.label, w: lastW, align: base.at(-1)!.align },
+  ];
+
+  // Header row
   doc.rect(tableX, y, tableW, 24).fill("#F3F4F6").strokeColor("#E5E7EB").lineWidth(0.6).stroke();
   doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
-  let x = tableX + 10;
+  let x = tableX;
   for (const c of cols) {
-    const tx = c.align === "right" ? x + c.w - 14 : x; // inset for right-aligned text
-    drawText(doc, c.label, tx, y + 7, { width: c.w - 20, align: c.align });
+    const innerX = c.align === "right" ? x + c.w - PAD_R : x + PAD_L;
+    const innerW = c.w - (PAD_L + PAD_R);
+    drawText(doc, c.label, innerX, y + 7, { width: Math.max(innerW, 24), align: c.align });
     x += c.w;
   }
 
+  // Rows
   let rowY = y + 24;
   const rowH = 24;
   const bottomSafe = H - bottomMargin - 190;
@@ -213,17 +228,14 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     const r = rows[i];
     if (rowY + rowH > bottomSafe) {
       doc.font("Helvetica-Oblique").fontSize(9).fill("#6B7280");
-      drawText(
-        doc,
-        `(+${rows.length - i} more item${rows.length - i > 1 ? "s" : ""} not shown)`,
-        tableX + 10, rowY + 6, { width: tableW - 20 }
-      );
+      drawText(doc, `(+${rows.length - i} more item${rows.length - i > 1 ? "s" : ""} not shown)`,
+               tableX + PAD_L, rowY + 6, { width: tableW - (PAD_L + PAD_R) });
       rowY += rowH;
       break;
     }
     if (i % 2 === 1) { doc.rect(tableX, rowY, tableW, rowH).fill("#FAFAFA"); doc.fill("#111827"); }
 
-    x = tableX + 10;
+    x = tableX;
     const cells = [
       { v: r.d,               w: cols[0].w, align: cols[0].align },
       { v: qty(r.q),          w: cols[1].w, align: cols[1].align },
@@ -235,8 +247,9 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
     ] as const;
 
     for (const c of cells) {
-      const tx = c.align === "right" ? x + c.w - 14 : x; // keep content away from the border
-      drawText(doc, String(c.v), tx, rowY + 6, { width: c.w - 20, align: c.align });
+      const innerX = c.align === "right" ? x + c.w - PAD_R : x + PAD_L;
+      const innerW = c.w - (PAD_L + PAD_R);
+      drawText(doc, String(c.v), innerX, rowY + 6, { width: Math.max(innerW, 24), align: c.align });
       x += c.w;
     }
 
@@ -256,19 +269,16 @@ export async function buildInvoicePdf(input: InvoiceInput): Promise<BuiltInvoice
 
   for (let i = 0; i < totals.length; i++) {
     const h = 24, T = totals[i];
-    doc
-      .rect(totalsX, rowY, totalsW, h)
-      .fill(i === totals.length - 1 ? "#F3F4F6" : "#FFFFFF")
-      .strokeColor("#E5E7EB")
-      .lineWidth(0.6)
-      .stroke();
+    doc.rect(totalsX, rowY, totalsW, h)
+       .fill(i === totals.length - 1 ? "#F3F4F6" : "#FFFFFF")
+       .strokeColor("#E5E7EB").lineWidth(0.6).stroke();
     doc.font(T.bold ? "Helvetica-Bold" : "Helvetica").fontSize(10).fill("#111827");
     drawText(doc, T.label, totalsX + 12, rowY + 7, { width: totalsW / 2 - 12, align: "left"  });
     drawText(doc, T.value, totalsX + totalsW / 2, rowY + 7, { width: totalsW / 2 - 12, align: "right" });
     rowY += h;
   }
 
-  // Notes (optional)
+  // Notes
   if (input.meta?.notes) {
     rowY += 16;
     const notesMaxY = H - bottomMargin - 80;
