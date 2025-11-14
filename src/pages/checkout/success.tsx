@@ -105,7 +105,7 @@ export default function SuccessPage() {
               rel="noreferrer"
               className="inline-flex items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-5 py-3 font-semibold text-white/90 hover:bg-white/10 focus:outline-none focus:ring focus:ring-white/10"
             >
-              View in Stripe (test)
+              View in Stripe
             </a>
           </div>
 
