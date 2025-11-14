@@ -6,12 +6,7 @@ import { createClient } from "@supabase/supabase-js";
 
 export const config = { api: { bodyParser: false } };
 
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
-if (!STRIPE_SECRET_KEY) {
-  throw new Error("STRIPE_SECRET_KEY is not set");
-}
-
-const stripe = new Stripe(STRIPE_SECRET_KEY, {
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 
@@ -313,12 +308,11 @@ export default async function handler(
 
   let event: Stripe.Event;
   try {
-    const WH_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
-    if (!WH_SECRET) {
-      throw new Error("STRIPE_WEBHOOK_SECRET is not set");
-    }
-
-    event = stripe.webhooks.constructEvent(rawBody, sig, WH_SECRET);
+    event = stripe.webhooks.constructEvent(
+      rawBody,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET as string
+    );
   } catch (err: any) {
     await logRow({ event_type: "bad_signature", error: err?.message });
     return res.status(400).send(`Webhook Error: ${err?.message}`);
@@ -460,14 +454,36 @@ export default async function handler(
         const pi = event.data.object as Stripe.PaymentIntent;
         const piId = pi.id;
 
-        // If this PI is tied to a Checkout Session, skip invoicing here.
+        // If this PI is tied to a Checkout Session:
+        // still mark the order as paid and save the payment,
+        // but leave invoicing to checkout.session.completed.
         if (await hasCheckoutSessionForPI(piId)) {
-          await logRow({
-            event_type: "pi.succeeded_skipped_due_to_checkout_session",
-            extra: { pi_id: piId },
-          });
-          // Still upsert payment info for completeness:
           const orderIdFromPi = (pi.metadata as any)?.order_id || null;
+
+          if (orderIdFromPi) {
+            const { error } = await sb()
+              .from("orders")
+              .update({ status: "paid", paid_at: new Date().toISOString() })
+              .eq("id", orderIdFromPi);
+            if (error)
+              throw new Error(`Supabase update failed: ${error.message}`);
+
+            await logRow({
+              event_type:
+                "pi.succeeded_skipped_due_to_checkout_session_order_paid",
+              order_id: orderIdFromPi,
+              status: "paid",
+              extra: { pi_id: piId },
+            });
+          } else {
+            await logRow({
+              event_type:
+                "pi.succeeded_skipped_due_to_checkout_session_no_order_id",
+              status: pi.status,
+              extra: { pi_id: piId },
+            });
+          }
+
           await upsertPaymentRow({
             pi_id: piId,
             amount: (pi.amount_received ?? pi.amount) ?? null,
@@ -478,6 +494,7 @@ export default async function handler(
             order_id: orderIdFromPi,
             meta: pi.metadata ?? null,
           });
+
           break;
         }
 
@@ -535,12 +552,13 @@ export default async function handler(
           total?: number;
           unitPrice?: number;
         }>;
-        if (order && (order.litres || order.total_pence || order.unit_price_pence)) {
+        if (
+          order &&
+          (order.litres || order.total_pence || order.unit_price_pence)
+        ) {
           const litres = Number(order.litres || 0);
           const totalMajor =
-            order.total_pence != null
-              ? Number(order.total_pence) / 100
-              : undefined;
+            order.total_pence != null ? Number(order.total_pence) / 100 : undefined;
           const unitMajor =
             order.unit_price_pence != null
               ? Number(order.unit_price_pence) / 100
@@ -618,4 +636,5 @@ export default async function handler(
 
   return res.status(200).json({ received: true });
 }
+
 
