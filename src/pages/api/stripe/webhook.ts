@@ -6,7 +6,12 @@ import { createClient } from "@supabase/supabase-js";
 
 export const config = { api: { bodyParser: false } };
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+if (!STRIPE_SECRET_KEY) {
+  throw new Error("STRIPE_SECRET_KEY is not set");
+}
+
+const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
 
@@ -258,7 +263,10 @@ async function callInvoiceRoute(payload: any) {
   if (WEBHOOK_DEBUG && json?.debug) {
     console.log("[invoice] debug.normalized:", json.debug.normalized);
     console.log("[invoice] pages:", json.debug.pages);
-    console.log("[invoice] storagePath:", json.debug.storagePath || json.storagePath);
+    console.log(
+      "[invoice] storagePath:",
+      json.debug.storagePath || json.storagePath
+    );
   }
   return json;
 }
@@ -305,11 +313,12 @@ export default async function handler(
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(
-      rawBody,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET as string
-    );
+    const WH_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!WH_SECRET) {
+      throw new Error("STRIPE_WEBHOOK_SECRET is not set");
+    }
+
+    event = stripe.webhooks.constructEvent(rawBody, sig, WH_SECRET);
   } catch (err: any) {
     await logRow({ event_type: "bad_signature", error: err?.message });
     return res.status(400).send(`Webhook Error: ${err?.message}`);
@@ -393,7 +402,11 @@ export default async function handler(
           expand: ["data.price.product"],
         });
         const order = await fetchOrder(orderId);
-        const items = buildItemsFromOrderOrStripe({ order, lineItems: li, session });
+        const items = buildItemsFromOrderOrStripe({
+          order,
+          lineItems: li,
+          session,
+        });
 
         const dateISO =
           toISODate(order?.delivery_date) ||
@@ -525,7 +538,9 @@ export default async function handler(
         if (order && (order.litres || order.total_pence || order.unit_price_pence)) {
           const litres = Number(order.litres || 0);
           const totalMajor =
-            order.total_pence != null ? Number(order.total_pence) / 100 : undefined;
+            order.total_pence != null
+              ? Number(order.total_pence) / 100
+              : undefined;
           const unitMajor =
             order.unit_price_pence != null
               ? Number(order.unit_price_pence) / 100
@@ -603,3 +618,4 @@ export default async function handler(
 
   return res.status(200).json({ received: true });
 }
+
