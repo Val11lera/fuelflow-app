@@ -208,7 +208,7 @@ function buildItemsFromOrderOrStripe(args: {
 function toISODate(dateStr?: string | null): string | undefined {
   if (!dateStr) return undefined;
   if (/^\d{4}-\d{2}-\d{2}T/.test(dateStr)) return dateStr;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr))
+  if (/^\d{4}-\d2-\d2$/.test(dateStr))
     return new Date(`${dateStr}T12:00:00.000Z`).toISOString();
   const d = new Date(dateStr);
   return isNaN(d.getTime()) ? undefined : d.toISOString();
@@ -622,6 +622,104 @@ export default async function handler(
         break;
       }
 
+      /* ============================================================
+         REFUND path — when a payment is refunded in Stripe Dashboard
+         ============================================================ */
+      case "charge.refunded": {
+        const charge = event.data.object as Stripe.Charge;
+
+        const piId =
+          typeof charge.payment_intent === "string"
+            ? charge.payment_intent
+            : charge.payment_intent?.id || null;
+
+        // Try to get orderId from charge metadata first
+        let orderId: string | null =
+          (charge.metadata as any)?.order_id || null;
+
+        // Fallback: look on the PaymentIntent metadata
+        if (!orderId && piId) {
+          try {
+            const pi = await stripe.paymentIntents.retrieve(piId);
+            orderId = (pi.metadata as any)?.order_id || null;
+          } catch (err) {
+            await logRow({
+              event_type: "refund_pi_lookup_failed",
+              error: (err as any)?.message,
+              extra: { pi_id: piId },
+            });
+          }
+        }
+
+        await logRow({
+          event_type: "charge.refunded/received",
+          order_id: orderId ?? null,
+          extra: {
+            charge_id: charge.id,
+            pi_id: piId,
+            amount_refunded: charge.amount_refunded,
+          },
+        });
+
+        // If we know the order, mark it as refunded
+        if (orderId) {
+          try {
+            const { error } = await sb()
+              .from("orders")
+              .update({ status: "refunded" })
+              .eq("id", orderId);
+
+            if (error) {
+              throw new Error(error.message);
+            }
+
+            await logRow({
+              event_type: "order_updated_to_refunded",
+              order_id: orderId,
+              status: "refunded",
+            });
+          } catch (err) {
+            await logRow({
+              event_type: "order_refund_update_failed",
+              order_id: orderId,
+              error: (err as any)?.message,
+            });
+          }
+        }
+
+        // Record the refund in payments (negative amount)
+        try {
+          const refundedPence =
+            typeof charge.amount_refunded === "number"
+              ? charge.amount_refunded
+              : charge.amount ?? 0;
+
+          await upsertPaymentRow({
+            pi_id: piId,
+            amount: -Math.abs(refundedPence),
+            currency: (charge.currency || "gbp").toUpperCase(),
+            status: "refunded",
+            email:
+              (charge.billing_details?.email ||
+                (charge.metadata as any)?.customer_email) ?? null,
+            order_id: orderId,
+            cs_id: null,
+            meta: {
+              ...(charge.metadata as any),
+              charge_id: charge.id,
+            },
+          });
+        } catch (err) {
+          await logRow({
+            event_type: "refund_payment_row_failed",
+            order_id: orderId ?? null,
+            error: (err as any)?.message,
+          });
+        }
+
+        break;
+      }
+
       default:
         break;
     }
@@ -636,5 +734,6 @@ export default async function handler(
 
   return res.status(200).json({ received: true });
 }
+
 
 
