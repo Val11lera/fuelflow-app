@@ -1,9 +1,9 @@
 // src/lib/receipt-pdf.ts
+// src/lib/receipt-pdf.ts
 import PDFDocument from "pdfkit";
 
 /**
- * We reuse the same data shape as the invoice for simplicity.
- * You can pass the same payload you use for buildInvoicePdf.
+ * Receipt data – same idea as invoice so you can reuse inputs.
  */
 export type ReceiptLineItem = {
   description: string;
@@ -48,7 +48,13 @@ export type BuiltReceipt = {
 const MARGIN = 36;
 
 /* ---------- helpers ---------- */
-function drawText(doc: any, str: string, x: number, y: number, opt: any = {}) {
+function drawText(
+  doc: any,
+  str: string,
+  x: number,
+  y: number,
+  opt: any = {}
+) {
   const px = doc.x,
     py = doc.y;
   doc.text(str, x, y, { lineBreak: false, ...opt });
@@ -107,7 +113,6 @@ function drawBlock(
 export async function buildReceiptPdf(
   input: ReceiptInput
 ): Promise<BuiltReceipt> {
-  // We still honour VAT envs so the numbers match your invoice
   const VAT_ENABLED = process.env.VAT_ENABLED !== "false";
   const VAT_RATE = Math.max(0, parseFloat(process.env.VAT_RATE ?? "20")) / 100;
   const PRICES_INCLUDE_VAT = process.env.PRICES_INCLUDE_VAT === "true";
@@ -218,7 +223,7 @@ export async function buildReceiptPdf(
   const tableX = MARGIN + 0.5;
   const tableWAvail = W - MARGIN * 2 - 18;
 
-  // [Desc, Qty, Unit, Net, VAT, Total] – same as invoice so totals match
+  // [Desc, Qty, Unit, Net, VAT, Total]
   const BASE = [220, 90, 110, 125, 85, 140];
   const SUM_BASE = BASE.reduce((a, b) => a + b, 0);
   const scale = tableWAvail / SUM_BASE;
@@ -263,7 +268,8 @@ export async function buildReceiptPdf(
     doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
     drawText(doc, "Order Ref:", leftX, orderY);
     doc.font("Helvetica").fontSize(10);
-    drawText(String(input.meta.orderId), leftX + metaLeftLabelW, orderY);
+    // FIX: include `doc` as first argument
+    drawText(doc, String(input.meta.orderId), leftX + metaLeftLabelW, orderY);
   }
 
   // Right side: payment method (if any)
@@ -271,7 +277,13 @@ export async function buildReceiptPdf(
     doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
     drawText(doc, "Paid via:", rightX, orderY);
     doc.font("Helvetica").fontSize(10);
-    drawText(String(input.meta.paymentMethod), rightX + 60, orderY);
+    // FIX: include `doc` as first argument
+    drawText(
+      doc,
+      String(input.meta.paymentMethod),
+      rightX + 60,
+      orderY
+    );
   }
 
   y = orderY + 16;
@@ -489,3 +501,4 @@ export async function buildReceiptPdf(
     pages,
   };
 }
+
