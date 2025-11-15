@@ -623,70 +623,92 @@ export default async function handler(
       }
 
       /* ============================================================
-         REFUNDS (full + partial)
+         REFUNDS (full & partial)
          ============================================================ */
       case "charge.refunded": {
         const charge = event.data.object as Stripe.Charge;
-
-        const amount = typeof charge.amount === "number" ? charge.amount : 0;
-        const amountRefunded =
-          typeof charge.amount_refunded === "number"
-            ? charge.amount_refunded
-            : 0;
-
-        const fullyRefunded = amount > 0 && amountRefunded >= amount;
-        const newStatus = fullyRefunded ? "refunded" : "partially_refunded";
-
         const piId =
           typeof charge.payment_intent === "string"
             ? charge.payment_intent
             : charge.payment_intent?.id || null;
 
-        let orderId: string | undefined =
-          (charge.metadata as any)?.order_id || undefined;
+        let orderId: string | null =
+          (charge.metadata as any)?.order_id || null;
 
-        // Fallback: look on the PaymentIntent metadata if needed
         if (!orderId && piId) {
           try {
             const pi = await stripe.paymentIntents.retrieve(piId);
-            orderId = (pi.metadata as any)?.order_id || undefined;
-          } catch {
-            // ignore
-          }
+            orderId = (pi.metadata as any)?.order_id || null;
+          } catch {}
         }
 
-        await logRow({
-          event_type: "charge.refunded",
-          order_id: orderId ?? null,
-          status: newStatus,
-          extra: {
-            pi_id: piId,
-            amount,
-            amount_refunded: amountRefunded,
-          },
-        });
+        const total = typeof charge.amount === "number" ? charge.amount : null;
+        const refunded =
+          typeof charge.amount_refunded === "number"
+            ? charge.amount_refunded
+            : null;
 
-        // Update order status
-        if (orderId) {
+        let newStatus: string | null = null;
+        if (total != null && refunded != null) {
+          if (refunded === 0) newStatus = "paid";
+          else if (refunded < total) newStatus = "partially_refunded";
+          else newStatus = "refunded";
+        }
+
+        if (orderId && newStatus) {
           const { error } = await sb()
             .from("orders")
             .update({ status: newStatus })
             .eq("id", orderId);
           if (error)
-            throw new Error(`Supabase update failed (refund): ${error.message}`);
+            throw new Error(`Supabase order refund update failed: ${error.message}`);
+          await logRow({
+            event_type: "order_refund_status_update",
+            order_id: orderId,
+            status: newStatus,
+            extra: {
+              pi_id: piId,
+              charge_id: charge.id,
+              total,
+              refunded,
+            },
+          });
+        } else {
+          await logRow({
+            event_type: "order_refund_status_missing_order",
+            status: newStatus,
+            extra: {
+              pi_id: piId,
+              charge_id: charge.id,
+              total,
+              refunded,
+            },
+          });
         }
 
-        // Update payments row so "Amount" shows the TOTAL refunded (negative)
-        await upsertPaymentRow({
-          pi_id: piId,
-          amount: -amountRefunded, // e.g. -40 pence for a total 40p refund
-          currency: (charge.currency || "gbp").toUpperCase(),
-          status: newStatus,
-          email: (charge.billing_details?.email as string) || null,
-          order_id: orderId ?? null,
-          cs_id: null,
-          meta: charge.metadata ?? null,
-        });
+        // Record refund in payments table as a negative amount
+        const currency = (charge.currency || "gbp").toUpperCase();
+        const refundAmount =
+          typeof charge.amount_refunded === "number"
+            ? -charge.amount_refunded
+            : null;
+
+        if (refundAmount !== null) {
+          await upsertPaymentRow({
+            pi_id: piId,
+            amount: refundAmount,
+            currency,
+            status: newStatus || "refunded",
+            email:
+              (charge.billing_details?.email as string | undefined) || null,
+            order_id: orderId,
+            cs_id: null,
+            meta: {
+              charge_id: charge.id,
+              reason: (charge.refunds?.data?.[0]?.reason as string) || null,
+            },
+          });
+        }
 
         break;
       }
