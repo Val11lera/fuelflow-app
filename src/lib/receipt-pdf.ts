@@ -1,0 +1,491 @@
+// src/lib/receipt-pdf.ts
+import PDFDocument from "pdfkit";
+
+/**
+ * We reuse the same data shape as the invoice for simplicity.
+ * You can pass the same payload you use for buildInvoicePdf.
+ */
+export type ReceiptLineItem = {
+  description: string;
+  quantity: number;
+  unitPrice: number;
+};
+
+export type ReceiptInput = {
+  customer: {
+    name?: string | null;
+    email: string;
+    address_line1?: string | null;
+    address_line2?: string | null;
+    city?: string | null;
+    postcode?: string | null;
+  };
+  items: ReceiptLineItem[];
+  currency: string;
+  meta?: {
+    /** Optional explicit receipt number, otherwise we generate one */
+    receiptNumber?: string;
+    /** Optional link to the related invoice number */
+    invoiceNumber?: string;
+    /** Optional FuelFlow order id */
+    orderId?: string;
+    /** Optional extra info, shown in “Notes” */
+    notes?: string;
+    /** ISO date for the payment, defaults to now */
+    dateISO?: string;
+    /** Optional short payment method label (e.g. “Visa **** 1234”) */
+    paymentMethod?: string;
+  };
+};
+
+export type BuiltReceipt = {
+  pdfBuffer: Buffer;
+  filename: string;
+  total: number;
+  pages?: number;
+};
+
+const MARGIN = 36;
+
+/* ---------- helpers ---------- */
+function drawText(doc: any, str: string, x: number, y: number, opt: any = {}) {
+  const px = doc.x,
+    py = doc.y;
+  doc.text(str, x, y, { lineBreak: false, ...opt });
+  doc.x = px;
+  doc.y = py;
+}
+function n(v: unknown, d = 0) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : d;
+}
+function r2(v: number) {
+  return Math.round(v * 100) / 100;
+}
+function sym(c: string) {
+  c = (c || "").toUpperCase();
+  if (c === "GBP") return "£";
+  if (c === "EUR") return "€";
+  if (c === "USD") return "$";
+  return "";
+}
+function money(v: number, c: string) {
+  return `${sym(c)}${r2(v).toFixed(2)}`;
+}
+function qty(v: number) {
+  return new Intl.NumberFormat("en-GB", {
+    maximumFractionDigits: 2,
+  }).format(v);
+}
+async function fetchArrayBuffer(url: string): Promise<ArrayBuffer | null> {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    return await resp.arrayBuffer();
+  } catch {
+    return null;
+  }
+}
+function drawBlock(
+  doc: any,
+  lines: string[],
+  x: number,
+  y: number,
+  width: number,
+  lh = 14
+) {
+  let yy = y;
+  for (const line of lines) {
+    drawText(doc, line, x, yy, { width, lineBreak: false });
+    yy += lh;
+  }
+  return yy;
+}
+
+/* ---------- main builder ---------- */
+
+export async function buildReceiptPdf(
+  input: ReceiptInput
+): Promise<BuiltReceipt> {
+  // We still honour VAT envs so the numbers match your invoice
+  const VAT_ENABLED = process.env.VAT_ENABLED !== "false";
+  const VAT_RATE = Math.max(0, parseFloat(process.env.VAT_RATE ?? "20")) / 100;
+  const PRICES_INCLUDE_VAT = process.env.PRICES_INCLUDE_VAT === "true";
+
+  const doc: any = new PDFDocument({
+    size: "A4",
+    autoFirstPage: true,
+    bufferPages: true,
+    margins: { top: MARGIN, left: MARGIN, right: MARGIN, bottom: MARGIN },
+  });
+
+  const chunks: Buffer[] = [];
+  doc.on("data", (c: Buffer) => chunks.push(c));
+  const done = new Promise<void>((resolve) => doc.on("end", resolve));
+
+  const W = doc.page.width;
+  const H = doc.page.height;
+  const topMargin = doc.page.margins.top ?? MARGIN;
+  const bottomMargin = doc.page.margins.bottom ?? MARGIN;
+  const C = (input.currency || "GBP").toUpperCase();
+
+  const companyName = process.env.COMPANY_NAME || "FuelFlow";
+  const companyAddr = (
+    process.env.COMPANY_ADDRESS ||
+    "1 Example Street\\nExample Town\\nEX1 2MP\\nUnited Kingdom"
+  ).replace(/\\n/g, "\n");
+  const companyEmail =
+    process.env.COMPANY_EMAIL || "invoices@mail.fuelflow.co.uk";
+  const companyVat =
+    process.env.COMPANY_VAT_NUMBER || process.env.COMPANY_VAT_NO || "";
+  const companyNo =
+    process.env.COMPANY_NUMBER || process.env.COMPANY_REG_NO || "";
+
+  const receiptNo =
+    input.meta?.receiptNumber ||
+    input.meta?.invoiceNumber ||
+    `RCPT-${Math.floor(Date.now() / 1000)}`;
+  const receiptDate = new Date(
+    input.meta?.dateISO || Date.now()
+  ).toLocaleDateString("en-GB");
+
+  /* ---------- Header ---------- */
+  const headerH = 90;
+  doc.rect(0, 0, W, headerH).fill("#0F172A");
+
+  const logoUrl =
+    process.env.COMPANY_LOGO_URL ||
+    "https://dashboard.fuelflow.co.uk/logo-email.png";
+  let logoDrawn = false;
+  try {
+    const ab = await fetchArrayBuffer(logoUrl);
+    if (ab) {
+      doc.image(Buffer.from(ab), MARGIN, 26, {
+        width: 156,
+        height: 42,
+        fit: [156, 42],
+      });
+      logoDrawn = true;
+    }
+  } catch {}
+  if (!logoDrawn) {
+    doc.fill("#FFFFFF").font("Helvetica-Bold").fontSize(26);
+    drawText(doc, companyName, MARGIN, 30, { width: W - MARGIN * 2 });
+  }
+  doc.fill("#FFFFFF").font("Helvetica").fontSize(12);
+  drawText(doc, "PAYMENT RECEIPT", W - MARGIN - 200, 34, {
+    width: 200,
+    align: "right",
+  });
+
+  /* ---------- From / Billed To ---------- */
+  const gridLH = 14;
+  let y = topMargin + headerH - MARGIN + 24;
+
+  const leftX = MARGIN;
+  const rightX = W / 2 + 20;
+  const leftW = W / 2 - MARGIN - 28;
+  const rightW = W - rightX - MARGIN;
+
+  doc.font("Helvetica-Bold").fontSize(11).fill("#111827");
+  drawText(doc, "From:", leftX, y);
+  drawText(doc, "Billed To:", rightX, y);
+  y += 14;
+
+  doc.font("Helvetica").fontSize(10).fill("#111827");
+  const leftLines = [
+    companyName,
+    ...companyAddr.split("\n"),
+    companyEmail ? `Email: ${companyEmail}` : undefined,
+    companyNo ? `Company No: ${companyNo}` : undefined,
+    companyVat ? `VAT No: ${companyVat}` : undefined,
+  ].filter(Boolean) as string[];
+
+  const c = input.customer;
+  const rightLines = [
+    c.name || "Customer",
+    c.address_line1 || undefined,
+    c.address_line2 || undefined,
+    [c.city, c.postcode].filter(Boolean).join(" ") || undefined,
+    c.email ? `Email: ${c.email}` : undefined,
+  ].filter(Boolean) as string[];
+
+  const leftEndY = drawBlock(doc, leftLines, leftX, y, leftW, gridLH);
+  const rightEndY = drawBlock(doc, rightLines, rightX, y, rightW, gridLH);
+  y = Math.max(leftEndY, rightEndY) + 16;
+
+  /* ---------- Table geometry ---------- */
+  const tableX = MARGIN + 0.5;
+  const tableWAvail = W - MARGIN * 2 - 18;
+
+  // [Desc, Qty, Unit, Net, VAT, Total] – same as invoice so totals match
+  const BASE = [220, 90, 110, 125, 85, 140];
+  const SUM_BASE = BASE.reduce((a, b) => a + b, 0);
+  const scale = tableWAvail / SUM_BASE;
+  const scaled = BASE.map((w) => Math.floor(w * scale));
+  const sumFirst = scaled.slice(0, -1).reduce((a, b) => a + b, 0);
+  const lastW = Math.max(tableWAvail - sumFirst, 60);
+  const COLS = [
+    { label: "Description", w: scaled[0], align: "left" as const },
+    { label: "Litres", w: scaled[1], align: "right" as const },
+    { label: "Unit ex-VAT", w: scaled[2], align: "right" as const },
+    { label: "Net", w: scaled[3], align: "right" as const },
+    { label: "VAT", w: scaled[4], align: "right" as const },
+    { label: "Total paid", w: lastW, align: "right" as const },
+  ];
+  const tableW = COLS.reduce((a, c) => a + c.w, 0);
+
+  /* ---------- Meta row (Receipt no, date, payment method) ---------- */
+  const metaLeftLabelW = 95;
+
+  doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
+  drawText(doc, "Receipt No:", leftX, y);
+  doc.font("Helvetica").fontSize(10);
+  drawText(doc, receiptNo, leftX + metaLeftLabelW, y);
+
+  doc.font("Helvetica-Bold").fontSize(10);
+  drawText(doc, "Date:", rightX, y);
+  doc.font("Helvetica").fontSize(10);
+  drawText(doc, receiptDate, rightX + 45, y);
+
+  const ruleY = y + 12;
+  doc
+    .moveTo(tableX, ruleY)
+    .lineTo(tableX + tableW, ruleY)
+    .strokeColor("#E5E7EB")
+    .lineWidth(1)
+    .stroke();
+
+  const orderY = ruleY + 10;
+
+  // Left side: Order Ref (if any)
+  if (input.meta?.orderId) {
+    doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
+    drawText(doc, "Order Ref:", leftX, orderY);
+    doc.font("Helvetica").fontSize(10);
+    drawText(String(input.meta.orderId), leftX + metaLeftLabelW, orderY);
+  }
+
+  // Right side: payment method (if any)
+  if (input.meta?.paymentMethod) {
+    doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
+    drawText(doc, "Paid via:", rightX, orderY);
+    doc.font("Helvetica").fontSize(10);
+    drawText(String(input.meta.paymentMethod), rightX + 60, orderY);
+  }
+
+  y = orderY + 16;
+
+  /* ---------- Table header ---------- */
+  const PAD_L = 10,
+    PAD_R = 12;
+  const headerRowH = 24,
+    dataRowH = 24;
+
+  y += 10;
+
+  doc
+    .rect(tableX, y, tableW, headerRowH)
+    .fill("#F3F4F6")
+    .strokeColor("#E5E7EB")
+    .lineWidth(0.8)
+    .stroke();
+  doc.fill("#111827").font("Helvetica-Bold").fontSize(9);
+  let colX = tableX;
+  for (const ccol of COLS) {
+    const tx = colX + PAD_L;
+    const bw = Math.max(0, ccol.w - (PAD_L + PAD_R));
+    drawText(doc, ccol.label, tx, y + 7, { width: bw, align: ccol.align });
+    colX += ccol.w;
+  }
+
+  function drawCellValue(
+    val: string,
+    x: number,
+    w: number,
+    y0: number,
+    align: "left" | "right"
+  ) {
+    if (align === "right") {
+      const tw = doc.widthOfString(val);
+      const tx = x + w - PAD_R - tw;
+      drawText(doc, val, tx, y0);
+    } else {
+      drawText(doc, val, x + PAD_L, y0);
+    }
+  }
+
+  /* ---------- Rows ---------- */
+  let rowY = y + headerRowH;
+  const bottomSafe = H - bottomMargin - 190;
+  doc.font("Helvetica").fontSize(10).fill("#111827");
+
+  type Row = {
+    d: string;
+    q: number;
+    ux: number;
+    net: number;
+    vat: number;
+    gross: number;
+  };
+  const rows: Row[] = [];
+  let netTotal = 0,
+    vatTotal = 0;
+  for (const it of input.items) {
+    const q = n(it.quantity, 0);
+    const up = n(it.unitPrice, 0);
+    const ux = VAT_ENABLED ? (PRICES_INCLUDE_VAT ? up / (1 + VAT_RATE) : up) : up;
+    const net = q * ux;
+    const v = VAT_ENABLED ? net * VAT_RATE : 0;
+    const g = net + v;
+    netTotal += net;
+    vatTotal += v;
+    rows.push({
+      d: it.description || "Item",
+      q,
+      ux,
+      net,
+      vat: v,
+      gross: g,
+    });
+  }
+  netTotal = r2(netTotal);
+  vatTotal = r2(vatTotal);
+  const grand = r2(netTotal + vatTotal);
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (rowY + dataRowH > bottomSafe) {
+      doc.font("Helvetica-Oblique").fontSize(9).fill("#6B7280");
+      drawText(
+        doc,
+        `(+${rows.length - i} more item${rows.length - i > 1 ? "s" : ""} not shown)`,
+        tableX + PAD_L,
+        rowY + 6
+      );
+      rowY += dataRowH;
+      break;
+    }
+    if (i % 2 === 1) {
+      doc.rect(tableX, rowY, tableW, dataRowH).fill("#FAFAFA");
+      doc.fill("#111827");
+    }
+
+    colX = tableX;
+    const cells = [
+      { v: r.d, w: COLS[0].w, align: COLS[0].align },
+      { v: qty(r.q), w: COLS[1].w, align: COLS[1].align },
+      { v: money(r.ux, C), w: COLS[2].w, align: COLS[2].align },
+      { v: money(r.net, C), w: COLS[3].w, align: COLS[3].align },
+      { v: money(r.vat, C), w: COLS[4].w, align: COLS[4].align },
+      { v: money(r.gross, C), w: COLS[5].w, align: COLS[5].align },
+    ] as const;
+
+    for (const cell of cells) {
+      drawCellValue(String(cell.v), colX, cell.w, rowY + 6, cell.align);
+      colX += cell.w;
+    }
+
+    doc
+      .rect(tableX, rowY, tableW, dataRowH)
+      .strokeColor("#E5E7EB")
+      .lineWidth(0.8)
+      .stroke();
+    rowY += dataRowH;
+  }
+
+  /* ---------- Totals ---------- */
+  rowY += 12;
+  const rightEdgeX = tableX + tableW - PAD_R;
+  const totalsW = 320;
+  const totalsX = rightEdgeX - totalsW;
+
+  const totals = [
+    { label: "Subtotal (Net)", value: money(netTotal, C), bold: false },
+    { label: "VAT", value: money(vatTotal, C), bold: false },
+    { label: "Total paid", value: money(grand, C), bold: true },
+  ] as const;
+
+  for (let i = 0; i < totals.length; i++) {
+    const h = 24,
+      T = totals[i];
+    doc
+      .rect(totalsX, rowY, totalsW, h)
+      .fill(i === totals.length - 1 ? "#F3F4F6" : "#FFFFFF")
+      .strokeColor("#E5E7EB")
+      .lineWidth(0.8)
+      .stroke();
+    doc
+      .font(T.bold ? "Helvetica-Bold" : "Helvetica")
+      .fontSize(10)
+      .fill("#111827");
+    drawText(doc, T.label, totalsX + 12, rowY + 7, {
+      width: totalsW - 24,
+    });
+    const vTw = doc.widthOfString(T.value);
+    drawText(doc, T.value, rightEdgeX - vTw, rowY + 7);
+    rowY += h;
+  }
+
+  /* ---------- Notes ---------- */
+  if (input.meta?.notes || input.meta?.invoiceNumber) {
+    rowY += 16;
+    const notesMaxY = H - bottomMargin - 80;
+    doc.font("Helvetica-Bold").fontSize(10).fill("#111827");
+    drawText(doc, "Notes", MARGIN, rowY);
+    doc.font("Helvetica").fontSize(10).fill("#374151");
+
+    const extraNote = input.meta.invoiceNumber
+      ? `Related invoice: ${input.meta.invoiceNumber}.`
+      : "";
+    const fullNotes = [extraNote, input.meta.notes || ""]
+      .join(" ")
+      .trim();
+
+    if (fullNotes) {
+      const words = fullNotes.split(/\s+/);
+      const lines: string[] = [];
+      let line = "";
+      for (const w of words) {
+        if ((line + " " + w).trim().length > 90) {
+          lines.push(line.trim());
+          line = w;
+        } else line += " " + w;
+      }
+      if (line.trim()) lines.push(line.trim());
+
+      let ny = rowY + 14;
+      for (const s of lines) {
+        if (ny + 14 > notesMaxY) break;
+        drawText(doc, s, MARGIN, ny, { width: W - MARGIN * 2 });
+        ny += 14;
+      }
+    }
+  }
+
+  /* ---------- Footer ---------- */
+  const footerY = H - bottomMargin - 18;
+  doc.font("Helvetica").fontSize(9).fill("#6B7280");
+  drawText(
+    doc,
+    `${companyName} — Registered in England & Wales${
+      companyNo ? " • Company No " + companyNo : ""
+    }${companyVat ? " • VAT No " + companyVat : ""}`,
+    MARGIN,
+    footerY,
+    { width: W - MARGIN * 2, align: "center" }
+  );
+
+  const pr = doc.bufferedPageRange?.();
+  const pages = pr && typeof pr.count === "number" ? pr.count : 1;
+
+  doc.end();
+  await done;
+
+  return {
+    pdfBuffer: Buffer.concat(chunks),
+    filename: `${receiptNo}.pdf`,
+    total: r2(netTotal + vatTotal),
+    pages,
+  };
+}
