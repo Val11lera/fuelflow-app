@@ -623,96 +623,69 @@ export default async function handler(
       }
 
       /* ============================================================
-         REFUNDS – full vs partial
+         REFUNDS (full + partial)
          ============================================================ */
       case "charge.refunded": {
         const charge = event.data.object as Stripe.Charge;
 
-        const chargeAmount =
-          typeof charge.amount === "number" ? charge.amount : null;
-        const totalRefunded =
+        const amount = typeof charge.amount === "number" ? charge.amount : 0;
+        const amountRefunded =
           typeof charge.amount_refunded === "number"
             ? charge.amount_refunded
-            : null;
+            : 0;
 
-        // Decide whether this is a full or partial refund
-        let refundStatus: "refunded" | "partially_refunded" = "refunded";
-        if (
-          chargeAmount != null &&
-          totalRefunded != null &&
-          totalRefunded > 0 &&
-          totalRefunded < chargeAmount
-        ) {
-          refundStatus = "partially_refunded";
-        }
+        const fullyRefunded = amount > 0 && amountRefunded >= amount;
+        const newStatus = fullyRefunded ? "refunded" : "partially_refunded";
 
-        // Try to get order_id from charge metadata first
-        let orderId =
-          (charge.metadata as any)?.order_id && String(
-            (charge.metadata as any).order_id
-          );
-
-        // Fallback: look up the PaymentIntent and read metadata.order_id
-        if (
-          !orderId &&
-          charge.payment_intent &&
+        const piId =
           typeof charge.payment_intent === "string"
-        ) {
+            ? charge.payment_intent
+            : charge.payment_intent?.id || null;
+
+        let orderId: string | undefined =
+          (charge.metadata as any)?.order_id || undefined;
+
+        // Fallback: look on the PaymentIntent metadata if needed
+        if (!orderId && piId) {
           try {
-            const pi = await stripe.paymentIntents.retrieve(
-              charge.payment_intent
-            );
-            orderId = (pi.metadata as any)?.order_id || null;
-          } catch (err) {
-            console.error(
-              "[webhook] charge.refunded – unable to retrieve PI:",
-              err
-            );
+            const pi = await stripe.paymentIntents.retrieve(piId);
+            orderId = (pi.metadata as any)?.order_id || undefined;
+          } catch {
+            // ignore
           }
         }
 
         await logRow({
           event_type: "charge.refunded",
           order_id: orderId ?? null,
-          status: refundStatus,
+          status: newStatus,
           extra: {
-            charge_id: charge.id,
-            charge_amount: chargeAmount,
-            total_refunded: totalRefunded,
+            pi_id: piId,
+            amount,
+            amount_refunded: amountRefunded,
           },
         });
 
+        // Update order status
         if (orderId) {
           const { error } = await sb()
             .from("orders")
-            .update({
-              status: refundStatus, // "refunded" or "partially_refunded"
-              refunded_at: new Date().toISOString(),
-            })
+            .update({ status: newStatus })
             .eq("id", orderId);
-
-          if (error) {
-            throw new Error(
-              `Supabase update failed in charge.refunded: ${error.message}`
-            );
-          }
+          if (error)
+            throw new Error(`Supabase update failed (refund): ${error.message}`);
         }
 
-        // Also keep a payments row in sync with the latest refund status
+        // Update payments row so "Amount" shows the TOTAL refunded (negative)
         await upsertPaymentRow({
-          pi_id:
-            typeof charge.payment_intent === "string"
-              ? charge.payment_intent
-              : null,
-          amount: chargeAmount,
+          pi_id: piId,
+          amount: -amountRefunded, // e.g. -40 pence for a total 40p refund
           currency: (charge.currency || "gbp").toUpperCase(),
-          status: refundStatus,
+          status: newStatus,
           email: (charge.billing_details?.email as string) || null,
           order_id: orderId ?? null,
-          meta: {
-            ...charge.metadata,
-            total_refunded: totalRefunded,
-          },
+          cs_id: null,
+          meta: charge.metadata ?? null,
         });
 
         break;
@@ -732,6 +705,5 @@ export default async function handler(
 
   return res.status(200).json({ received: true });
 }
-
 
 
