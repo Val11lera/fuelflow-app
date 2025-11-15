@@ -1,6 +1,5 @@
 // src/pages/checkout/success.tsx
 // src/pages/checkout/success.tsx
-// src/pages/checkout/success.tsx
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { useEffect, useMemo, useState } from "react";
@@ -91,22 +90,13 @@ export default function SuccessPage() {
           </div>
 
           {/* Actions */}
-          <div className="mt-6 flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:justify-center">
+          <div className="mt-6 flex justify-center">
             <Link
               href="/order"
               className="inline-flex items-center justify-center rounded-2xl bg-yellow-500 px-5 py-3 font-semibold text-[#041F3E] shadow hover:bg-yellow-400 focus:outline-none focus:ring focus:ring-yellow-500/30"
             >
               Back to Order
             </Link>
-
-            <a
-              href="https://dashboard.stripe.com/payments"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-5 py-3 font-semibold text-white/90 hover:bg-white/10 focus:outline-none focus:ring focus:ring-white/10"
-            >
-              View in Stripe
-            </a>
           </div>
 
           {/* small note */}
