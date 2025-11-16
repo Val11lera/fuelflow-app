@@ -1,11 +1,21 @@
 // src/pages/api/invoices/create.ts
 // src/pages/api/invoices/create.ts
+// src/pages/api/invoices/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { sendMail } from "@/lib/mailer";
 import { buildInvoicePdf } from "@/lib/invoice-pdf";
 import { saveInvoicePdfToStorage } from "@/lib/invoices-storage";
+import { buildReceiptPdf } from "@/lib/receipt-pdf"; // NEW
+import { createClient } from "@supabase/supabase-js"; // NEW
 
 export const config = { api: { bodyParser: true } };
+
+// ---- Supabase admin client (for updating payments with receipt info) ----
+const sbAdmin = createClient(
+  (process.env.SUPABASE_URL as string) ||
+    (process.env.NEXT_PUBLIC_SUPABASE_URL as string),
+  process.env.SUPABASE_SERVICE_ROLE_KEY as string
+);
 
 type ApiItem =
   | { description: string; litres: number; unitPrice?: number; total?: number }
@@ -28,6 +38,7 @@ type ApiPayload = {
     orderId?: string;
     notes?: string;
     dateISO?: string;
+    // you can add paymentMethod here later if you want it on the receipt
   };
 };
 
@@ -43,7 +54,10 @@ function customerTag(email: string | undefined) {
 }
 
 /** INV-YYMMDD-CCC-XXXX */
-function makeInvoiceNumber(meta: { invoiceNumber?: string; orderId?: string } | undefined, customerEmail?: string) {
+function makeInvoiceNumber(
+  meta: { invoiceNumber?: string; orderId?: string } | undefined,
+  customerEmail?: string
+) {
   if (meta?.invoiceNumber) return meta.invoiceNumber;
   const d = new Date();
   const y = String(d.getFullYear()).slice(-2);
@@ -67,7 +81,11 @@ function normalizeItems(items: ApiItem[]) {
         : (it as any).quantity ?? 0;
     let unitPrice = (it as any).unitPrice as number | undefined;
     const total = (it as any).total as number | undefined;
-    if ((unitPrice == null || isNaN(unitPrice)) && typeof total === "number" && litres) {
+    if (
+      (unitPrice == null || isNaN(unitPrice)) &&
+      typeof total === "number" &&
+      litres
+    ) {
       unitPrice = total / litres;
     }
     return {
@@ -78,20 +96,29 @@ function normalizeItems(items: ApiItem[]) {
   });
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   if (req.method !== "POST") return bad(res, 405, "Method Not Allowed");
 
-  if (!process.env.INVOICE_SECRET) return bad(res, 500, "INVOICE_SECRET not set");
+  if (!process.env.INVOICE_SECRET)
+    return bad(res, 500, "INVOICE_SECRET not set");
   const secret = req.headers["x-invoice-secret"];
-  if (!secret || secret !== process.env.INVOICE_SECRET) return bad(res, 401, "Invalid invoice secret");
+  if (!secret || secret !== process.env.INVOICE_SECRET)
+    return bad(res, 401, "Invalid invoice secret");
 
   const payload = req.body as ApiPayload;
-  if (!payload?.customer?.email) return bad(res, 400, "Missing customer.email");
-  if (!Array.isArray(payload.items) || payload.items.length === 0) return bad(res, 400, "Missing items");
+  if (!payload?.customer?.email)
+    return bad(res, 400, "Missing customer.email");
+  if (!Array.isArray(payload.items) || payload.items.length === 0)
+    return bad(res, 400, "Missing items");
   if (!payload.currency) return bad(res, 400, "Missing currency");
 
   const debug =
-    String(req.query.debug ?? req.headers["x-invoice-debug"] ?? "").toLowerCase() === "1";
+    String(
+      req.query.debug ?? req.headers["x-invoice-debug"] ?? ""
+    ).toLowerCase() === "1";
 
   try {
     const normItems = normalizeItems(payload.items);
@@ -112,7 +139,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       address_line2 = parts.slice(1).join(", ") || null;
     }
 
-    const { pdfBuffer, filename, pages } = await buildInvoicePdf({
+    // ---------- Build Invoice PDF ----------
+    const {
+      pdfBuffer: invoiceBuffer,
+      filename: invoiceFilename,
+      pages,
+    } = await buildInvoicePdf({
       customer: {
         name: c.name ?? null,
         email: c.email,
@@ -121,13 +153,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         city: c.city ?? null,
         postcode: c.postcode ?? null,
       },
-      items: normItems.map(({ description, quantity, unitPrice }) => ({ description, quantity, unitPrice })),
+      items: normItems.map(({ description, quantity, unitPrice }) => ({
+        description,
+        quantity,
+        unitPrice,
+      })),
       currency: (payload.currency || "GBP").toUpperCase(),
       meta,
     });
 
     const invNo = meta.invoiceNumber;
-    const subject = `${process.env.COMPANY_NAME || "FuelFlow"} — Invoice ${invNo}`;
+    const subject = `${
+      process.env.COMPANY_NAME || "FuelFlow"
+    } — Invoice ${invNo}`;
     const text = `Hi ${c.name || "there"},
 
 Thank you for your order. Your invoice ${invNo} is attached.
@@ -135,39 +173,116 @@ Thank you for your order. Your invoice ${invNo} is attached.
 Kind regards,
 ${process.env.COMPANY_NAME || "FuelFlow"}`;
 
-    const id = await sendMail({
+    // ---------- Build Receipt PDF (NEW) ----------
+    const {
+      pdfBuffer: receiptBuffer,
+      filename: receiptFilename,
+    } = await buildReceiptPdf({
+      customer: {
+        name: c.name ?? null,
+        email: c.email,
+        address_line1,
+        address_line2,
+        city: c.city ?? null,
+        postcode: c.postcode ?? null,
+      },
+      items: normItems.map(({ description, quantity, unitPrice }) => ({
+        description,
+        quantity,
+        unitPrice,
+      })),
+      currency: (payload.currency || "GBP").toUpperCase(),
+      meta: {
+        invoiceNumber: meta.invoiceNumber,
+        orderId: meta.orderId,
+        notes: meta.notes,
+        dateISO: meta.dateISO,
+      },
+    });
+
+    // ---------- Send email with BOTH attachments ----------
+    const mailId = await sendMail({
       to: c.email,
       bcc: process.env.MAIL_BCC || undefined,
       subject,
       text,
       attachments: [
-        { filename: `${invNo}.pdf`, content: pdfBuffer, contentType: "application/pdf" },
+        {
+          filename: invoiceFilename || `${invNo}.pdf`,
+          content: invoiceBuffer,
+          contentType: "application/pdf",
+        },
+        {
+          filename: receiptFilename || `${invNo}-receipt.pdf`,
+          content: receiptBuffer,
+          contentType: "application/pdf",
+        },
       ],
     });
 
-    // Save to Storage
-    let storagePath: string | null = null;
+    // ---------- Save both PDFs to Storage ----------
+    let invoiceStoragePath: string | null = null;
+    let receiptStoragePath: string | null = null;
+
     try {
       const issued = meta.dateISO ? new Date(meta.dateISO) : new Date();
-      const saved = await saveInvoicePdfToStorage({
+
+      // Invoice
+      const savedInvoice = await saveInvoicePdfToStorage({
         email: c.email,
         invoiceNumber: invNo,
-        pdfBuffer,
+        pdfBuffer: invoiceBuffer,
         issuedAt: isNaN(issued.getTime()) ? new Date() : issued,
       });
-      storagePath = saved.path;
+      invoiceStoragePath = savedInvoice.path;
+
+      // Receipt – reuse same helper, just tweak "invoiceNumber" so filename differs
+      const savedReceipt = await saveInvoicePdfToStorage({
+        email: c.email,
+        invoiceNumber: `${invNo}-receipt`,
+        pdfBuffer: receiptBuffer,
+        issuedAt: isNaN(issued.getTime()) ? new Date() : issued,
+      });
+      receiptStoragePath = savedReceipt.path;
     } catch (e: any) {
-      console.error("Failed to save invoice to storage:", e?.message || e);
+      console.error("Failed to save PDFs to storage:", e?.message || e);
     }
 
+    // ---------- Update payments table with receipt info (NEW) ----------
+    if (meta.orderId) {
+      try {
+        await sbAdmin
+          .from("payments")
+          .update({
+            receipt_sent_at: new Date().toISOString(),
+            receipt_path: receiptStoragePath,
+          })
+          .eq("order_id", meta.orderId);
+      } catch (e: any) {
+        console.error(
+          "Failed to update payments with receipt info:",
+          e?.message || e
+        );
+      }
+    }
+
+    // ---------- Response ----------
     if (debug) {
       return res.status(200).json({
         ok: true,
-        id,
-        debug: { normalized: normItems, invoiceNumber: invNo, pages, storagePath },
+        id: mailId,
+        debug: {
+          normalized: normItems,
+          invoiceNumber: invNo,
+          pages,
+          invoiceStoragePath,
+          receiptStoragePath,
+        },
       });
     }
-    return res.status(200).json({ ok: true, id, storagePath });
+    return res
+      .status(200)
+      .json({ ok: true, id: mailId, storagePath: invoiceStoragePath });
   } catch (e: any) {
     console.error("invoice/create error", e);
     return bad(res, 500, e?.message || "invoice_error");
