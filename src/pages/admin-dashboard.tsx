@@ -1,5 +1,6 @@
 // src/pages/admin-dashboard.tsx
 // src/pages/admin-dashboard.tsx
+// src/pages/admin-dashboard.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -39,6 +40,9 @@ type PaymentRow = {
   cs_id?: string | null; // checkout session
   pi_id?: string | null; // payment intent
   created_at?: string | null;
+  // NEW: receipt visibility
+  receipt_sent_at?: string | null;
+  receipt_path?: string | null;
 };
 
 type AdminCustomerRow = {
@@ -244,10 +248,12 @@ export default function AdminDashboard() {
         const { data: od, error: oe } = await oq;
         if (oe) throw oe;
 
-        // Payments
+        // Payments (now also selecting receipt fields)
         let pq = supabase
           .from("payments")
-          .select("order_id, amount, currency, status, email, cs_id, pi_id, created_at")
+          .select(
+            "order_id, amount, currency, status, email, cs_id, pi_id, created_at, receipt_sent_at, receipt_path"
+          )
           .order("created_at", { ascending: false })
           .limit(1000);
         if (from) pq = pq.gte("created_at", from.toISOString());
@@ -944,22 +950,51 @@ export default function AdminDashboard() {
             {filteredPayments.length === 0 ? (
               <div className="text-white/60 text-sm px-1 py-2">No payments.</div>
             ) : (
-              filteredPayments.map((p, i) => (
-                <div key={i} className="rounded-lg border border-white/10 bg-white/[0.04] p-3">
-                  <div className="text-xs text-white/70">{p.created_at ? new Date(p.created_at).toLocaleString() : "—"}</div>
-                  <div className="mt-1 text-sm break-all">{p.email || "—"}</div>
-                  <div className="mt-1 grid grid-cols-2 gap-2 text-sm">
-                    <div>Amount: <span className="text-white/80">{gbpFmt.format(toGBP(p.amount))}</span></div>
-                    <div>Status: <span className={cx("inline-flex items-center rounded px-2 py-0.5 text-[11px]",
-                      p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70")}>
-                      {(p.status || "—").toLowerCase()}
-                    </span></div>
-                    <div className="col-span-2 text-[11px] text-white/60 break-all">Order: {p.order_id || "—"}</div>
-                    <div className="col-span-2 text-[11px] text-white/60 break-all">PI: {p.pi_id || "—"}</div>
-                    <div className="col-span-2 text-[11px] text-white/60 break-all">Session: {p.cs_id || "—"}</div>
+              filteredPayments.map((p, i) => {
+                const receiptSent = !!p.receipt_path;
+                return (
+                  <div key={i} className="rounded-lg border border-white/10 bg-white/[0.04] p-3">
+                    <div className="text-xs text-white/70">{p.created_at ? new Date(p.created_at).toLocaleString() : "—"}</div>
+                    <div className="mt-1 text-sm break-all">{p.email || "—"}</div>
+                    <div className="mt-1 grid grid-cols-2 gap-2 text-sm">
+                      <div>Amount: <span className="text-white/80">{gbpFmt.format(toGBP(p.amount))}</span></div>
+                      <div>Status: <span className={cx("inline-flex items-center rounded px-2 py-0.5 text-[11px]",
+                        p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70")}>
+                        {(p.status || "—").toLowerCase()}
+                      </span></div>
+                      <div className="col-span-2 text-[11px] text-white/60 break-all">Order: {p.order_id || "—"}</div>
+                      <div className="col-span-2 text-[11px] text-white/60 break-all">PI: {p.pi_id || "—"}</div>
+                      <div className="col-span-2 text-[11px] text-white/60 break-all">Session: {p.cs_id || "—"}</div>
+                      <div className="col-span-2 flex items-center justify-between text-[11px] text-white/70 mt-1">
+                        <span>
+                          Receipt:{" "}
+                          {receiptSent
+                            ? p.receipt_sent_at
+                              ? `sent ${new Date(p.receipt_sent_at).toLocaleString()}`
+                              : "sent"
+                            : "—"}
+                        </span>
+                        {receiptSent && (
+                          <button
+                            className="ml-2 rounded bg-yellow-500 text-[#041F3E] font-semibold px-2 py-1 text-[11px] hover:bg-yellow-400"
+                            onClick={async () => {
+                              if (!p.receipt_path) return;
+                              try {
+                                const url = await getSignedUrl(p.receipt_path);
+                                window.open(url, "_blank");
+                              } catch (e: any) {
+                                setError(e?.message || "Failed to open receipt");
+                              }
+                            }}
+                          >
+                            View
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
 
@@ -975,28 +1010,59 @@ export default function AdminDashboard() {
                   <th className="py-2 pr-4">Order ID</th>
                   <th className="py-2 pr-4">PI</th>
                   <th className="py-2 pr-4">Session</th>
+                  <th className="py-2 pr-4">Receipt</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredPayments.length === 0 ? (
-                  <tr><td colSpan={7} className="py-3 text-white/60">No rows.</td></tr>
+                  <tr><td colSpan={8} className="py-3 text-white/60">No rows.</td></tr>
                 ) : (
-                  filteredPayments.map((p, i) => (
-                    <tr key={i} className="border-b border-white/5">
-                      <td className="py-2 pr-4 whitespace-nowrap">{p.created_at ? new Date(p.created_at).toLocaleString() : "—"}</td>
-                      <td className="py-2 pr-4">{p.email || "—"}</td>
-                      <td className="py-2 pr-4">{gbpFmt.format(toGBP(p.amount))}</td>
-                      <td className="py-2 pr-4">
-                        <span className={cx("inline-flex items-center rounded px-2 py-0.5 text-xs",
-                          p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70")}>
-                          {(p.status || "—").toLowerCase()}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.order_id || "—"}</td>
-                      <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.pi_id || "—"}</td>
-                      <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.cs_id || "—"}</td>
-                    </tr>
-                  ))
+                  filteredPayments.map((p, i) => {
+                    const receiptSent = !!p.receipt_path;
+                    return (
+                      <tr key={i} className="border-b border-white/5">
+                        <td className="py-2 pr-4 whitespace-nowrap">{p.created_at ? new Date(p.created_at).toLocaleString() : "—"}</td>
+                        <td className="py-2 pr-4">{p.email || "—"}</td>
+                        <td className="py-2 pr-4">{gbpFmt.format(toGBP(p.amount))}</td>
+                        <td className="py-2 pr-4">
+                          <span className={cx("inline-flex items-center rounded px-2 py-0.5 text-xs",
+                            p.status === "succeeded" || p.status === "paid" ? "bg-green-600/70" : "bg-gray-600/70")}>
+                            {(p.status || "—").toLowerCase()}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.order_id || "—"}</td>
+                        <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.pi_id || "—"}</td>
+                        <td className="py-2 pr-4 font-mono text-[11px] break-all">{p.cs_id || "—"}</td>
+                        <td className="py-2 pr-4">
+                          {receiptSent ? (
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-white/70">
+                                {p.receipt_sent_at
+                                  ? new Date(p.receipt_sent_at).toLocaleString()
+                                  : "sent"}
+                              </span>
+                              <button
+                                className="rounded bg-yellow-500 text-[#041F3E] font-semibold text-xs px-2 py-1 hover:bg-yellow-400"
+                                onClick={async () => {
+                                  if (!p.receipt_path) return;
+                                  try {
+                                    const url = await getSignedUrl(p.receipt_path);
+                                    window.open(url, "_blank");
+                                  } catch (e: any) {
+                                    setError(e?.message || "Failed to open receipt");
+                                  }
+                                }}
+                              >
+                                View
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-white/50">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
