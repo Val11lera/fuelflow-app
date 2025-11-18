@@ -206,8 +206,10 @@ export default function OrderPage() {
             );
             const ts = toDateMaybe(r);
             if (ts && (!updated || ts > updated)) updated = ts;
-            if (f === "petrol") setPetrolPrice(Number.isFinite(price) ? price : null);
-            if (f === "diesel") setDieselPrice(Number.isFinite(price) ? price : null);
+            if (f === "petrol")
+              setPetrolPrice(Number.isFinite(price) ? price : null);
+            if (f === "diesel")
+              setDieselPrice(Number.isFinite(price) ? price : null);
           });
           setPricesUpdatedAt(updated);
         }
@@ -244,7 +246,9 @@ export default function OrderPage() {
       setDateError("Please choose a valid date.");
     } else if (chosen < min) {
       setDateError(
-        `Earliest delivery is ${new Date(minDeliveryDateStr).toLocaleDateString()} (two weeks from today).`
+        `Earliest delivery is ${new Date(
+          minDeliveryDateStr
+        ).toLocaleDateString()} (two weeks from today).`
       );
     } else {
       setDateError(null);
@@ -264,6 +268,7 @@ export default function OrderPage() {
     unitPrice <= 0 ||
     !receiptEmail;
 
+  /* ---------- Stripe checkout (calls our API) ---------- */
   async function startCheckout() {
     try {
       setStartingCheckout(true);
@@ -277,27 +282,24 @@ export default function OrderPage() {
         );
       }
 
-      const res = await fetch("/api/stripe/checkout/create", {
+      // Call our backend that talks to Stripe with Connect split
+      const res = await fetch("/api/create-checkout-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           fuel,
           litres,
-          deliveryDate,
-          full_name: fullName,
           email: receiptEmail,
-          address_line1: address1,
-          address_line2: address2,
-          city,
-          postcode,
         }),
       });
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || `Checkout failed (${res.status})`);
-      }
+
       const data = (await res.json()) as { url?: string; error?: string };
-      if (!data.url) throw new Error(data.error || "No checkout URL returned");
+
+      if (!res.ok || !data.url) {
+        throw new Error(data.error || `Checkout failed (${res.status})`);
+      }
+
+      // redirect to Stripe Checkout
       window.location.href = data.url;
     } catch (e: any) {
       alert(e?.message || "Failed to create order");
@@ -315,7 +317,10 @@ export default function OrderPage() {
         <div className="max-w-6xl mx-auto px-4">
           <div className="flex h-14 items-center gap-3">
             {/* Left: logo */}
-            <Link href="/client-dashboard" className="shrink-0 inline-flex items-center gap-2">
+            <Link
+              href="/client-dashboard"
+              className="shrink-0 inline-flex items-center gap-2"
+            >
               <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
               <span className="sr-only">Back to dashboard</span>
             </Link>
@@ -344,10 +349,16 @@ export default function OrderPage() {
               </Link>
 
               {/* Desktop: full text buttons */}
-              <Link href="/documents" className={`hidden md:inline-flex ${button} ${buttonGhost}`}>
+              <Link
+                href="/documents"
+                className={`hidden md:inline-flex ${button} ${buttonGhost}`}
+              >
                 Documents
               </Link>
-              <Link href="/client-dashboard" className={`hidden md:inline-flex ${button} ${buttonGhost}`}>
+              <Link
+                href="/client-dashboard"
+                className={`hidden md:inline-flex ${button} ${buttonGhost}`}
+              >
                 Back to Dashboard
               </Link>
             </div>
@@ -363,8 +374,16 @@ export default function OrderPage() {
       <div className="max-w-6xl mx-auto px-4 pt-4 pb-24 md:pb-12 space-y-6">
         {/* Price tiles + timestamp */}
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Tile title="Petrol (95)" value={petrolPrice != null ? GBP(petrolPrice) : "—"} suffix="/ litre" />
-          <Tile title="Diesel" value={dieselPrice != null ? GBP(dieselPrice) : "—"} suffix="/ litre" />
+          <Tile
+            title="Petrol (95)"
+            value={petrolPrice != null ? GBP(petrolPrice) : "—"}
+            suffix="/ litre"
+          />
+          <Tile
+            title="Diesel"
+            value={dieselPrice != null ? GBP(dieselPrice) : "—"}
+            suffix="/ litre"
+          />
           <Tile title="Estimated Total" value={GBP(estTotal)} />
         </section>
         <div className="text-xs text-white/70">
@@ -378,11 +397,16 @@ export default function OrderPage() {
         {/* Requirements hint */}
         {!requirementsMet && (
           <div className="rounded-xl border border-yellow-400/30 bg-yellow-500/10 p-4 text-sm text-yellow-200">
-            <div className="font-semibold mb-1">Complete your documents to order</div>
+            <div className="font-semibold mb-1">
+              Complete your documents to order
+            </div>
             <div>
-              You must accept the Terms and have either a <b>Buy</b> contract signed or a{" "}
-              <b>Rent</b> contract approved. Open{" "}
-              <Link href="/documents" className="underline decoration-yellow-400 underline-offset-2">
+              You must accept the Terms and have either a <b>Buy</b> contract
+              signed or a <b>Rent</b> contract approved. Open{" "}
+              <Link
+                href="/documents"
+                className="underline decoration-yellow-400 underline-offset-2"
+              >
                 Documents
               </Link>{" "}
               to complete this.
@@ -423,7 +447,8 @@ export default function OrderPage() {
                 <label className={label}>
                   Delivery date{" "}
                   <span className="text-white/50">
-                    (earliest {new Date(minDeliveryDateStr).toLocaleDateString()})
+                    (earliest{" "}
+                    {new Date(minDeliveryDateStr).toLocaleDateString()})
                   </span>
                 </label>
                 <input
@@ -434,7 +459,9 @@ export default function OrderPage() {
                   onChange={(e) => setDeliveryDate(e.target.value)}
                 />
                 {dateError && (
-                  <div className="mt-1 text-xs text-rose-300">{dateError}</div>
+                  <div className="mt-1 text-xs text-rose-300">
+                    {dateError}
+                  </div>
                 )}
               </div>
 
@@ -456,8 +483,10 @@ export default function OrderPage() {
               Delivery address
             </h2>
             <p className="mb-3 text-xs text-white/70">
-              <strong>This is the address where the fuel will be delivered.</strong> Please ensure
-              access is safe and clearly signposted on the day.
+              <strong>
+                This is the address where the fuel will be delivered.
+              </strong>{" "}
+              Please ensure access is safe and clearly signposted on the day.
             </p>
 
             <div className={row}>
@@ -519,7 +548,9 @@ export default function OrderPage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-white/70">Litres</span>
-                <span className="font-medium">{Number(litres || 0).toLocaleString()}</span>
+                <span className="font-medium">
+                  {Number(litres || 0).toLocaleString()}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-white/70">Unit price</span>
@@ -528,7 +559,9 @@ export default function OrderPage() {
               <div className="flex justify-between">
                 <span className="text-white/70">Delivery date</span>
                 <span className="font-medium">
-                  {deliveryDate ? new Date(deliveryDate).toLocaleDateString() : "—"}
+                  {deliveryDate
+                    ? new Date(deliveryDate).toLocaleDateString()
+                    : "—"}
                 </span>
               </div>
             </div>
@@ -541,8 +574,9 @@ export default function OrderPage() {
             </div>
 
             <p className="mt-4 text-xs text-white/70">
-              Final amount may vary if delivery conditions require adjustments (e.g., timed slots,
-              restricted access or waiting time). You’ll receive a receipt by email.
+              Final amount may vary if delivery conditions require adjustments
+              (e.g., timed slots, restricted access or waiting time). You’ll
+              receive a receipt by email.
             </p>
 
             <button
@@ -564,7 +598,7 @@ export default function OrderPage() {
             <div className="text-xs text-white/60">Estimated total</div>
             <div className="text-lg font-semibold">{GBP(estTotal)}</div>
           </div>
-        <button
+          <button
             className={`${button} ${buttonPrimary}`}
             disabled={payDisabled || startingCheckout}
             onClick={startCheckout}
@@ -598,7 +632,8 @@ function Tile({
     <div className="rounded-xl bg-gray-800 p-4">
       <div className="text-white/70 text-sm">{title}</div>
       <div className="mt-1 text-2xl font-semibold">
-        {value} {suffix && <span className="text-white/50 text-base">{suffix}</span>}
+        {value}{" "}
+        {suffix && <span className="text-white/50 text-base">{suffix}</span>}
       </div>
     </div>
   );
@@ -606,7 +641,13 @@ function Tile({
 
 function TruckIcon({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
       <path d="M3 7h11v8H3z" />
       <path d="M14 10h4l3 3v2h-7z" />
       <circle cx="7.5" cy="17.5" r="1.5" />
@@ -618,14 +659,26 @@ function TruckIcon({ className }: { className?: string }) {
 /* Simple inline icons so we don’t pull extra deps */
 function DashboardIcon({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
       <path d="M3 13h8V3H3zM13 21h8v-8h-8zM13 3h8v6h-8zM3 21h8v-6H3z" />
     </svg>
   );
 }
 function DocumentIcon({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <path d="M14 2v6h6" />
     </svg>
