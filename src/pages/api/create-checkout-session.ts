@@ -1,4 +1,5 @@
 // src/pages/api/create-checkout-session.ts
+// src/pages/api/create-checkout-session.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
@@ -59,9 +60,9 @@ export default async function handler(
     }
 
     const unitPriceGbp = Number(priceRow.total_price); // e.g. 1.40
-    const unitAmountPence = Math.round(unitPriceGbp * 100); // 140
+    const unitAmountPence = Math.round(unitPriceGbp * 100); // e.g. 140
 
-    const qty = Math.round(litres); // we treat litres as integer quantity
+    const qty = Math.round(litres); // litres as integer quantity
     const totalAmountPence = unitAmountPence * qty;
 
     // 2) Calculate your commission (platform fee)
@@ -92,7 +93,9 @@ export default async function handler(
           price_data: {
             currency: "gbp",
             product_data: {
-              name: `${fuel === "petrol" ? "Petrol (95)" : "Diesel"} – ${qty.toLocaleString()} litres`,
+              name: `${
+                fuel === "petrol" ? "Petrol (95)" : "Diesel"
+              } – ${qty.toLocaleString()} litres`,
             },
             unit_amount: unitAmountPence, // in pence
           },
@@ -105,6 +108,13 @@ export default async function handler(
     return res.status(200).json({ id: session.id, url: session.url });
   } catch (err: any) {
     console.error("Stripe Checkout error:", err);
-    return res.status(500).json({ error: "Unable to create checkout session" });
+
+    const message =
+      err?.raw?.message || // Stripe errors
+      err?.message ||
+      "Unable to create checkout session";
+
+    return res.status(500).json({ error: message });
   }
 }
+
