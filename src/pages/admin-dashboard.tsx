@@ -611,15 +611,21 @@ export default function AdminDashboard() {
      TICKETS (list + thread)
      ========================= */
   const [ticketSearch, setTicketSearch] = useState("");
-  const [ticketStatus, setTicketStatus] = useState<"all" | "open" | "closed">("all");
+  const [ticketStatus, setTicketStatus] = useState<"all" | "open" | "closed">(
+    "all"
+  );
 
-  // 0 = all time, otherwise last N days
-  const [ticketSinceDays, setTicketSinceDays] = useState<number>(365); // default: last 12 months
+  // allow "all" sentinel as well as numeric days
+  type TicketSinceDays = number | "all";
+  const [ticketSinceDays, setTicketSinceDays] =
+    useState<TicketSinceDays>(365); // default: last 12 months
 
   const [tickets, setTickets] = useState<TicketListRow[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsError, setTicketsError] = useState<string | null>(null);
-  const [selectedTicket, setSelectedTicket] = useState<TicketListRow | null>(null);
+  const [selectedTicket, setSelectedTicket] = useState<TicketListRow | null>(
+    null
+  );
   const [thread, setThread] = useState<TicketMessageRow[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
 
@@ -634,8 +640,8 @@ export default function AdminDashboard() {
         .order("created_at", { ascending: false })
         .limit(500);
 
-      // Only apply date filter if ticketSinceDays > 0
-      if (ticketSinceDays > 0) {
+      // Only apply date filter if ticketSinceDays is a number > 0
+      if (ticketSinceDays !== "all" && ticketSinceDays > 0) {
         const from = new Date();
         from.setDate(from.getDate() - (ticketSinceDays - 1));
         from.setHours(0, 0, 0, 0);
@@ -707,7 +713,6 @@ export default function AdminDashboard() {
       setTicketsError(e?.message || "Failed to close ticket");
     }
   }
-
 
   /* =========================
      Render
@@ -1554,11 +1559,7 @@ export default function AdminDashboard() {
               <label className="flex items-center gap-2 text-sm">
                 <span className="text-white/70">Since:</span>
                 <select
-                  value={
-                    ticketSinceDays === "all"
-                      ? "all"
-                      : String(ticketSinceDays)
-                  }
+                  value={ticketSinceDays === "all" ? "all" : String(ticketSinceDays)}
                   onChange={(e) => {
                     const v = e.target.value;
                     if (v === "all") setTicketSinceDays("all");
