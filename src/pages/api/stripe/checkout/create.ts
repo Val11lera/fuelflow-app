@@ -1,4 +1,5 @@
 // src/pages/api/stripe/checkout/create.ts
+// src/pages/api/stripe/checkout/create.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
@@ -31,13 +32,26 @@ if (!STRIPE_KEY) {
 const stripe = new Stripe(STRIPE_KEY, { apiVersion: "2024-06-20" });
 
 const SUPABASE_URL = process.env.SUPABASE_URL as string;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY as string;
+const SUPABASE_SERVICE_ROLE_KEY = process.env
+  .SUPABASE_SERVICE_ROLE_KEY as string;
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   throw new Error("Missing Supabase server credentials");
 }
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+// NEW: refinery connected account + commission rule
+const REFINERY_ACCOUNT_ID = process.env.STRIPE_REFINERY_ACCOUNT_ID;
+if (!REFINERY_ACCOUNT_ID) {
+  throw new Error("Missing STRIPE_REFINERY_ACCOUNT_ID (refinery connected account)");
+}
+
+// change this if you change your business model
+const COMMISSION_PER_LITRE_PENCE = 5; // 5p per litre = your commission
+
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return reqError(res, 405, "Method Not Allowed");
@@ -45,9 +59,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const {
-      fuel,               // "petrol" | "diesel"
-      litres,             // number
-      deliveryDate,       // ISO string or null
+      fuel, // "petrol" | "diesel"
+      litres, // number
+      deliveryDate, // ISO string or null
       full_name,
       email,
       address_line1,
@@ -61,7 +75,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return reqError(res, 400, "Missing/invalid fuel or litres");
     }
 
-    // 1) Resolve unit price (GBP/L)
+    // 1) Resolve unit price (GBP/L) from Supabase (UNCHANGED)
     let unitPriceGBP: number | null = null;
 
     const try1 = await supabase
@@ -87,7 +101,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return reqError(res, 500, "Price lookup failed");
     }
 
-    // 2) Insert order (server DB)
+    // 2) Insert order (server DB) – UNCHANGED
     const unit_price_pence = Math.round(unitPriceGBP * 100);
     const total_pence = unit_price_pence * litresNum;
     const amountGBP = total_pence / 100;
@@ -105,8 +119,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         status: "pending",
         delivery_date: deliveryDate ?? null,
         name: typeof full_name === "string" ? full_name : null,
-        address_line1: typeof address_line1 === "string" ? address_line1 : null,
-        address_line2: typeof address_line2 === "string" ? address_line2 : null,
+        address_line1:
+          typeof address_line1 === "string" ? address_line1 : null,
+        address_line2:
+          typeof address_line2 === "string" ? address_line2 : null,
         city: typeof city === "string" ? city : null,
         postcode: typeof postcode === "string" ? postcode : null,
       })
@@ -121,7 +137,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       );
     }
 
-    // 3) Create Stripe Checkout Session (NO secrets sent to client)
+    // 3) Calculate your commission for Connect
+    const application_fee_amount =
+      COMMISSION_PER_LITRE_PENCE * litresNum; // in pence (GBP * 100)
+
+    // 4) Create Stripe Checkout Session with Connect split
     const base = getBaseUrl(req);
 
     const session = await stripe.checkout.sessions.create({
@@ -133,15 +153,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             currency: "gbp",
             product_data: {
               name: `Fuel order — ${fuel}`,
-              description: `${litresNum} L @ £${(unit_price_pence / 100).toFixed(2)}/L`,
+              description: `${litresNum} L @ £${(
+                unit_price_pence / 100
+              ).toFixed(2)}/L`,
             },
+            // we keep your behaviour: one line item with the full amount
             unit_amount: total_pence,
           },
           quantity: 1,
         },
       ],
-      success_url: `${base}/checkout/success?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${base}/checkout/cancel?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
+      // IMPORTANT: success page now at /order/success
+      success_url: `${base}/order/success?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
+      // You can keep /checkout/cancel route if you still have it; or send back to /order
+      cancel_url: `${base}/order?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
       metadata: {
         order_id: order.id,
         fuel: String(fuel),
@@ -164,6 +189,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           unit_price_pence: String(unit_price_pence),
           total_pence: String(total_pence),
           email: typeof email === "string" ? email : "",
+        },
+        // NEW: Stripe Connect split – your fee + refinery payout
+        application_fee_amount,
+        transfer_data: {
+          destination: REFINERY_ACCOUNT_ID,
         },
       },
     });
