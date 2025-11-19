@@ -661,7 +661,9 @@ export default async function handler(
             .update({ status: newStatus })
             .eq("id", orderId);
           if (error)
-            throw new Error(`Supabase order refund update failed: ${error.message}`);
+            throw new Error(
+              `Supabase order refund update failed: ${error.message}`
+            );
           await logRow({
             event_type: "order_refund_status_update",
             order_id: orderId,
