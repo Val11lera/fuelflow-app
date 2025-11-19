@@ -33,7 +33,7 @@ const gbp = new Intl.NumberFormat("en-GB", {
 type OrderRow = {
   id: string;
   created_at: string;
-  user_email: string;
+  user_email: string | null;
   fuel: Fuel | string | null;
   litres: number | null;
   unit_price_pence: number | null;
@@ -43,9 +43,14 @@ type OrderRow = {
 
 type PaymentRow = {
   order_id: string | null;
-  amount: number; // pence
-  currency: string;
-  status: string;
+  amount: number | null; // pence
+  currency: string | null;
+  status: string | null;
+};
+
+type OrderWithExtras = OrderRow & {
+  amount_gbp: number;
+  payment_status?: string | null;
 };
 
 /* =========================
@@ -83,10 +88,8 @@ export default function ClientDashboard() {
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
-  // orders (we store all fetched, but render a slice)
-  const [orders, setOrders] = useState<
-    (OrderRow & { amountGBP: number; paymentStatus?: string })[]
-  >([]);
+  // orders (all fetched, then sliced for table)
+  const [orders, setOrders] = useState<OrderWithExtras[]>([]);
   const [visibleCount, setVisibleCount] = useState<number>(20);
   const [error, setError] = useState<string | null>(null);
 
@@ -104,7 +107,7 @@ export default function ClientDashboard() {
       try {
         const { ensureClientAccess } = await import("@/lib/access-guard");
 
-        // Throws "signin" | "blocked" | "pending" (we treat pending as signin for now)
+        // Throws "signin" | "blocked" | "pending"
         let okEmail = "";
         try {
           okEmail = await ensureClientAccess(supabase);
@@ -115,7 +118,9 @@ export default function ClientDashboard() {
           } catch {}
           if (!cancelled) {
             window.location.replace(
-              `/login?reason=${encodeURIComponent(reason)}&next=/client-dashboard`
+              `/login?reason=${encodeURIComponent(
+                reason
+              )}&next=/client-dashboard`
             );
           }
           return;
@@ -123,11 +128,15 @@ export default function ClientDashboard() {
 
         if (cancelled) return;
 
-        setUserEmail(okEmail);
-        await loadAll(okEmail);
+        // normalise to lower-case for lookups
+        const lower = okEmail.toLowerCase();
+        setUserEmail(lower);
+        await loadAll(lower);
       } catch {
         if (!cancelled) {
-          window.location.replace("/login?reason=signin&next=/client-dashboard");
+          window.location.replace(
+            "/login?reason=signin&next=/client-dashboard"
+          );
         }
       }
     })();
@@ -147,7 +156,7 @@ export default function ClientDashboard() {
         try {
           await supabase.auth.signOut();
         } finally {
-          window.location.href = "https://fuelflow.co.uk"; // go to main site on logout
+          window.location.href = "https://fuelflow.co.uk";
         }
       }, INACTIVITY_MS);
     };
@@ -159,9 +168,13 @@ export default function ClientDashboard() {
       "scroll",
       "touchstart",
     ];
-    events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+    events.forEach((e) =>
+      window.addEventListener(e, reset, { passive: true })
+    );
     const onVisibility = () => reset();
-    document.addEventListener("visibilitychange", onVisibility, { passive: true });
+    document.addEventListener("visibilitychange", onVisibility, {
+      passive: true,
+    });
 
     reset();
     return () => {
@@ -196,7 +209,9 @@ export default function ClientDashboard() {
     }
   }
 
+  // ----------------- Load ORDERS for this customer -----------------
   async function loadOrders(emailLower: string) {
+    // 1) fetch this customer's orders
     const { data: rawOrders, error: ordErr } = await supabase
       .from("orders")
       .select(
@@ -204,27 +219,32 @@ export default function ClientDashboard() {
       )
       .eq("user_email", emailLower)
       .order("created_at", { ascending: false })
-      .limit(200); // fetch plenty, render a slice
+      .limit(200);
 
     if (ordErr) throw ordErr;
 
     const ordersArr = (rawOrders || []) as OrderRow[];
     const ids = ordersArr.map((o) => o.id).filter(Boolean);
 
-    let payMap = new Map<string, PaymentRow>();
+    // 2) fetch payments for those orders (to show PAID / pending)
+    let paymentMap = new Map<string, PaymentRow>();
     if (ids.length) {
-      const { data: pays } = await supabase
+      const { data: pays, error: payErr } = await supabase
         .from("payments")
         .select("order_id, amount, currency, status")
         .in("order_id", ids);
+
+      if (payErr) throw payErr;
       (pays || []).forEach((p: any) => {
-        if (p.order_id) payMap.set(p.order_id, p);
+        if (p.order_id) paymentMap.set(p.order_id, p);
       });
     }
 
-    const withTotals = ordersArr.map((o) => {
+    // 3) combine and compute final amount_gbp for each row
+    const withTotals: OrderWithExtras[] = ordersArr.map((o) => {
+      const pay = paymentMap.get(o.id || "");
       const fromOrders = o.total_pence ?? null;
-      const fromPayments = payMap.get(o.id || "")?.amount ?? null;
+      const fromPayments = pay?.amount ?? null;
 
       let totalPence: number | null =
         fromOrders ?? (fromPayments as number | null) ?? null;
@@ -235,19 +255,20 @@ export default function ClientDashboard() {
         }
       }
 
-      const amountGBP = totalPence != null ? totalPence / 100 : 0;
+      const amount_gbp = totalPence != null ? totalPence / 100 : 0;
+
       return {
         ...o,
-        amountGBP,
-        paymentStatus: payMap.get(o.id || "")?.status,
+        amount_gbp,
+        payment_status: pay?.status ?? null,
       };
     });
 
     setOrders(withTotals);
-    setVisibleCount(20); // reset the slice on each refresh
+    setVisibleCount(20); // reset slice on each refresh
   }
 
-  // Robust latest-price loader with normalisation (handles GBP or pence)
+  // ------------ Latest prices (same as before, just tidied) ------------
   async function loadLatestPrices() {
     setPetrolPrice(null);
     setDieselPrice(null);
@@ -327,14 +348,33 @@ export default function ClientDashboard() {
       await supabase.auth.signOut();
       await fetch("/api/auth/signout", { method: "POST" }).catch(() => {});
     } finally {
-      window.location.href = "https://fuelflow.co.uk"; // go to main site after logout
+      window.location.href = "https://fuelflow.co.uk";
     }
   }
 
-  // ---------- Usage & Spend (by month, year) ----------
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
+  // ---------- Usage & Spend (by month, year), based on THIS user's orders ----------
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sept",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
 
-  type MonthAgg = { monthIdx: number; monthLabel: string; litres: number; spend: number };
+  type MonthAgg = {
+    monthIdx: number;
+    monthLabel: string;
+    litres: number;
+    spend: number;
+  };
+
   const usageByMonth: MonthAgg[] = useMemo(() => {
     const base: MonthAgg[] = Array.from({ length: 12 }, (_, i) => ({
       monthIdx: i,
@@ -347,7 +387,7 @@ export default function ClientDashboard() {
       if (d.getFullYear() !== selectedYear) return;
       const m = d.getMonth();
       base[m].litres += o.litres ?? 0;
-      base[m].spend += o.amountGBP ?? 0;
+      base[m].spend += o.amount_gbp ?? 0;
     });
     return base;
   }, [orders, selectedYear]);
@@ -355,6 +395,9 @@ export default function ClientDashboard() {
   const rowsToShow = showAllMonths
     ? usageByMonth
     : usageByMonth.filter((r) => r.monthIdx === currentMonthIdx);
+
+  const maxLitres = Math.max(1, ...usageByMonth.map((x) => x.litres));
+  const maxSpend = Math.max(1, ...usageByMonth.map((x) => x.spend));
 
   /* =========================
      Render
@@ -368,10 +411,16 @@ export default function ClientDashboard() {
       <div className="min-h-screen bg-[#0b1220] text-white">
         <div className="max-w-6xl mx-auto px-4 py-4">
           <div className="flex items-center gap-3">
-            <a href="https://fuelflow.co.uk" aria-label="FuelFlow website" className="shrink-0">
+            <a
+              href="https://fuelflow.co.uk"
+              aria-label="FuelFlow website"
+              className="shrink-0"
+            >
               <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
             </a>
-            <div className="hidden md:block text-sm text-white/70">Refreshing…</div>
+            <div className="hidden md:block text-sm text-white/70">
+              Refreshing…
+            </div>
             <div className="ml-auto flex items-center gap-2">
               <button
                 onClick={logout}
@@ -385,8 +434,12 @@ export default function ClientDashboard() {
 
         <div className="max-w-6xl mx-auto px-4">
           <div className="mt-16 rounded-2xl border border-white/10 bg-white/[0.03] p-8 text-center">
-            <h1 className="text-2xl md:text-3xl font-bold">Loading dashboard</h1>
-            <p className="mt-2 text-white/70">Pulling latest prices and your recent orders…</p>
+            <h1 className="text-2xl md:text-3xl font-bold">
+              Loading dashboard
+            </h1>
+            <p className="mt-2 text-white/70">
+              Pulling latest prices and your recent orders…
+            </p>
             <button
               onClick={refresh}
               className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-white/10 px-6 text-base font-semibold hover:bg-white/15"
@@ -404,7 +457,7 @@ export default function ClientDashboard() {
     );
   }
 
-  // ------------- Derived for "Recent Orders" -------------
+  // ------------- Derived for "My Orders" -------------
   const visibleOrders = orders.slice(0, visibleCount);
   const hasMore = visibleCount < orders.length;
 
@@ -417,7 +470,9 @@ export default function ClientDashboard() {
           aria-disabled={!canOrder}
           className={cx(
             "block text-center rounded-xl py-3 font-semibold shadow-lg",
-            canOrder ? "bg-yellow-500 text-[#041F3E]" : "bg-white/10 text-white/60 cursor-not-allowed"
+            canOrder
+              ? "bg-yellow-500 text-[#041F3E]"
+              : "bg-white/10 text-white/60 cursor-not-allowed"
           )}
         >
           Order Fuel
@@ -427,7 +482,11 @@ export default function ClientDashboard() {
       <div className="max-w-6xl mx-auto px-4 py-4 space-y-6">
         {/* Header */}
         <div className="flex items-center gap-3">
-          <a href="https://fuelflow.co.uk" aria-label="FuelFlow website" className="shrink-0">
+          <a
+            href="https://fuelflow.co.uk"
+            aria-label="FuelFlow website"
+            className="shrink-0"
+          >
             <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto" />
           </a>
 
@@ -442,7 +501,8 @@ export default function ClientDashboard() {
                 aria-disabled={!canOrder}
                 className={cx(
                   "h-9 inline-flex items-center rounded-lg px-3 text-sm font-semibold bg-yellow-500 text-[#041F3E] hover:bg-yellow-400",
-                  !canOrder && "opacity-50 cursor-not-allowed pointer-events-none"
+                  !canOrder &&
+                    "opacity-50 cursor-not-allowed pointer-events-none"
                 )}
               >
                 Order Fuel
@@ -475,17 +535,27 @@ export default function ClientDashboard() {
           <Card title="Petrol (95)">
             <div className="text-3xl font-bold">
               {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
-              <span className="text-base font-normal text-gray-300"> / litre</span>
+              <span className="text-base font-normal text-gray-300">
+                {" "}
+                / litre
+              </span>
             </div>
-            <div className="mt-1 text-xs text-white/60">Refreshed: {formatShortDMY(refreshedAt)}</div>
+            <div className="mt-1 text-xs text-white/60">
+              Refreshed: {formatShortDMY(refreshedAt)}
+            </div>
           </Card>
 
           <Card title="Diesel">
             <div className="text-3xl font-bold">
               {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
-              <span className="text-base font-normal text-gray-300"> / litre</span>
+              <span className="text-base font-normal text-gray-300">
+                {" "}
+                / litre
+              </span>
             </div>
-            <div className="mt-1 text-xs text-white/60">Refreshed: {formatShortDMY(refreshedAt)}</div>
+            <div className="mt-1 text-xs text-white/60">
+              Refreshed: {formatShortDMY(refreshedAt)}
+            </div>
           </Card>
 
           <div className="bg-gray-800 rounded-xl p-4 md:p-5">
@@ -502,7 +572,9 @@ export default function ClientDashboard() {
         {/* Usage & Spend */}
         <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
-            <h2 className="text-xl md:text-2xl font-semibold">Usage &amp; Spend</h2>
+            <h2 className="text-xl md:text-2xl font-semibold">
+              Usage &amp; Spend
+            </h2>
             <div className="flex items-center gap-2">
               <span className="text-sm text-white/70">Year:</span>
               <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
@@ -511,7 +583,9 @@ export default function ClientDashboard() {
                   disabled={selectedYear === currentYear - 1}
                   className={cx(
                     "px-3 py-1.5",
-                    selectedYear === currentYear - 1 ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
+                    selectedYear === currentYear - 1
+                      ? "bg-yellow-500 text-[#041F3E] font-semibold"
+                      : "hover:bg-white/15"
                   )}
                 >
                   {currentYear - 1}
@@ -521,7 +595,9 @@ export default function ClientDashboard() {
                   disabled={selectedYear === currentYear}
                   className={cx(
                     "px-3 py-1.5",
-                    selectedYear === currentYear ? "bg-yellow-500 text-[#041F3E] font-semibold" : "hover:bg-white/15"
+                    selectedYear === currentYear
+                      ? "bg-yellow-500 text-[#041F3E] font-semibold"
+                      : "hover:bg-white/15"
                   )}
                 >
                   {currentYear}
@@ -547,7 +623,10 @@ export default function ClientDashboard() {
               </thead>
               <tbody>
                 {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
-                  <tr key={`${selectedYear}-${r.monthIdx}`} className="border-b border-gray-800/60">
+                  <tr
+                    key={`${selectedYear}-${r.monthIdx}`}
+                    className="border-b border-gray-800/60"
+                  >
                     <td className="py-2 pr-4">
                       {months[r.monthIdx]} {String(selectedYear).slice(2)}
                     </td>
@@ -556,7 +635,9 @@ export default function ClientDashboard() {
                       <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
                         <div
                           className="h-1.5 rounded bg-yellow-500/80"
-                          style={{ width: `${(r.litres / Math.max(1, ...usageByMonth.map(x => x.litres))) * 100}%` }}
+                          style={{
+                            width: `${(r.litres / maxLitres) * 100}%`,
+                          }}
                         />
                       </div>
                     </td>
@@ -565,7 +646,9 @@ export default function ClientDashboard() {
                       <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
                         <div
                           className="h-1.5 rounded bg-white/40"
-                          style={{ width: `${(r.spend / Math.max(1, ...usageByMonth.map(x => x.spend))) * 100}%` }}
+                          style={{
+                            width: `${(r.spend / maxSpend) * 100}%`,
+                          }}
                         />
                       </div>
                     </td>
@@ -583,11 +666,12 @@ export default function ClientDashboard() {
           </div>
         )}
 
-        {/* recent orders (collapsible / incremental) */}
+        {/* My Orders */}
         <section className="bg-gray-800 rounded-xl p-4 md:p-6 mb-24 md:mb-0">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl md:text-2xl font-semibold">
-              Recent Orders <span className="text-white/50 text-sm">({orders.length})</span>
+              My Orders{" "}
+              <span className="text-white/50 text-sm">({orders.length})</span>
             </h2>
             <div className="flex items-center gap-2">
               {orders.length > 20 && (
@@ -601,7 +685,11 @@ export default function ClientDashboard() {
                     </button>
                   ) : (
                     <button
-                      onClick={() => setVisibleCount((n) => Math.min(n + 20, orders.length))}
+                      onClick={() =>
+                        setVisibleCount((n) =>
+                          Math.min(n + 20, orders.length)
+                        )
+                      }
                       className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
                     >
                       Show 20 more
@@ -621,10 +709,11 @@ export default function ClientDashboard() {
           {loading ? (
             <div className="text-gray-300">Loading…</div>
           ) : orders.length === 0 ? (
-            <div className="text-gray-400">No orders yet.</div>
+            <div className="text-gray-400">
+              No orders yet. Your orders will appear here.
+            </div>
           ) : (
             <div className="overflow-x-auto">
-              {/* Optional max-height on small screens to avoid super-long pages */}
               <div className="md:max-h-none max-h-[60vh] overflow-auto rounded-lg">
                 <table className="w-full text-left text-sm">
                   <thead className="text-gray-300 sticky top-0 bg-gray-800">
@@ -637,40 +726,53 @@ export default function ClientDashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleOrders.map((o) => (
-                      <tr key={o.id} className="border-b border-gray-800">
-                        <td className="py-2 pr-4">
-                          {new Date(o.created_at).toLocaleString()}
-                        </td>
-                        <td className="py-2 pr-4 capitalize">
-                          {(o.fuel as string) || "—"}
-                        </td>
-                        <td className="py-2 pr-4">{o.litres ?? "—"}</td>
-                        <td className="py-2 pr-4">{gbp.format(o.amountGBP)}</td>
-                        <td className="py-2 pr-4">
-                          <span
-                            className={cx(
-                              "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                              (o.status || "").toLowerCase() === "paid"
-                                ? "bg-green-600/70"
-                                : "bg-gray-600/70"
-                            )}
-                          >
-                            {(o.status || o.paymentStatus || "pending").toLowerCase()}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
+                    {visibleOrders.map((o) => {
+                      const status =
+                        (o.status || "").toLowerCase() ||
+                        (o.payment_status || "").toLowerCase() ||
+                        "pending";
+                      const isPaid =
+                        status === "paid" || status === "succeeded";
+                      return (
+                        <tr key={o.id} className="border-b border-gray-800">
+                          <td className="py-2 pr-4 whitespace-nowrap">
+                            {new Date(o.created_at).toLocaleString()}
+                          </td>
+                          <td className="py-2 pr-4 capitalize">
+                            {(o.fuel as string) || "—"}
+                          </td>
+                          <td className="py-2 pr-4">{o.litres ?? "—"}</td>
+                          <td className="py-2 pr-4">
+                            {gbp.format(o.amount_gbp)}
+                          </td>
+                          <td className="py-2 pr-4">
+                            <span
+                              className={cx(
+                                "inline-flex items-center rounded px-2 py-0.5 text-xs",
+                                isPaid
+                                  ? "bg-green-600/70"
+                                  : "bg-gray-600/70"
+                              )}
+                            >
+                              {status}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
 
-              {/* Show-more / collapse at bottom for easy reach on long lists */}
               {orders.length > 20 && (
                 <div className="mt-3 flex items-center justify-center gap-2">
                   {hasMore ? (
                     <button
-                      onClick={() => setVisibleCount((n) => Math.min(n + 20, orders.length))}
+                      onClick={() =>
+                        setVisibleCount((n) =>
+                          Math.min(n + 20, orders.length)
+                        )
+                      }
                       className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
                     >
                       Show 20 more
@@ -684,7 +786,9 @@ export default function ClientDashboard() {
                     </button>
                   )}
                   <div className="text-xs text-white/60">
-                    Showing <b>{Math.min(visibleCount, orders.length)}</b> of <b>{orders.length}</b>
+                    Showing{" "}
+                    <b>{Math.min(visibleCount, orders.length)}</b> of{" "}
+                    <b>{orders.length}</b>
                   </div>
                 </div>
               )}
@@ -692,7 +796,7 @@ export default function ClientDashboard() {
           )}
         </section>
 
-        {/* bottom refresh date (kept) */}
+        {/* bottom refresh date */}
         <div className="text-center text-xs text-white/50">
           Refreshed: {formatShortDMY(refreshedAt)}
         </div>
@@ -702,16 +806,14 @@ export default function ClientDashboard() {
 }
 
 /* =========================
-   Server-side guard (tolerant to avoid loops)
+   Server-side guard
    ========================= */
 
 export const getServerSideProps: GetServerSideProps = async (ctx) => {
   const supabase = getServerSupabase(ctx);
 
-  // 1) Who is this?
   const { data: userRes, error: userErr } = await supabase.auth.getUser();
 
-  // Only redirect to /login when clearly unauthenticated.
   if (userErr || !userRes?.user?.email) {
     return {
       redirect: { destination: "/login", permanent: false },
@@ -720,7 +822,7 @@ export const getServerSideProps: GetServerSideProps = async (ctx) => {
 
   const email = userRes.user.email.toLowerCase();
 
-  // 2) Blocked?
+  // Blocked?
   try {
     const { data: blockedRows, error: blockedErr } = await supabase
       .from("blocked_users")
@@ -732,10 +834,10 @@ export const getServerSideProps: GetServerSideProps = async (ctx) => {
       return { redirect: { destination: "/blocked", permanent: false } };
     }
   } catch {
-    // fall through to client guard
+    // fall through
   }
 
-  // 3) Approved (allowlist)?
+  // Allowlist?
   try {
     const { data: allowRows, error: allowErr } = await supabase
       .from("email_allowlist")
@@ -747,10 +849,9 @@ export const getServerSideProps: GetServerSideProps = async (ctx) => {
       return { redirect: { destination: "/pending", permanent: false } };
     }
   } catch {
-    // fall through to client guard
+    // fall through
   }
 
-  // Render the page; client guard will re-check and route if needed.
   return { props: {} };
 };
 
