@@ -8,14 +8,17 @@ import { createClient } from "@supabase/supabase-js";
 function getBaseUrl(req: NextApiRequest) {
   const env = process.env.SITE_URL && process.env.SITE_URL.trim();
   if (env) return env.replace(/\/+$/, "");
+
   const proto =
     (req.headers["x-forwarded-proto"] as string) ||
     (req.headers["x-forwarded-protocol"] as string) ||
     "https";
+
   const host =
     (req.headers["x-forwarded-host"] as string) ||
     (req.headers["host"] as string) ||
     "localhost:3000";
+
   return `${proto}://${host}`;
 }
 
@@ -23,9 +26,10 @@ function reqError(res: NextApiResponse, code: number, msg: string) {
   return res.status(code).json({ error: msg });
 }
 
+/* ---------- Stripe + Supabase setup ---------- */
+
 const STRIPE_KEY = process.env.STRIPE_SECRET_KEY;
 if (!STRIPE_KEY) {
-  // Fail fast at boot; this runs only on server
   throw new Error("Missing STRIPE_SECRET_KEY");
 }
 
@@ -34,19 +38,14 @@ const stripe = new Stripe(STRIPE_KEY, { apiVersion: "2024-06-20" });
 const SUPABASE_URL = process.env.SUPABASE_URL as string;
 const SUPABASE_SERVICE_ROLE_KEY = process.env
   .SUPABASE_SERVICE_ROLE_KEY as string;
+
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   throw new Error("Missing Supabase server credentials");
 }
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-// NEW: refinery connected account + commission rule
-const REFINERY_ACCOUNT_ID = process.env.STRIPE_REFINERY_ACCOUNT_ID;
-if (!REFINERY_ACCOUNT_ID) {
-  throw new Error("Missing STRIPE_REFINERY_ACCOUNT_ID (refinery connected account)");
-}
-
-// change this if you change your business model
-const COMMISSION_PER_LITRE_PENCE = 5; // 5p per litre = your commission
+/* ---------- Handler ---------- */
 
 export default async function handler(
   req: NextApiRequest,
@@ -60,8 +59,8 @@ export default async function handler(
   try {
     const {
       fuel, // "petrol" | "diesel"
-      litres, // number
-      deliveryDate, // ISO string or null
+      litres,
+      deliveryDate,
       full_name,
       email,
       address_line1,
@@ -75,7 +74,8 @@ export default async function handler(
       return reqError(res, 400, "Missing/invalid fuel or litres");
     }
 
-    // 1) Resolve unit price (GBP/L) from Supabase (UNCHANGED)
+    /* 1) Look up current unit price (GBP/L) in Supabase */
+
     let unitPriceGBP: number | null = null;
 
     const try1 = await supabase
@@ -92,6 +92,7 @@ export default async function handler(
         .select("fuel,total_price")
         .eq("fuel", fuel)
         .maybeSingle();
+
       if (try2.data?.total_price != null) {
         unitPriceGBP = Number(try2.data.total_price);
       }
@@ -101,7 +102,8 @@ export default async function handler(
       return reqError(res, 500, "Price lookup failed");
     }
 
-    // 2) Insert order (server DB) – UNCHANGED
+    /* 2) Insert order into Supabase (server-side only) */
+
     const unit_price_pence = Math.round(unitPriceGBP * 100);
     const total_pence = unit_price_pence * litresNum;
     const amountGBP = total_pence / 100;
@@ -137,16 +139,13 @@ export default async function handler(
       );
     }
 
-    // 3) Calculate your commission for Connect
-    const application_fee_amount =
-      COMMISSION_PER_LITRE_PENCE * litresNum; // in pence (GBP * 100)
+    /* 3) Build Stripe Checkout Session params
+          (using a typed object so TypeScript is happy) */
 
-    // 4) Create Stripe Checkout Session with Connect split
     const base = getBaseUrl(req);
 
-    const session = await stripe.checkout.sessions.create({
+    const params: Stripe.Checkout.SessionCreateParams = {
       mode: "payment",
-      customer_email: typeof email === "string" ? email : undefined,
       line_items: [
         {
           price_data: {
@@ -157,16 +156,15 @@ export default async function handler(
                 unit_price_pence / 100
               ).toFixed(2)}/L`,
             },
-            // we keep your behaviour: one line item with the full amount
+            // total_pence here means “total for the order”,
+            // so we use quantity: 1
             unit_amount: total_pence,
           },
           quantity: 1,
         },
       ],
-      // IMPORTANT: success page now at /order/success
-      success_url: `${base}/order/success?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
-      // You can keep /checkout/cancel route if you still have it; or send back to /order
-      cancel_url: `${base}/order?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${base}/checkout/success?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${base}/checkout/cancel?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
       metadata: {
         order_id: order.id,
         fuel: String(fuel),
@@ -176,8 +174,10 @@ export default async function handler(
         delivery_date: deliveryDate ? String(deliveryDate) : "",
         full_name: typeof full_name === "string" ? full_name : "",
         email: typeof email === "string" ? email : "",
-        address_line1: typeof address_line1 === "string" ? address_line1 : "",
-        address_line2: typeof address_line2 === "string" ? address_line2 : "",
+        address_line1:
+          typeof address_line1 === "string" ? address_line1 : "",
+        address_line2:
+          typeof address_line2 === "string" ? address_line2 : "",
         city: typeof city === "string" ? city : "",
         postcode: typeof postcode === "string" ? postcode : "",
       },
@@ -190,13 +190,17 @@ export default async function handler(
           total_pence: String(total_pence),
           email: typeof email === "string" ? email : "",
         },
-        // NEW: Stripe Connect split – your fee + refinery payout
-        application_fee_amount,
-        transfer_data: {
-          destination: REFINERY_ACCOUNT_ID,
-        },
       },
-    });
+    };
+
+    // Only set customer_email when we actually have a string
+    if (typeof email === "string" && email) {
+      params.customer_email = email;
+    }
+
+    /* 4) Create Checkout Session */
+
+    const session = await stripe.checkout.sessions.create(params);
 
     return res.status(200).json({ url: session.url });
   } catch (e: any) {
