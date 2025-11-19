@@ -1,5 +1,5 @@
 // src/pages/api/create-checkout-session.ts
-// src/pages/api/create-checkout-session.ts 
+// src/pages/api/create-checkout-session.ts  
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
