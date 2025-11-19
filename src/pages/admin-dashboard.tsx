@@ -610,17 +610,16 @@ export default function AdminDashboard() {
   /* =========================
      TICKETS (list + thread)
      ========================= */
-
-  // IMPORTANT CHANGE: allow "all time" (no date filter)
   const [ticketSearch, setTicketSearch] = useState("");
-  const [ticketStatus, setTicketStatus] =
-    useState<"all" | "open" | "closed">("all");
-  const [ticketSinceDays, setTicketSinceDays] = useState<number | "all">("all"); // default: all time
+  const [ticketStatus, setTicketStatus] = useState<"all" | "open" | "closed">("all");
+
+  // 0 = all time, otherwise last N days
+  const [ticketSinceDays, setTicketSinceDays] = useState<number>(365); // default: last 12 months
+
   const [tickets, setTickets] = useState<TicketListRow[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsError, setTicketsError] = useState<string | null>(null);
-  const [selectedTicket, setSelectedTicket] =
-    useState<TicketListRow | null>(null);
+  const [selectedTicket, setSelectedTicket] = useState<TicketListRow | null>(null);
   const [thread, setThread] = useState<TicketMessageRow[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
 
@@ -635,8 +634,8 @@ export default function AdminDashboard() {
         .order("created_at", { ascending: false })
         .limit(500);
 
-      // apply date filter only if not "all"
-      if (ticketSinceDays !== "all") {
+      // Only apply date filter if ticketSinceDays > 0
+      if (ticketSinceDays > 0) {
         const from = new Date();
         from.setDate(from.getDate() - (ticketSinceDays - 1));
         from.setHours(0, 0, 0, 0);
@@ -708,6 +707,7 @@ export default function AdminDashboard() {
       setTicketsError(e?.message || "Failed to close ticket");
     }
   }
+
 
   /* =========================
      Render
