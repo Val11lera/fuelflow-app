@@ -1,5 +1,5 @@
 // src/pages/api/create-checkout-session.ts
-// src/pages/api/create-checkout-session.ts  
+// src/pages/api/create-checkout-session.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
@@ -60,7 +60,7 @@ export default async function handler(
     }
 
     const unitPriceGbp = Number(priceRow.total_price); // e.g. 1.40
-    const unitAmountPence = Math.round(unitPriceGbp * 100); // 140
+    const unitAmountPence = Math.round(unitPriceGbp * 100); // e.g. 140
 
     const qty = Math.round(litres); // litres as integer quantity
     const totalAmountPence = unitAmountPence * qty;
@@ -95,8 +95,8 @@ export default async function handler(
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       customer_email: email,
-      success_url: `${origin}/order/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin}/order/cancelled`,
+      success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${origin}/order`, // just send them back to the order page on cancel
       line_items: [
         {
           price_data: {
