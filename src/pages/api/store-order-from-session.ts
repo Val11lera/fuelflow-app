@@ -80,7 +80,7 @@ export default async function handler(
       .from("orders")
       .insert({
         user_email: email.toLowerCase(),
-        fuel, // if your column is called "product", change this key to product: fuel
+        product: fuel, // if your column is called "product", change this key to product: fuel
         litres,
         unit_price_pence,
         total_pence,
