@@ -1,6 +1,5 @@
 // src/pages/api/store-order-from-session.ts
-// Creates or returns an order row using a Stripe Checkout session id
-
+// src/pages/api/store-order-from-session.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
@@ -9,15 +8,21 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 
-// Supabase service client (server-side)
+// Service-role client so RLS can never block this route
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL as string,
-  process.env.SUPABASE_SERVICE_ROLE_KEY as string
+  process.env.SUPABASE_SERVICE_ROLE_KEY as string,
+  {
+    auth: { persistSession: false },
+  }
 );
+
+type Ok = { orderId: string };
+type Err = { error: string };
 
 export default async function handler(
   req: NextApiRequest,
-  res: NextApiResponse
+  res: NextApiResponse<Ok | Err>
 ) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -25,81 +30,91 @@ export default async function handler(
   }
 
   try {
-    const { sessionId } = req.body as { sessionId?: string };
+    const body =
+      typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body;
 
+    const sessionId = body?.sessionId as string | undefined;
     if (!sessionId) {
       return res.status(400).json({ error: "Missing sessionId" });
     }
 
-    // 1) If we already created an order for this session, just return it
-    {
-      const { data: existing, error } = await supabase
-        .from("orders")
-        .select("id")
-        .eq("stripe_session_id", sessionId)
-        .maybeSingle();
-
-      if (error) {
-        console.error("Error checking existing order:", error);
-      } else if (existing?.id) {
-        return res.status(200).json({ orderId: existing.id });
-      }
-    }
-
-    // 2) Fetch session from Stripe
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-
-    if (!session) {
-      return res.status(404).json({ error: "Session not found" });
-    }
+    // 1) Fetch Stripe Checkout Session
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ["payment_intent", "line_items"],
+    });
 
     if (session.payment_status !== "paid") {
-      return res.status(400).json({ error: "Payment not completed" });
+      return res.status(400).json({
+        error: `Session is not paid (status: ${session.payment_status})`,
+      });
     }
 
-    const m = session.metadata || {};
-    const email =
-      (m.app_user_email as string) ||
-      (session.customer_email as string) ||
-      "";
-    const fuel = (m.fuel as string) || "diesel";
-    const litres = Number(m.litres || 0);
-    const unit_price_pence = Number(m.unit_price_pence || 0);
-    const total_pence =
-      Number(m.total_pence || 0) ||
-      (typeof session.amount_total === "number"
-        ? session.amount_total
-        : 0);
+    const md = session.metadata || {};
+    const fuel = (md.fuel as string | undefined) || "diesel";
 
-    if (!email || !litres || !total_pence) {
-      console.warn("Missing metadata on session:", sessionId, m);
+    const litres =
+      md.litres !== undefined ? Number(md.litres) : undefined;
+
+    const unitPricePence =
+      md.unit_price_pence !== undefined
+        ? Number(md.unit_price_pence)
+        : undefined;
+
+    const totalPence =
+      md.total_pence !== undefined
+        ? Number(md.total_pence)
+        : (session.amount_total as number | null | undefined) ?? null;
+
+    const email = (
+      session.customer_details?.email ||
+      session.customer_email ||
+      (md.email as string | undefined) ||
+      ""
+    ).toLowerCase();
+
+    if (!email) {
+      throw new Error("Missing email on Stripe session");
     }
 
-    // 3) Insert the order row
-    const { data: inserted, error: insertErr } = await supabase
+    // 2) If we already have an order for this session, just return it
+    const { data: existing, error: existingErr } = await supabase
+      .from("orders")
+      .select("id")
+      .eq("stripe_session_id", sessionId)
+      .maybeSingle();
+
+    if (existingErr) throw existingErr;
+    if (existing) {
+      return res.status(200).json({ orderId: existing.id });
+    }
+
+    // 3) Insert new order row
+    const { data, error: insertErr } = await supabase
       .from("orders")
       .insert({
-        user_email: email.toLowerCase(),
-        product: fuel, // if your column is called "product", change this key to product: fuel
-        litres,
-        unit_price_pence,
-        total_pence,
+        user_email: email,
+        fuel,
+        litres: litres ?? null,
+        unit_price_pence: unitPricePence ?? null,
+        total_pence: totalPence ?? null,
         status: "paid",
         stripe_session_id: sessionId,
       })
       .select("id")
-      .maybeSingle();
+      .single();
 
-    if (insertErr || !inserted?.id) {
-      console.error("Failed to insert order:", insertErr);
-      return res.status(500).json({ error: "Failed to create order" });
+    if (insertErr) {
+      console.error("Supabase insert error:", insertErr);
+      throw insertErr;
     }
 
-    return res.status(200).json({ orderId: inserted.id });
+    return res.status(200).json({ orderId: data.id });
   } catch (err: any) {
     console.error("store-order-from-session error:", err);
-    return res
-      .status(500)
-      .json({ error: err?.message || "Unexpected error" });
+    const msg =
+      err?.message ||
+      err?.error_description ||
+      "Failed to create order";
+    return res.status(500).json({ error: msg });
   }
 }
