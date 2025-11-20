@@ -7,7 +7,7 @@ import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: "2024-06-20",
+  apiVersion: "2024-06-20", // Stripe API version
 });
 
 // Supabase server client (service role – server only)
@@ -47,9 +47,6 @@ export default async function handler(
       return res.status(400).json({ error: "Invalid request data" });
     }
 
-    const emailLower = email.toLowerCase().trim();
-    const qty = Math.round(litres); // litres as integer quantity
-
     // 1) Load latest unit price from Supabase (server-side, secure)
     const { data: priceRow, error } = await supabase
       .from("latest_daily_prices")
@@ -67,59 +64,27 @@ export default async function handler(
     const unitPriceGbp = Number(priceRow.total_price); // e.g. 1.40
     const unitAmountPence = Math.round(unitPriceGbp * 100); // e.g. 140
 
+    const qty = Math.round(litres); // litres as integer quantity
     const totalAmountPence = unitAmountPence * qty;
 
     // 2) Calculate your commission (platform fee)
     const commissionPencePerLitre = getCommissionPencePerLitre(fuel);
     const platformFeeAmount = commissionPencePerLitre * qty; // in pence
 
-    // 3) Try to insert order in Supabase and get orderId (order reference)
-    let orderId: string | null = null;
-    try {
-      const { data: orderRow, error: orderErr } = await supabase
-        .from("orders")
-        .insert({
-          user_email: emailLower,
-          fuel,
-          litres: qty,
-          unit_price_pence: unitAmountPence,
-          total_pence: totalAmountPence,
-          status: "pending",
-        })
-        .select("id")
-        .single();
-
-      if (orderErr) {
-        console.error("Error inserting order (non-fatal):", orderErr);
-      } else if (orderRow?.id) {
-        orderId = orderRow.id as string;
-      }
-    } catch (e) {
-      console.error("Unexpected error inserting order (non-fatal):", e);
-    }
-
-    // 4) Prepare Connect split + metadata for the PaymentIntent
+    // 3) Prepare Connect split – only if account configured
     const refineryAccountId = process.env.REFINERY_STRIPE_ACCOUNT_ID;
 
     const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData =
-      {
-        metadata: {
-          // orderId may be null; that's fine
-          ...(orderId ? { order_id: orderId } : {}),
-          fuel,
-          litres: String(qty),
-          email: emailLower,
-        },
-      };
+      refineryAccountId && platformFeeAmount > 0
+        ? {
+            application_fee_amount: platformFeeAmount,
+            transfer_data: {
+              destination: refineryAccountId,
+            },
+          }
+        : {}; // fallback: all money stays with you
 
-    if (refineryAccountId && platformFeeAmount > 0) {
-      paymentIntentData.application_fee_amount = platformFeeAmount;
-      paymentIntentData.transfer_data = {
-        destination: refineryAccountId,
-      };
-    }
-
-    // 5) Build a valid origin (with https://)
+    // 4) Build a valid origin (with https://)
     const envAppUrl = process.env.NEXT_PUBLIC_APP_URL;
     const origin =
       (envAppUrl && envAppUrl.startsWith("http")
@@ -128,18 +93,12 @@ export default async function handler(
         ? `https://${envAppUrl}`
         : req.headers.origin) || "https://dashboard.fuelflow.co.uk";
 
-    // Build success URL (include orderId only if we have it)
-    const baseSuccess = `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}`;
-    const successUrl = orderId
-      ? `${baseSuccess}&orderId=${encodeURIComponent(orderId)}`
-      : baseSuccess;
-
-    // 6) Create Stripe Checkout session
+    // 5) Create Stripe Checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      customer_email: emailLower,
-      success_url: successUrl,
-      cancel_url: `${origin}/order`, // back to order page on cancel
+      customer_email: email,
+      success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${origin}/order`, // just send them back to the order page on cancel
       line_items: [
         {
           price_data: {
@@ -154,36 +113,8 @@ export default async function handler(
           quantity: qty,
         },
       ],
-      // orderId may be null; Stripe is fine with that
-      client_reference_id: orderId || undefined,
-      metadata: {
-        ...(orderId ? { order_id: orderId } : {}),
-        fuel,
-        litres: String(qty),
-        email: emailLower,
-      },
       payment_intent_data: paymentIntentData,
     });
-
-    // 7) Create payments row linked to the order (best-effort)
-    try {
-      const piId =
-        typeof session.payment_intent === "string"
-          ? session.payment_intent
-          : session.payment_intent?.id ?? null;
-
-      await supabase.from("payments").insert({
-        order_id: orderId, // may be null
-        amount: totalAmountPence,
-        currency: "gbp",
-        status: "created", // your webhook should update this to "succeeded/paid"
-        email: emailLower,
-        cs_id: session.id,
-        pi_id: piId,
-      });
-    } catch (e) {
-      console.error("Failed to insert payments row (non-fatal):", e);
-    }
 
     return res.status(200).json({ id: session.id, url: session.url });
   } catch (err: any) {
