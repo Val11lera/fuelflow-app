@@ -15,16 +15,61 @@ function ellipsize(id?: string, left = 10, right = 8) {
 export default function SuccessPage() {
   const { query } = useRouter();
   const sessionId = (query.session_id as string) || "";
-  const rawOrderId = (query.orderId as string) || "";
 
-  // Fallback: if we don't have a separate order id, reuse the session id
-  const orderId = rawOrderId || sessionId;
-
+  const [orderId, setOrderId] = useState<string>("");
   const [copied, setCopied] = useState<"session" | "order" | null>(null);
-  const sessionShort = useMemo(() => ellipsize(sessionId), [sessionId]);
-  const orderShort = useMemo(() => ellipsize(orderId), [orderId]);
+  const [error, setError] = useState<string | null>(null);
 
-  // quick celebratory pulse on load
+  // Fallback: if no order id yet, show session id as reference
+  const orderRefToShow = orderId || sessionId;
+
+  const sessionShort = useMemo(() => ellipsize(sessionId), [sessionId]);
+  const orderShort = useMemo(
+    () => ellipsize(orderRefToShow),
+    [orderRefToShow]
+  );
+
+  // On load, ask the server to create (or find) the order row
+  useEffect(() => {
+    if (!sessionId) return;
+
+    let cancelled = false;
+
+    async function run() {
+      try {
+        const res = await fetch("/api/store-order-from-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId }),
+        });
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          if (!cancelled) {
+            setError(body.error || "Failed to store order");
+          }
+          return;
+        }
+
+        const body = (await res.json()) as { orderId?: string };
+        if (!cancelled && body.orderId) {
+          setOrderId(body.orderId);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setError(e?.message || "Failed to store order");
+        }
+      }
+    }
+
+    run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  // quick celebratory pulse on load when copying
   useEffect(() => {
     if (!copied) return;
     const t = setTimeout(() => {
@@ -87,14 +132,19 @@ export default function SuccessPage() {
             <Row
               label="Order reference"
               value={orderShort}
-              fullValue={orderId}
-              onCopy={() => copy(orderId, "order")}
+              fullValue={orderRefToShow}
+              onCopy={() => copy(orderRefToShow, "order")}
               copied={copied === "order"}
             />
             <div className="mt-1 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/70">
-              You’ll receive an email receipt from Stripe. A FuelFlow invoice/dispatch confirmation
-              will follow shortly.
+              You’ll receive an email receipt from Stripe. A FuelFlow invoice/dispatch
+              confirmation will follow shortly.
             </div>
+            {error && (
+              <div className="mt-2 rounded border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+                {error}
+              </div>
+            )}
           </div>
 
           {/* Actions */}
