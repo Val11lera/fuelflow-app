@@ -1,11 +1,12 @@
 // src/pages/api/create-checkout-session.ts
 // src/pages/api/create-checkout-session.ts
+// src/pages/api/create-checkout-session.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: "2024-06-20", // or your Stripe API version
+  apiVersion: "2024-06-20",
 });
 
 // Supabase server client (service role – server only)
@@ -45,6 +46,9 @@ export default async function handler(
       return res.status(400).json({ error: "Invalid request data" });
     }
 
+    const emailLower = email.toLowerCase().trim();
+    const qty = Math.round(litres); // litres as integer quantity
+
     // 1) Load latest unit price from Supabase (server-side, secure)
     const { data: priceRow, error } = await supabase
       .from("latest_daily_prices")
@@ -62,27 +66,54 @@ export default async function handler(
     const unitPriceGbp = Number(priceRow.total_price); // e.g. 1.40
     const unitAmountPence = Math.round(unitPriceGbp * 100); // e.g. 140
 
-    const qty = Math.round(litres); // litres as integer quantity
     const totalAmountPence = unitAmountPence * qty;
 
     // 2) Calculate your commission (platform fee)
     const commissionPencePerLitre = getCommissionPencePerLitre(fuel);
     const platformFeeAmount = commissionPencePerLitre * qty; // in pence
 
-    // 3) Prepare Connect split – only if account configured
+    // 3) Insert order in Supabase and get orderId (order reference)
+    const { data: orderRow, error: orderErr } = await supabase
+      .from("orders")
+      .insert({
+        user_email: emailLower,
+        fuel,
+        litres: qty,
+        unit_price_pence: unitAmountPence,
+        total_pence: totalAmountPence,
+        status: "pending",
+      })
+      .select("id")
+      .single();
+
+    if (orderErr || !orderRow?.id) {
+      console.error("Error inserting order:", orderErr);
+      return res.status(500).json({ error: "Failed to create order" });
+    }
+
+    const orderId = orderRow.id as string;
+
+    // 4) Prepare Connect split (application fee, destination) + metadata
     const refineryAccountId = process.env.REFINERY_STRIPE_ACCOUNT_ID;
 
     const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData =
-      refineryAccountId && platformFeeAmount > 0
-        ? {
-            application_fee_amount: platformFeeAmount,
-            transfer_data: {
-              destination: refineryAccountId,
-            },
-          }
-        : {}; // fallback: all money stays with you
+      {
+        metadata: {
+          order_id: orderId,
+          fuel,
+          litres: String(qty),
+          email: emailLower,
+        },
+      };
 
-    // 4) Build a valid origin (with https://)
+    if (refineryAccountId && platformFeeAmount > 0) {
+      paymentIntentData.application_fee_amount = platformFeeAmount;
+      paymentIntentData.transfer_data = {
+        destination: refineryAccountId,
+      };
+    }
+
+    // 5) Build a valid origin (with https://)
     const envAppUrl = process.env.NEXT_PUBLIC_APP_URL;
     const origin =
       (envAppUrl && envAppUrl.startsWith("http")
@@ -91,12 +122,14 @@ export default async function handler(
         ? `https://${envAppUrl}`
         : req.headers.origin) || "https://dashboard.fuelflow.co.uk";
 
-    // 5) Create Stripe Checkout session
+    // 6) Create Stripe Checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      customer_email: email,
-      success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin}/order`, // just send them back to the order page on cancel
+      customer_email: emailLower,
+      success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}&orderId=${encodeURIComponent(
+        orderId
+      )}`,
+      cancel_url: `${origin}/order`,
       line_items: [
         {
           price_data: {
@@ -111,8 +144,35 @@ export default async function handler(
           quantity: qty,
         },
       ],
+      client_reference_id: orderId,
+      metadata: {
+        order_id: orderId,
+        fuel,
+        litres: String(qty),
+        email: emailLower,
+      },
       payment_intent_data: paymentIntentData,
     });
+
+    // 7) Create payments row linked to the order (best-effort; don't fail request)
+    try {
+      const piId =
+        typeof session.payment_intent === "string"
+          ? session.payment_intent
+          : session.payment_intent?.id ?? null;
+
+      await supabase.from("payments").insert({
+        order_id: orderId,
+        amount: totalAmountPence,
+        currency: "gbp",
+        status: "created", // your webhook will update this later
+        email: emailLower,
+        cs_id: session.id,
+        pi_id: piId,
+      });
+    } catch (e) {
+      console.error("Failed to insert payments row:", e);
+    }
 
     return res.status(200).json({ id: session.id, url: session.url });
   } catch (err: any) {
