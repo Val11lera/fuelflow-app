@@ -1,6 +1,7 @@
 // src/pages/api/create-checkout-session.ts
 // src/pages/api/create-checkout-session.ts
 // src/pages/api/create-checkout-session.ts
+
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
@@ -9,7 +10,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 
-// Supabase server client (service role – server only)
+// Supabase server client (service role – server only, DO NOT expose this key on the client)
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
@@ -93,7 +94,7 @@ export default async function handler(
 
     const orderId = orderRow.id as string;
 
-    // 4) Prepare Connect split (application fee, destination) + metadata
+    // 4) Prepare Connect split + metadata for the PaymentIntent
     const refineryAccountId = process.env.REFINERY_STRIPE_ACCOUNT_ID;
 
     const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData =
@@ -129,7 +130,7 @@ export default async function handler(
       success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}&orderId=${encodeURIComponent(
         orderId
       )}`,
-      cancel_url: `${origin}/order`,
+      cancel_url: `${origin}/order`, // back to order page on cancel
       line_items: [
         {
           price_data: {
@@ -154,7 +155,7 @@ export default async function handler(
       payment_intent_data: paymentIntentData,
     });
 
-    // 7) Create payments row linked to the order (best-effort; don't fail request)
+    // 7) Create payments row linked to the order (best-effort; don't fail the request if this fails)
     try {
       const piId =
         typeof session.payment_intent === "string"
@@ -165,7 +166,7 @@ export default async function handler(
         order_id: orderId,
         amount: totalAmountPence,
         currency: "gbp",
-        status: "created", // your webhook will update this later
+        status: "created", // your webhook should update this to "succeeded/paid"
         email: emailLower,
         cs_id: session.id,
         pi_id: piId,
@@ -186,4 +187,3 @@ export default async function handler(
     return res.status(500).json({ error: message });
   }
 }
-
