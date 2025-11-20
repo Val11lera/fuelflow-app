@@ -1,13 +1,12 @@
 // src/pages/api/create-checkout-session.ts
 // src/pages/api/create-checkout-session.ts
 // src/pages/api/create-checkout-session.ts
-
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: "2024-06-20", // Stripe API version
+  apiVersion: "2024-06-20",
 });
 
 // Supabase server client (service role – server only)
@@ -93,12 +92,14 @@ export default async function handler(
         ? `https://${envAppUrl}`
         : req.headers.origin) || "https://dashboard.fuelflow.co.uk";
 
+    const emailLower = email.toLowerCase();
+
     // 5) Create Stripe Checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      customer_email: email,
+      customer_email: emailLower,
       success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin}/order`, // just send them back to the order page on cancel
+      cancel_url: `${origin}/order`,
       line_items: [
         {
           price_data: {
@@ -108,12 +109,21 @@ export default async function handler(
                 fuel === "petrol" ? "Petrol (95)" : "Diesel"
               } – ${qty.toLocaleString()} litres`,
             },
-            unit_amount: unitAmountPence, // in pence
+            unit_amount: unitAmountPence, // pence
           },
           quantity: qty,
         },
       ],
       payment_intent_data: paymentIntentData,
+
+      // ⭐ IMPORTANT: metadata we will use later to create the order
+      metadata: {
+        fuel,
+        litres: String(qty),
+        unit_price_pence: String(unitAmountPence),
+        total_pence: String(totalAmountPence),
+        app_user_email: emailLower,
+      },
     });
 
     return res.status(200).json({ id: session.id, url: session.url });
