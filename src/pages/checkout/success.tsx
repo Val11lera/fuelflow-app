@@ -4,15 +4,6 @@
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
-
-/* =========================
-   Supabase client
-   ========================= */
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
-);
 
 /** Nicely shorten long tokens like Stripe IDs */
 function ellipsize(id?: string, left = 10, right = 8) {
@@ -22,62 +13,33 @@ function ellipsize(id?: string, left = 10, right = 8) {
 }
 
 export default function SuccessPage() {
-  const router = useRouter();
-  const sessionId = (router.query.session_id as string) || "";
+  const { query } = useRouter();
+  const sessionId = (query.session_id as string) || "";
+  const rawOrderId = (query.orderId as string) || "";
 
-  // order reference we actually show
-  const [orderId, setOrderId] = useState<string>("");
+  // Fallback: if we don't have a separate order id, reuse the session id
+  const orderId = rawOrderId || sessionId;
 
-  // which ID has just been copied
   const [copied, setCopied] = useState<"session" | "order" | null>(null);
-
   const sessionShort = useMemo(() => ellipsize(sessionId), [sessionId]);
   const orderShort = useMemo(() => ellipsize(orderId), [orderId]);
 
-  // 1) If orderId is present in the URL (?orderId=...), use that
-  useEffect(() => {
-    const qOrder = router.query.orderId as string | undefined;
-    if (qOrder && !orderId) {
-      setOrderId(qOrder);
-    }
-  }, [router.query.orderId, orderId]);
-
-  // 2) Fallback: look up order_id in Supabase using the Stripe Checkout session id
-  useEffect(() => {
-    // already have an order id or no session? nothing to do
-    if (!sessionId || orderId) return;
-
-    (async () => {
-      try {
-        const { data, error } = await supabase
-          .from("payments")
-          .select("order_id")
-          .eq("cs_id", sessionId)
-          .maybeSingle();
-
-        if (!error && data?.order_id) {
-          setOrderId(data.order_id);
-        }
-      } catch {
-        // swallow – we still show "-" rather than breaking the page
-      }
-    })();
-  }, [sessionId, orderId]);
-
-  // small “Copied!” pulse
+  // quick celebratory pulse on load
   useEffect(() => {
     if (!copied) return;
-    const t = setTimeout(() => setCopied(null), 1500);
+    const t = setTimeout(() => {
+      setCopied(null);
+    }, 1500);
     return () => clearTimeout(t);
   }, [copied]);
 
   async function copy(text: string, which: "session" | "order") {
-    if (!text) return;
     try {
+      if (!text) return;
       await navigator.clipboard.writeText(text);
       setCopied(which);
     } catch {
-      // ignore
+      // ignore clipboard errors
     }
   }
 
@@ -189,11 +151,14 @@ function Row({
     <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
       <div className="text-sm text-white/70">{label}</div>
       <div className="flex items-center gap-2">
-        <code className="rounded-lg bg-black/30 px-2 py-1 text-[13px]">{value}</code>
+        <code className="rounded-lg bg-black/30 px-2 py-1 text-[13px]">
+          {value || "—"}
+        </code>
         <button
           type="button"
           onClick={onCopy}
-          className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs text-white/80 hover:bg-white/10 focus:outline-none focus:ring focus:ring-white/15"
+          disabled={!fullValue}
+          className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs text-white/80 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring focus:ring-white/15"
           aria-label={`Copy ${label}`}
           title={`Copy ${label}`}
         >
@@ -204,3 +169,4 @@ function Row({
     </div>
   );
 }
+
