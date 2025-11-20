@@ -10,7 +10,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 
-// Supabase server client (service role – server only, DO NOT expose this key on the client)
+// Supabase server client (service role – server only)
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
@@ -73,26 +73,30 @@ export default async function handler(
     const commissionPencePerLitre = getCommissionPencePerLitre(fuel);
     const platformFeeAmount = commissionPencePerLitre * qty; // in pence
 
-    // 3) Insert order in Supabase and get orderId (order reference)
-    const { data: orderRow, error: orderErr } = await supabase
-      .from("orders")
-      .insert({
-        user_email: emailLower,
-        fuel,
-        litres: qty,
-        unit_price_pence: unitAmountPence,
-        total_pence: totalAmountPence,
-        status: "pending",
-      })
-      .select("id")
-      .single();
+    // 3) Try to insert order in Supabase and get orderId (order reference)
+    let orderId: string | null = null;
+    try {
+      const { data: orderRow, error: orderErr } = await supabase
+        .from("orders")
+        .insert({
+          user_email: emailLower,
+          fuel,
+          litres: qty,
+          unit_price_pence: unitAmountPence,
+          total_pence: totalAmountPence,
+          status: "pending",
+        })
+        .select("id")
+        .single();
 
-    if (orderErr || !orderRow?.id) {
-      console.error("Error inserting order:", orderErr);
-      return res.status(500).json({ error: "Failed to create order" });
+      if (orderErr) {
+        console.error("Error inserting order (non-fatal):", orderErr);
+      } else if (orderRow?.id) {
+        orderId = orderRow.id as string;
+      }
+    } catch (e) {
+      console.error("Unexpected error inserting order (non-fatal):", e);
     }
-
-    const orderId = orderRow.id as string;
 
     // 4) Prepare Connect split + metadata for the PaymentIntent
     const refineryAccountId = process.env.REFINERY_STRIPE_ACCOUNT_ID;
@@ -100,7 +104,8 @@ export default async function handler(
     const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData =
       {
         metadata: {
-          order_id: orderId,
+          // orderId may be null; that's fine
+          ...(orderId ? { order_id: orderId } : {}),
           fuel,
           litres: String(qty),
           email: emailLower,
@@ -123,13 +128,17 @@ export default async function handler(
         ? `https://${envAppUrl}`
         : req.headers.origin) || "https://dashboard.fuelflow.co.uk";
 
+    // Build success URL (include orderId only if we have it)
+    const baseSuccess = `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}`;
+    const successUrl = orderId
+      ? `${baseSuccess}&orderId=${encodeURIComponent(orderId)}`
+      : baseSuccess;
+
     // 6) Create Stripe Checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       customer_email: emailLower,
-      success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}&orderId=${encodeURIComponent(
-        orderId
-      )}`,
+      success_url: successUrl,
       cancel_url: `${origin}/order`, // back to order page on cancel
       line_items: [
         {
@@ -145,9 +154,10 @@ export default async function handler(
           quantity: qty,
         },
       ],
-      client_reference_id: orderId,
+      // orderId may be null; Stripe is fine with that
+      client_reference_id: orderId || undefined,
       metadata: {
-        order_id: orderId,
+        ...(orderId ? { order_id: orderId } : {}),
         fuel,
         litres: String(qty),
         email: emailLower,
@@ -155,7 +165,7 @@ export default async function handler(
       payment_intent_data: paymentIntentData,
     });
 
-    // 7) Create payments row linked to the order (best-effort; don't fail the request if this fails)
+    // 7) Create payments row linked to the order (best-effort)
     try {
       const piId =
         typeof session.payment_intent === "string"
@@ -163,7 +173,7 @@ export default async function handler(
           : session.payment_intent?.id ?? null;
 
       await supabase.from("payments").insert({
-        order_id: orderId,
+        order_id: orderId, // may be null
         amount: totalAmountPence,
         currency: "gbp",
         status: "created", // your webhook should update this to "succeeded/paid"
@@ -172,7 +182,7 @@ export default async function handler(
         pi_id: piId,
       });
     } catch (e) {
-      console.error("Failed to insert payments row:", e);
+      console.error("Failed to insert payments row (non-fatal):", e);
     }
 
     return res.status(200).json({ id: session.id, url: session.url });
@@ -187,3 +197,4 @@ export default async function handler(
     return res.status(500).json({ error: message });
   }
 }
+
