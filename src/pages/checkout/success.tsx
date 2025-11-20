@@ -1,8 +1,18 @@
 // src/pages/checkout/success.tsx
 // src/pages/checkout/success.tsx
+// src/pages/checkout/success.tsx
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { useEffect, useMemo, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+/* =========================
+   Supabase client
+   ========================= */
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
+);
 
 /** Nicely shorten long tokens like Stripe IDs */
 function ellipsize(id?: string, left = 10, right = 8) {
@@ -12,27 +22,63 @@ function ellipsize(id?: string, left = 10, right = 8) {
 }
 
 export default function SuccessPage() {
-  const { query } = useRouter();
-  const orderId = (query.orderId as string) || "";
-  const sessionId = (query.session_id as string) || "";
+  const router = useRouter();
+  const sessionId = (router.query.session_id as string) || "";
 
+  // order reference we actually show
+  const [orderId, setOrderId] = useState<string>("");
+
+  // which ID has just been copied
   const [copied, setCopied] = useState<"session" | "order" | null>(null);
+
   const sessionShort = useMemo(() => ellipsize(sessionId), [sessionId]);
   const orderShort = useMemo(() => ellipsize(orderId), [orderId]);
 
-  // quick celebratory pulse on load
+  // 1) If orderId is present in the URL (?orderId=...), use that
   useEffect(() => {
-    const t = setTimeout(() => {
-      setCopied(null);
-    }, 1500);
+    const qOrder = router.query.orderId as string | undefined;
+    if (qOrder && !orderId) {
+      setOrderId(qOrder);
+    }
+  }, [router.query.orderId, orderId]);
+
+  // 2) Fallback: look up order_id in Supabase using the Stripe Checkout session id
+  useEffect(() => {
+    // already have an order id or no session? nothing to do
+    if (!sessionId || orderId) return;
+
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("payments")
+          .select("order_id")
+          .eq("cs_id", sessionId)
+          .maybeSingle();
+
+        if (!error && data?.order_id) {
+          setOrderId(data.order_id);
+        }
+      } catch {
+        // swallow – we still show "-" rather than breaking the page
+      }
+    })();
+  }, [sessionId, orderId]);
+
+  // small “Copied!” pulse
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(null), 1500);
     return () => clearTimeout(t);
   }, [copied]);
 
   async function copy(text: string, which: "session" | "order") {
+    if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
       setCopied(which);
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   return (
