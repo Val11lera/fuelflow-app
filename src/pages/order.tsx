@@ -277,9 +277,27 @@ export default function OrderPage() {
       const min = new Date(minDeliveryDateStr);
       const chosen = new Date(deliveryDate);
       if (!deliveryDate || isNaN(chosen.getTime()) || chosen < min) {
-        throw new Error(
+        alert(
           `Earliest delivery is ${min.toLocaleDateString()}. Please pick a date two weeks from today or later.`
         );
+        return;
+      }
+
+      // Extra sanity check for all order details (matches API expectations)
+      const litresNum = Number(litres);
+      if (
+        !fuel ||
+        !receiptEmail ||
+        !fullName ||
+        !address1 ||
+        !city ||
+        !postcode ||
+        !deliveryDate ||
+        !Number.isFinite(litresNum) ||
+        litresNum <= 0
+      ) {
+        alert("Missing order details");
+        return;
       }
 
       // Call our backend that talks to Stripe with Connect split
@@ -287,9 +305,15 @@ export default function OrderPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          fuel,
-          litres,
-          email: receiptEmail,
+          fuel, // "diesel" | "petrol" (lowercase)
+          litres: litresNum,
+          email: receiptEmail.trim(),
+          name: fullName.trim(),
+          addressLine1: address1.trim(),
+          addressLine2: address2.trim(),
+          city: city.trim(),
+          postcode: postcode.trim(),
+          deliveryDate, // "YYYY-MM-DD"
         }),
       });
 
