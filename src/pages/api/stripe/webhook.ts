@@ -1,5 +1,6 @@
 // src/pages/api/stripe/webhook.ts
 // src/pages/api/stripe/webhook.ts
+// src/pages/api/stripe/webhook.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
@@ -333,11 +334,33 @@ export default async function handler(
             ? session.payment_intent
             : session.payment_intent?.id || null;
 
-        let orderId =
-          (session.metadata as any)?.order_id ||
-          (piId
-            ? (await stripe.paymentIntents.retrieve(piId)).metadata?.order_id
-            : undefined);
+        // 🔑 MAIN FIX:
+        // 1) try metadata.order_id
+        // 2) try to read orderId from success_url ?orderId=...
+        // 3) fallback to PI metadata.order_id
+        let orderId: string | undefined =
+          (session.metadata as any)?.order_id || undefined;
+
+        if (!orderId && typeof session.success_url === "string") {
+          try {
+            const u = new URL(session.success_url);
+            const fromQuery = u.searchParams.get("orderId");
+            if (fromQuery) {
+              orderId = fromQuery;
+            }
+          } catch {
+            // ignore parse errors
+          }
+        }
+
+        if (!orderId && piId) {
+          try {
+            const pi = await stripe.paymentIntents.retrieve(piId);
+            orderId = (pi.metadata as any)?.order_id || undefined;
+          } catch {
+            // ignore
+          }
+        }
 
         await logRow({
           event_type: "checkout.session.completed/received",
@@ -348,7 +371,12 @@ export default async function handler(
         if (orderId) {
           const { error } = await sb()
             .from("orders")
-            .update({ status: "paid", paid_at: new Date().toISOString() })
+            .update({
+              status: "paid",
+              paid_at: new Date().toISOString(),
+              stripe_session_id: session.id,
+              stripe_payment_intent: piId ?? null,
+            } as any)
             .eq("id", orderId);
           if (error) throw new Error(`Supabase update failed: ${error.message}`);
           await logRow({
@@ -395,7 +423,7 @@ export default async function handler(
           limit: 100,
           expand: ["data.price.product"],
         });
-        const order = await fetchOrder(orderId);
+        const order = await fetchOrder(orderId ?? null);
         const items = buildItemsFromOrderOrStripe({
           order,
           lineItems: li,
@@ -729,5 +757,4 @@ export default async function handler(
 
   return res.status(200).json({ received: true });
 }
-
 
