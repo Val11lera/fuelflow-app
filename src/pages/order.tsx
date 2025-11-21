@@ -1,5 +1,6 @@
 // src/pages/order.tsx
 // src/pages/order.tsx
+// src/pages/order.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -426,7 +427,7 @@ export default function OrderPage() {
             </div>
             <div>
               You must accept the Terms and have either a <b>Buy</b> contract
-              signed or a <b>Rent</b> contract approved. Open{" "}
+                signed or a <b>Rent</b> contract approved. Open{" "}
               <Link
                 href="/documents"
                 className="underline decoration-yellow-400 underline-offset-2"
@@ -503,8 +504,8 @@ export default function OrderPage() {
 
             {/* Delivery address */}
             <h2 className="mt-6 mb-2 text-lg font-semibold flex items-center gap-2">
-              <TruckIcon className="h-5 w-5 text-white/70" />
-              Delivery address
+              <TruckIcon className="h-5 w-5 text:white/70" />
+              <span className="text-white/90">Delivery address</span>
             </h2>
             <p className="mb-3 text-xs text-white/70">
               <strong>
@@ -562,7 +563,7 @@ export default function OrderPage() {
           </section>
 
           {/* Summary */}
-          <aside className={`${card}`}>
+          <aside className={card}>
             <h3 className="text-lg font-semibold mb-3">Summary</h3>
 
             <div className="space-y-2 text-sm">
@@ -694,6 +695,7 @@ function DashboardIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
 function DocumentIcon({ className }: { className?: string }) {
   return (
     <svg
@@ -708,4 +710,5 @@ function DocumentIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
 
