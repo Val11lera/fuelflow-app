@@ -6,11 +6,13 @@ import { createClient } from "@supabase/supabase-js";
 
 type Fuel = "petrol" | "diesel";
 
+// Stripe server client
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
+  // IMPORTANT: this must match the version your stripe package expects
   apiVersion: "2024-06-20",
 });
 
-// Supabase server client (service role – server only)
+// Supabase server client (service role – server only; NEVER expose this key to the browser)
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
@@ -63,7 +65,7 @@ export default async function handler(
     const fuel = rawFuel?.toLowerCase() as Fuel | undefined;
     const litresNum = Number(rawLitres);
 
-    // Basic validation – this is what was triggering “Missing order details”
+    // Basic validation – this is what shows “Missing order details”
     if (
       !fuel ||
       (fuel !== "petrol" && fuel !== "diesel") ||
@@ -175,7 +177,7 @@ export default async function handler(
       payment_intent_data: paymentIntentData,
     });
 
-    // Save session id back onto the order (helps dashboards & reconciliation)
+    // 7) Save session id back onto the order (for dashboards & reconciliation)
     await supabase
       .from("orders")
       .update({ stripe_session_id: session.id })
