@@ -1,18 +1,17 @@
 // src/pages/api/create-checkout-session.ts
 // src/pages/api/create-checkout-session.ts
+
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 type Fuel = "petrol" | "diesel";
 
-// Stripe server client
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  // IMPORTANT: this must match the version your stripe package expects
   apiVersion: "2024-06-20",
 });
 
-// Supabase server client (service role – server only; NEVER expose this key to the browser)
+// Supabase server client (service role – server only)
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
@@ -50,7 +49,7 @@ export default async function handler(
       postcode,
       deliveryDate,
     } = req.body as {
-      fuel: string; // we’ll normalise below
+      fuel: string;
       litres: number | string;
       email: string;
       name: string;
@@ -58,14 +57,13 @@ export default async function handler(
       addressLine2?: string;
       city: string;
       postcode: string;
-      deliveryDate: string; // ISO date string from the form
+      deliveryDate: string;
     };
 
-    // Normalise fuel (e.g. "Diesel" -> "diesel")
+    // -------- 1) Validate & normalise input --------
     const fuel = rawFuel?.toLowerCase() as Fuel | undefined;
     const litresNum = Number(rawLitres);
 
-    // Basic validation – this is what shows “Missing order details”
     if (
       !fuel ||
       (fuel !== "petrol" && fuel !== "diesel") ||
@@ -83,7 +81,7 @@ export default async function handler(
 
     const qty = Math.round(litresNum);
 
-    // 1) Load latest unit price from Supabase (server-side, secure)
+    // -------- 2) Get latest unit price from Supabase --------
     const { data: priceRow, error: priceError } = await supabase
       .from("latest_daily_prices")
       .select("total_price")
@@ -101,38 +99,79 @@ export default async function handler(
     const unitAmountPence = Math.round(unitPriceGbp * 100); // e.g. 74
     const totalAmountPence = unitAmountPence * qty;
 
-    // 2) Create the order row in Supabase (with full address etc.)
-    const { data: orderRow, error: orderError } = await supabase
+    // -------- 3) Reuse or create the pending order row --------
+    //
+    // RULE:
+    //   - If there is an existing PENDING order for this user with
+    //     no Stripe session attached yet, UPDATE it.
+    //   - Otherwise, INSERT a new row.
+    //
+    const { data: existingPending } = await supabase
       .from("orders")
-      .insert({
-        user_email: email,
-        fuel,
-        litres: qty,
-        unit_price_pence: unitAmountPence,
-        total_pence: totalAmountPence,
-        status: "pending",
-        name,
-        address_line1: addressLine1,
-        address_line2: addressLine2 ?? null,
-        city,
-        postcode,
-        delivery_date: deliveryDate,
-      })
       .select("id")
-      .single();
+      .eq("user_email", email.toLowerCase())
+      .eq("status", "pending")
+      .is("stripe_session_id", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    if (orderError || !orderRow) {
-      console.error("Failed to insert order:", orderError);
-      return res.status(500).json({ error: "Failed to create order in DB" });
+    let orderId: string;
+
+    const baseOrderFields = {
+      user_email: email.toLowerCase(),
+      fuel,
+      litres: qty,
+      unit_price_pence: unitAmountPence,
+      total_pence: totalAmountPence,
+      status: "pending" as const,
+      name,
+      address_line1: addressLine1,
+      address_line2: addressLine2 ?? null,
+      city,
+      postcode,
+      delivery_date: deliveryDate,
+    };
+
+    if (existingPending) {
+      // UPDATE existing draft order
+      const { data: updated, error: updateError } = await supabase
+        .from("orders")
+        .update(baseOrderFields)
+        .eq("id", existingPending.id)
+        .select("id")
+        .single();
+
+      if (updateError || !updated) {
+        console.error("Failed to update pending order:", updateError);
+        return res
+          .status(500)
+          .json({ error: "Failed to update existing order in DB" });
+      }
+
+      orderId = updated.id;
+    } else {
+      // INSERT a brand new pending order
+      const { data: inserted, error: insertError } = await supabase
+        .from("orders")
+        .insert(baseOrderFields)
+        .select("id")
+        .single();
+
+      if (insertError || !inserted) {
+        console.error("Failed to insert order:", insertError);
+        return res
+          .status(500)
+          .json({ error: "Failed to create order in DB" });
+      }
+
+      orderId = inserted.id;
     }
 
-    const orderId = orderRow.id;
-
-    // 3) Calculate your commission (platform fee)
+    // -------- 4) Calculate your commission (platform fee) --------
     const commissionPencePerLitre = getCommissionPencePerLitre(fuel);
     const platformFeeAmount = commissionPencePerLitre * qty; // in pence
 
-    // 4) Prepare Connect split – only if account configured
     const refineryAccountId = process.env.REFINERY_STRIPE_ACCOUNT_ID;
 
     const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData =
@@ -142,10 +181,21 @@ export default async function handler(
             transfer_data: {
               destination: refineryAccountId,
             },
+            metadata: {
+              order_id: orderId,
+              fuel,
+              litres: String(qty),
+            },
           }
-        : {}; // fallback: all money stays with you
+        : {
+            metadata: {
+              order_id: orderId,
+              fuel,
+              litres: String(qty),
+            },
+          };
 
-    // 5) Build a valid origin (with https://)
+    // -------- 5) Build origin URL --------
     const envAppUrl = process.env.NEXT_PUBLIC_APP_URL;
     const origin =
       (envAppUrl && envAppUrl.startsWith("http")
@@ -154,7 +204,7 @@ export default async function handler(
         ? `https://${envAppUrl}`
         : req.headers.origin) || "https://dashboard.fuelflow.co.uk";
 
-    // 6) Create Stripe Checkout session
+    // -------- 6) Create Stripe Checkout session --------
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       customer_email: email,
@@ -169,15 +219,18 @@ export default async function handler(
                 fuel === "petrol" ? "Petrol (95)" : "Diesel"
               } – ${qty.toLocaleString()} litres`,
             },
-            unit_amount: unitAmountPence, // in pence
+            unit_amount: unitAmountPence,
           },
           quantity: qty,
         },
       ],
       payment_intent_data: paymentIntentData,
+      metadata: {
+        order_id: orderId,
+      },
     });
 
-    // 7) Save session id back onto the order (for dashboards & reconciliation)
+    // Save session id on the order (for reconciliation & support)
     await supabase
       .from("orders")
       .update({ stripe_session_id: session.id })
@@ -188,7 +241,7 @@ export default async function handler(
     console.error("Stripe Checkout error:", err);
 
     const message =
-      err?.raw?.message || // Stripe errors
+      err?.raw?.message ||
       err?.message ||
       "Unable to create checkout session";
 
