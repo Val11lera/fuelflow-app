@@ -212,7 +212,8 @@ export default function OrderPage() {
             if (f === "diesel")
               setDieselPrice(Number.isFinite(price) ? price : null);
           });
-          setPricesUpdatedAt(updated);
+          // fallback to "now" if no timestamp column on the price row
+          setPricesUpdatedAt(updated || new Date());
         }
       } finally {
         setLoadingPrices(false);
@@ -311,7 +312,7 @@ export default function OrderPage() {
           email: receiptEmail.trim(),
           name: fullName.trim(),
           addressLine1: address1.trim(),
-          addressLine2: address2.trim(),
+          addressLine2: address2.trim() || null,
           city: city.trim(),
           postcode: postcode.trim(),
           deliveryDate, // "YYYY-MM-DD"
@@ -321,7 +322,9 @@ export default function OrderPage() {
       const data = (await res.json()) as { url?: string; error?: string };
 
       if (!res.ok || !data.url) {
-        throw new Error(data.error || `Checkout failed (${res.status})`);
+        // Show the real API / Supabase error so we can diagnose
+        alert(data.error || `Checkout failed (${res.status})`);
+        return;
       }
 
       // redirect to Stripe Checkout
@@ -427,7 +430,7 @@ export default function OrderPage() {
             </div>
             <div>
               You must accept the Terms and have either a <b>Buy</b> contract
-                signed or a <b>Rent</b> contract approved. Open{" "}
+              signed or a <b>Rent</b> contract approved. Open{" "}
               <Link
                 href="/documents"
                 className="underline decoration-yellow-400 underline-offset-2"
@@ -504,8 +507,8 @@ export default function OrderPage() {
 
             {/* Delivery address */}
             <h2 className="mt-6 mb-2 text-lg font-semibold flex items-center gap-2">
-              <TruckIcon className="h-5 w-5 text:white/70" />
-              <span className="text-white/90">Delivery address</span>
+              <TruckIcon className="h-5 w-5 text-white/70" />
+              Delivery address
             </h2>
             <p className="mb-3 text-xs text-white/70">
               <strong>
@@ -563,7 +566,7 @@ export default function OrderPage() {
           </section>
 
           {/* Summary */}
-          <aside className={card}>
+          <aside className={`${card}`}>
             <h3 className="text-lg font-semibold mb-3">Summary</h3>
 
             <div className="space-y-2 text-sm">
@@ -695,7 +698,6 @@ function DashboardIcon({ className }: { className?: string }) {
     </svg>
   );
 }
-
 function DocumentIcon({ className }: { className?: string }) {
   return (
     <svg
