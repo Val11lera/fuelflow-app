@@ -46,8 +46,10 @@ export default async function handler(
       return res.status(400).json({ error: "Invalid request data" });
     }
 
+    const emailLower = email.toLowerCase().trim();
+
     // 1) Load latest unit price from Supabase (server-side, secure)
-    const { data: priceRow, error } = await supabase
+    const { data: priceRow, error: priceErr } = await supabase
       .from("latest_daily_prices")
       .select("total_price")
       .eq("fuel", fuel)
@@ -55,8 +57,8 @@ export default async function handler(
       .limit(1)
       .maybeSingle();
 
-    if (error || !priceRow) {
-      console.error("Error loading price from Supabase:", error);
+    if (priceErr || !priceRow) {
+      console.error("Error loading price from Supabase:", priceErr);
       return res.status(500).json({ error: "Price not available" });
     }
 
@@ -66,11 +68,36 @@ export default async function handler(
     const qty = Math.round(litres); // litres as integer quantity
     const totalAmountPence = unitAmountPence * qty;
 
-    // 2) Calculate your commission (platform fee)
+    // 2) Create an ORDER record in Supabase
+    // IMPORTANT: use the *product* column name (not fuel) so "product" is never null
+    const friendlyProduct =
+      fuel === "petrol" ? "Petrol (95)" : "Diesel";
+
+    const { data: orderRow, error: orderErr } = await supabase
+      .from("orders")
+      .insert({
+        user_email: emailLower,
+        product: friendlyProduct,          // <-- key fix
+        litres: qty,
+        unit_price_pence: unitAmountPence,
+        total_pence: totalAmountPence,
+        status: "pending",
+      })
+      .select("id")
+      .single();
+
+    if (orderErr || !orderRow) {
+      console.error("Failed to insert order:", orderErr);
+      return res.status(500).json({ error: "Failed to create order in database" });
+    }
+
+    const orderId = orderRow.id as string;
+
+    // 3) Calculate your commission (platform fee)
     const commissionPencePerLitre = getCommissionPencePerLitre(fuel);
     const platformFeeAmount = commissionPencePerLitre * qty; // in pence
 
-    // 3) Prepare Connect split – only if account configured
+    // 4) Prepare Connect split – only if account configured
     const refineryAccountId = process.env.REFINERY_STRIPE_ACCOUNT_ID;
 
     const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData =
@@ -81,9 +108,9 @@ export default async function handler(
               destination: refineryAccountId,
             },
           }
-        : {}; // fallback: all money stays with you
+        : {};
 
-    // 4) Build a valid origin (with https://)
+    // 5) Build a valid origin (with https://)
     const envAppUrl = process.env.NEXT_PUBLIC_APP_URL;
     const origin =
       (envAppUrl && envAppUrl.startsWith("http")
@@ -92,37 +119,32 @@ export default async function handler(
         ? `https://${envAppUrl}`
         : req.headers.origin) || "https://dashboard.fuelflow.co.uk";
 
-    const emailLower = email.toLowerCase();
-
-    // 5) Create Stripe Checkout session
+    // 6) Create Stripe Checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       customer_email: emailLower,
-      success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}&orderId=${encodeURIComponent(
+        orderId
+      )}`,
       cancel_url: `${origin}/order`,
       line_items: [
         {
           price_data: {
             currency: "gbp",
             product_data: {
-              name: `${
-                fuel === "petrol" ? "Petrol (95)" : "Diesel"
-              } – ${qty.toLocaleString()} litres`,
+              name: `${friendlyProduct} – ${qty.toLocaleString()} litres`,
             },
-            unit_amount: unitAmountPence, // pence
+            unit_amount: unitAmountPence, // in pence
           },
           quantity: qty,
         },
       ],
       payment_intent_data: paymentIntentData,
-
-      // ⭐ IMPORTANT: metadata we will use later to create the order
       metadata: {
+        order_id: orderId,
         fuel,
         litres: String(qty),
-        unit_price_pence: String(unitAmountPence),
-        total_pence: String(totalAmountPence),
-        app_user_email: emailLower,
+        email: emailLower,
       },
     });
 
@@ -131,7 +153,7 @@ export default async function handler(
     console.error("Stripe Checkout error:", err);
 
     const message =
-      err?.raw?.message || // Stripe errors
+      err?.raw?.message ||
       err?.message ||
       "Unable to create checkout session";
 
