@@ -10,12 +10,24 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 
-// server-side Supabase client (service role)
+// Supabase server client (service role – server only)
 const supabase = createClient(
+  // works both locally and on Vercel
   (process.env.SUPABASE_URL as string) ||
     (process.env.NEXT_PUBLIC_SUPABASE_URL as string),
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
+
+// Commission per litre in pence (from env)
+function getCommissionPencePerLitre(fuel: Fuel): number {
+  if (fuel === "petrol") {
+    return Number(process.env.PETROL_COMMISSION_PENCE_PER_LITRE || "0");
+  }
+  if (fuel === "diesel") {
+    return Number(process.env.DIESEL_COMMISSION_PENCE_PER_LITRE || "0");
+  }
+  return 0;
+}
 
 export default async function handler(
   req: NextApiRequest,
@@ -37,26 +49,27 @@ export default async function handler(
       city,
       postcode,
       deliveryDate,
-    } = (req.body || {}) as {
-      fuel?: string;
-      litres?: number | string;
-      email?: string;
-      name?: string;
-      addressLine1?: string;
+    } = req.body as {
+      fuel: string;
+      litres: number | string;
+      email: string;
+      name: string;
+      addressLine1: string;
       addressLine2?: string;
-      city?: string;
-      postcode?: string;
-      deliveryDate?: string;
+      city: string;
+      postcode: string;
+      deliveryDate: string;
     };
 
+    // Normalise fuel (e.g. "Diesel" -> "diesel")
     const fuel = rawFuel?.toLowerCase() as Fuel | undefined;
     const litresNum = Number(rawLitres);
-    const lowerEmail = (email || "").trim().toLowerCase();
 
+    // Basic validation
     if (
       !fuel ||
-      (fuel !== "diesel" && fuel !== "petrol") ||
-      !lowerEmail ||
+      (fuel !== "petrol" && fuel !== "diesel") ||
+      !email ||
       !name ||
       !addressLine1 ||
       !city ||
@@ -70,128 +83,129 @@ export default async function handler(
 
     const qty = Math.round(litresNum);
 
-    // 1) Load latest unit price from Supabase
+    // 1) Load latest unit price from Supabase (server-side, secure)
     const { data: priceRow, error: priceError } = await supabase
       .from("latest_daily_prices")
-      .select("total_price")
+      .select("total_price, fuel")
       .eq("fuel", fuel)
       .order("price_date", { ascending: false })
       .limit(1)
       .maybeSingle();
 
     if (priceError || !priceRow) {
-      console.error("[create-checkout-session] price error", priceError);
+      console.error("Error loading price from Supabase:", priceError);
       return res.status(500).json({ error: "Price not available" });
     }
 
     const unitPriceGbp = Number(priceRow.total_price); // e.g. 0.74
-    const unitAmountPence = Math.round(unitPriceGbp * 100); // 74
+    const unitAmountPence = Math.round(unitPriceGbp * 100); // e.g. 74
     const totalAmountPence = unitAmountPence * qty;
-    const totalAmountGbp = totalAmountPence / 100;
 
-    // 2) Create order row in Supabase (PENDING)
+    // 2) Create the order row in Supabase
+    // IMPORTANT: only use columns we know exist on the `orders` table
     const { data: orderRow, error: orderError } = await supabase
       .from("orders")
       .insert({
-        user_email: lowerEmail,
-        email: lowerEmail,
+        user_email: email.toLowerCase(),
+        // dashboards / legacy fields
         product: fuel === "petrol" ? "Petrol (95)" : "Diesel",
+        amount: totalAmountPence / 100, // store in pounds for old views
+        status: "pending",
+
+        // newer fields (if these columns exist they will be filled,
+        // if not, Postgres just ignores them)
         fuel,
         litres: qty,
         unit_price_pence: unitAmountPence,
         total_pence: totalAmountPence,
-        amount: totalAmountGbp,
-        status: "pending",
+        delivery_date: deliveryDate,
         name,
         address_line1: addressLine1,
         address_line2: addressLine2 ?? null,
         city,
         postcode,
-        delivery_date: deliveryDate,
-      })
+      } as any) // `as any` to avoid TS complaining about optional columns
       .select("id")
       .single();
 
     if (orderError || !orderRow) {
-      console.error("[create-checkout-session] order insert error", orderError);
-      return res
-        .status(500)
-        .json({ error: "Failed to create order in database" });
+      console.error("Failed to insert order:", orderError);
+      return res.status(500).json({
+        error: "Failed to create order in DB",
+        details: orderError?.message ?? orderError,
+      });
     }
 
-    const orderId: string = orderRow.id;
+    const orderId = orderRow.id as string;
 
-    // 3) Build origin for redirect URLs
-    const headerOrigin = req.headers.origin as string | undefined;
-    const envUrl =
-      process.env.NEXT_PUBLIC_APP_URL ||
-      process.env.NEXT_PUBLIC_SITE_URL ||
-      process.env.SITE_URL ||
-      process.env.VERCEL_URL;
+    // 3) Calculate your commission (platform fee)
+    const commissionPencePerLitre = getCommissionPencePerLitre(fuel);
+    const platformFeeAmount = commissionPencePerLitre * qty; // in pence
 
+    // 4) Prepare Connect split – only if account configured
+    const refineryAccountId = process.env.REFINERY_STRIPE_ACCOUNT_ID;
+
+    const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData =
+      refineryAccountId && platformFeeAmount > 0
+        ? {
+            application_fee_amount: platformFeeAmount,
+            transfer_data: {
+              destination: refineryAccountId,
+            },
+          }
+        : {};
+
+    // 5) Build a valid origin (with https://)
+    const envAppUrl = process.env.NEXT_PUBLIC_APP_URL;
     const origin =
-      (headerOrigin && headerOrigin.startsWith("http")
-        ? headerOrigin
-        : envUrl && envUrl.startsWith("http")
-        ? envUrl
-        : envUrl
-        ? `https://${envUrl}`
-        : `https://${req.headers.host}`) ?? "https://dashboard.fuelflow.co.uk";
+      (envAppUrl && envAppUrl.startsWith("http")
+        ? envAppUrl
+        : envAppUrl
+        ? `https://${envAppUrl}`
+        : req.headers.origin) || "https://dashboard.fuelflow.co.uk";
 
-    // 4) Create Stripe Checkout Session with full metadata
-    const metadata = {
-      order_id: orderId,
-      email: lowerEmail,
-      fuel,
-      litres: String(qty),
-      deliveryDate,
-      flow: "fuel_order",
-    };
-
+    // 6) Create Stripe Checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      customer_email: lowerEmail,
+      customer_email: email,
+      success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}&orderId=${orderId}`,
+      cancel_url: `${origin}/order`,
       line_items: [
         {
           price_data: {
             currency: "gbp",
             product_data: {
-              name:
-                fuel === "petrol"
-                  ? `Petrol (95) – ${qty} litres`
-                  : `Diesel – ${qty} litres`,
+              name: `${
+                fuel === "petrol" ? "Petrol (95)" : "Diesel"
+              } – ${qty.toLocaleString()} litres`,
             },
-            unit_amount: unitAmountPence, // pence
+            unit_amount: unitAmountPence,
           },
           quantity: qty,
         },
       ],
-      metadata,
-      payment_intent_data: {
-        metadata,
+      payment_intent_data: paymentIntentData,
+      metadata: {
+        order_id: orderId,
+        fuel,
+        litres: String(qty),
+        deliveryDate,
       },
-      success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}&orderId=${orderId}`,
-      cancel_url: `${origin}/order`,
     });
 
-    // 5) Save Checkout Session ID on order (helps dashboards/reconciliation)
-    try {
-      await supabase
-        .from("orders")
-        .update({ stripe_session_id: session.id })
-        .eq("id", orderId);
-    } catch (e) {
-      console.error(
-        "[create-checkout-session] failed to save stripe_session_id",
-        e
-      );
-    }
+    // 7) Save session id onto the order (helps dashboards & reconciliation)
+    await supabase
+      .from("orders")
+      .update({ stripe_session_id: session.id })
+      .eq("id", orderId);
 
-    return res.status(200).json({ url: session.url });
+    return res.status(200).json({ id: session.id, url: session.url });
   } catch (err: any) {
-    console.error("[create-checkout-session] error", err);
-    return res
-      .status(500)
-      .json({ error: err?.message || "Unable to create checkout session" });
+    console.error("Stripe Checkout error:", err);
+
+    const message =
+      err?.raw?.message || err?.message || "Unable to create checkout session";
+
+    return res.status(500).json({ error: message });
   }
 }
