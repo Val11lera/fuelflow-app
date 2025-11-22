@@ -39,7 +39,7 @@ type PaymentRow = {
   cs_id?: string | null; // checkout session
   pi_id?: string | null; // payment intent
   created_at?: string | null;
-  // NEW: receipt visibility
+  // receipt visibility
   receipt_sent_at?: string | null;
   receipt_path?: string | null;
 };
@@ -194,6 +194,12 @@ export default function AdminDashboard() {
   >([]);
   const [invLoading, setInvLoading] = useState<boolean>(false);
 
+  /* ====== FULFILMENT PANEL STATE ====== */
+  const [fulfilOrder, setFulfilOrder] = useState<OrderRow | null>(null);
+  const [fulfilStatusDraft, setFulfilStatusDraft] = useState<string>("pending");
+  const [updatingFulfilment, setUpdatingFulfilment] = useState(false);
+  const [fulfilError, setFulfilError] = useState<string | null>(null);
+
   /* =========================
      Auth / Admin check
      ========================= */
@@ -279,7 +285,7 @@ export default function AdminDashboard() {
         const { data: od, error: oe } = await oq;
         if (oe) throw oe;
 
-        // Payments (now also selecting receipt fields)
+        // Payments
         let pq = supabase
           .from("payments")
           .select(
@@ -354,7 +360,8 @@ export default function AdminDashboard() {
         body: JSON.stringify({ email, action, reason: reason || null }),
       });
 
-      if (!res.ok) throw new Error((await res.text()) || `Failed (${res.status})`);
+      if (!res.ok)
+        throw new Error((await res.text()) || `Failed (${res.status})`);
       await loadApprovals();
     } catch (e: any) {
       setApprovalsError(e?.message || "Action failed");
@@ -369,6 +376,57 @@ export default function AdminDashboard() {
   }
   function onUnblock(email: string) {
     callApprovalAction(email, "unblock");
+  }
+
+  /* =========================
+     FULFILMENT ACTIONS
+     ========================= */
+  async function updateOrderStatus(orderId: string, newStatus: string) {
+    try {
+      setUpdatingFulfilment(true);
+      setFulfilError(null);
+
+      const statusClean = newStatus.toLowerCase();
+
+      const { error } = await supabase
+        .from("orders")
+        .update({ status: statusClean })
+        .eq("id", orderId);
+
+      if (error) throw error;
+
+      // Update local orders list
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.id === orderId ? { ...o, status: statusClean } : o
+        )
+      );
+
+      // Update currently selected order, if open
+      setFulfilOrder((prev) =>
+        prev && prev.id === orderId
+          ? { ...prev, status: statusClean }
+          : prev
+      );
+
+      // Keep panel open but show updated status
+      setFulfilStatusDraft(statusClean);
+    } catch (e: any) {
+      setFulfilError(e?.message || "Failed to update fulfilment status");
+    } finally {
+      setUpdatingFulfilment(false);
+    }
+  }
+
+  function openFulfilPanel(order: OrderRow) {
+    setFulfilOrder(order);
+    setFulfilStatusDraft((order.status || "pending").toLowerCase());
+    setFulfilError(null);
+  }
+
+  function closeFulfilPanel() {
+    setFulfilOrder(null);
+    setFulfilError(null);
   }
 
   /* =========================
@@ -392,6 +450,10 @@ export default function AdminDashboard() {
       const s = (o.status || "").toLowerCase();
       if (s) set.add(s);
     });
+    // include defaults for consistency
+    ["pending", "ordered", "dispatched", "delivered", "cancelled"].forEach(
+      (s) => set.add(s)
+    );
     return ["all", ...Array.from(set).sort()];
   }, [orders]);
 
@@ -834,7 +896,7 @@ export default function AdminDashboard() {
                               {s || "—"}
                             </span>
                           </div>
-                          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-white/70">
+                          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text:white/70 text-white/70">
                             <div>
                               First:{" "}
                               {r.first_order_at
@@ -891,7 +953,7 @@ export default function AdminDashboard() {
                             {s === "blocked" && (
                               <button
                                 onClick={() => onUnblock(r.email)}
-                                className="rounded bg-white/10 text-white text-xs px-3 py-1.5 hover:bg-white/15"
+                                className="rounded bg:white/10 bg-white/10 text-white text-xs px-3 py-1.5 hover:bg-white/15"
                               >
                                 Unblock
                               </button>
@@ -1021,10 +1083,7 @@ export default function AdminDashboard() {
             label="Orders"
             value={filteredOrders.length.toLocaleString()}
           />
-          <KpiCard
-            label="Paid Orders"
-            value={paidCount.toLocaleString()}
-          />
+          <KpiCard label="Paid Orders" value={paidCount.toLocaleString()} />
         </section>
 
         {/* Controls */}
@@ -1220,57 +1279,96 @@ export default function AdminDashboard() {
             {visibleOrders.length === 0 ? (
               <div className="text-white/60 text-sm px-1 py-2">No orders.</div>
             ) : (
-              visibleOrders.map((o) => (
-                <div
-                  key={o.id}
-                  className="rounded-lg border border-white/10 bg-white/[0.04] p-3"
-                >
-                  <div className="text-xs text-white/70">
-                    {new Date(o.created_at).toLocaleString()}
-                  </div>
-                  <div className="mt-1 text-sm break-all">{o.user_email}</div>
-                  <div className="mt-1 grid grid-cols-2 gap-2 text-sm">
-                    <div className="capitalize">
-                      Product:{" "}
-                      <span className="text-white/80">{o.fuel || "—"}</span>
+              visibleOrders.map((o) => {
+                const statusLower = (o.status || "pending").toLowerCase();
+                const isDelivered = statusLower === "delivered";
+                const isDispatched =
+                  statusLower === "dispatched" ||
+                  statusLower === "out_for_delivery";
+                return (
+                  <div
+                    key={o.id}
+                    className="rounded-lg border border-white/10 bg-white/[0.04] p-3"
+                  >
+                    <div className="text-xs text-white/70">
+                      {new Date(o.created_at).toLocaleString()}
                     </div>
-                    <div>
-                      Litres:{" "}
-                      <span className="text-white/80">
-                        {o.litres ?? "—"}
-                      </span>
+                    <div className="mt-1 text-sm break-all">
+                      {o.user_email || "—"}
                     </div>
-                    <div>
-                      Amount:{" "}
-                      <span className="text-white/80">
-                        {gbpFmt.format(toGBP(o.total_pence))}
-                      </span>
+                    <div className="mt-1 grid grid-cols-2 gap-2 text-sm">
+                      <div className="capitalize">
+                        Product:{" "}
+                        <span className="text-white/80">{o.fuel || "—"}</span>
+                      </div>
+                      <div>
+                        Litres:{" "}
+                          <span className="text-white/80">
+                          {o.litres ?? "—"}
+                          </span>
+                      </div>
+                      <div>
+                        Amount:{" "}
+                        <span className="text-white/80">
+                          {gbpFmt.format(toGBP(o.total_pence))}
+                        </span>
+                      </div>
+                      <div>
+                        Status:{" "}
+                        <span
+                          className={cx(
+                            "inline-flex items-center rounded px-2 py-0.5 text-[11px]",
+                            statusLower === "paid"
+                              ? "bg-green-600/70"
+                              : statusLower === "delivered"
+                              ? "bg-green-700/70"
+                              : statusLower === "dispatched" ||
+                                statusLower === "out_for_delivery"
+                              ? "bg-yellow-600/70"
+                              : "bg-gray-600/70"
+                          )}
+                        >
+                          {statusLower}
+                        </span>
+                      </div>
                     </div>
-                    <div>
-                      Status:{" "}
-                      <span
-                        className={cx(
-                          "inline-flex items-center rounded px-2 py-0.5 text-[11px]",
-                          (o.status || "").toLowerCase() === "paid"
-                            ? "bg-green-600/70"
-                            : "bg-gray-600/70"
-                        )}
+                    <div className="mt-1 text-[11px] text-white/60 break-all">
+                      Order ID: {o.id}
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        onClick={() => openFulfilPanel(o)}
+                        className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium hover:bg-white/15"
                       >
-                        {(o.status || "pending").toLowerCase()}
-                      </span>
+                        Manage fulfilment
+                      </button>
+                      {!isDispatched && !isDelivered && (
+                        <button
+                          onClick={() => updateOrderStatus(o.id, "dispatched")}
+                          className="rounded-lg bg-yellow-500 px-3 py-1.5 text-xs font-semibold text-[#041F3E] hover:bg-yellow-400"
+                        >
+                          Mark dispatched
+                        </button>
+                      )}
+                      {isDispatched && !isDelivered && (
+                        <button
+                          onClick={() => updateOrderStatus(o.id, "delivered")}
+                          className="rounded-lg bg-green-500 px-3 py-1.5 text-xs font-semibold text-[#041F3E] hover:bg-green-400"
+                        >
+                          Mark delivered
+                        </button>
+                      )}
                     </div>
                   </div>
-                  <div className="mt-1 text-[11px] text-white/60 break-all">
-                    Order ID: {o.id}
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
 
           {/* Desktop table */}
           <div className="hidden sm:block overflow-x-auto">
-            <table className="w-full text-left text-sm">
+            <table className="w-full text-left text-sm min-w-[860px]">
               <thead className="text-white/70">
                 <tr className="border-b border-white/10">
                   <th className="py-2 pr-4">Date</th>
@@ -1280,37 +1378,80 @@ export default function AdminDashboard() {
                   <th className="py-2 pr-4">Amount</th>
                   <th className="py-2 pr-4">Status</th>
                   <th className="py-2 pr-4">Order ID</th>
+                  <th className="py-2 pr-4 text-right">Fulfilment</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleOrders.map((o) => (
-                  <tr key={o.id} className="border-b border-white/5">
-                    <td className="py-2 pr-4 whitespace-nowrap">
-                      {new Date(o.created_at).toLocaleString()}
-                    </td>
-                    <td className="py-2 pr-4">{o.user_email}</td>
-                    <td className="py-2 pr-4 capitalize">{o.fuel || "—"}</td>
-                    <td className="py-2 pr-4">{o.litres ?? "—"}</td>
-                    <td className="py-2 pr-4">
-                      {gbpFmt.format(toGBP(o.total_pence))}
-                    </td>
-                    <td className="py-2 pr-4">
-                      <span
-                        className={cx(
-                          "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                          (o.status || "").toLowerCase() === "paid"
-                            ? "bg-green-600/70"
-                            : "bg-gray-600/70"
-                        )}
-                      >
-                        {(o.status || "pending").toLowerCase()}
-                      </span>
-                    </td>
-                    <td className="py-2 pr-4 font-mono text-[11px] break-all">
-                      {o.id}
-                    </td>
-                  </tr>
-                ))}
+                {visibleOrders.map((o) => {
+                  const statusLower = (o.status || "pending").toLowerCase();
+                  const isDelivered = statusLower === "delivered";
+                  const isDispatched =
+                    statusLower === "dispatched" ||
+                    statusLower === "out_for_delivery";
+                  return (
+                    <tr key={o.id} className="border-b border-white/5">
+                      <td className="py-2 pr-4 whitespace-nowrap">
+                        {new Date(o.created_at).toLocaleString()}
+                      </td>
+                      <td className="py-2 pr-4">{o.user_email}</td>
+                      <td className="py-2 pr-4 capitalize">{o.fuel || "—"}</td>
+                      <td className="py-2 pr-4">{o.litres ?? "—"}</td>
+                      <td className="py-2 pr-4">
+                        {gbpFmt.format(toGBP(o.total_pence))}
+                      </td>
+                      <td className="py-2 pr-4">
+                        <span
+                          className={cx(
+                            "inline-flex items-center rounded px-2 py-0.5 text-xs",
+                            statusLower === "paid"
+                              ? "bg-green-600/70"
+                              : statusLower === "delivered"
+                              ? "bg-green-700/70"
+                              : statusLower === "dispatched" ||
+                                statusLower === "out_for_delivery"
+                              ? "bg-yellow-600/70"
+                              : "bg-gray-600/70"
+                          )}
+                        >
+                          {statusLower}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-4 font-mono text-[11px] break-all">
+                        {o.id}
+                      </td>
+                      <td className="py-2 pr-4">
+                        <div className="flex justify-end gap-2">
+                          <button
+                            onClick={() => openFulfilPanel(o)}
+                            className="rounded-lg bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
+                          >
+                            Manage
+                          </button>
+                          {!isDispatched && !isDelivered && (
+                            <button
+                              onClick={() =>
+                                updateOrderStatus(o.id, "dispatched")
+                              }
+                              className="rounded-lg bg-yellow-500 px-3 py-1.5 text-xs font-semibold text-[#041F3E] hover:bg-yellow-400"
+                            >
+                              Dispatch
+                            </button>
+                          )}
+                          {isDispatched && !isDelivered && (
+                            <button
+                              onClick={() =>
+                                updateOrderStatus(o.id, "delivered")
+                              }
+                              className="rounded-lg bg-green-500 px-3 py-1.5 text-xs font-semibold text-[#041F3E] hover:bg-green-400"
+                            >
+                              Delivered
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1413,7 +1554,9 @@ export default function AdminDashboard() {
                                 const url = await getSignedUrl(p.receipt_path);
                                 window.open(url, "_blank");
                               } catch (e: any) {
-                                setError(e?.message || "Failed to open receipt");
+                                setError(
+                                  e?.message || "Failed to open receipt"
+                                );
                               }
                             }}
                           >
@@ -1430,7 +1573,7 @@ export default function AdminDashboard() {
 
           {/* Desktop table */}
           <div className="hidden sm:block overflow-x-auto">
-            <table className="w-full text-left text-sm">
+            <table className="w-full text-left text-sm min-w-[820px]">
               <thead className="text-white/70">
                 <tr className="border-b border-white/10">
                   <th className="py-2 pr-4">Date</th>
@@ -1559,7 +1702,11 @@ export default function AdminDashboard() {
               <label className="flex items-center gap-2 text-sm">
                 <span className="text-white/70">Since:</span>
                 <select
-                  value={ticketSinceDays === "all" ? "all" : String(ticketSinceDays)}
+                  value={
+                    ticketSinceDays === "all"
+                      ? "all"
+                      : String(ticketSinceDays)
+                  }
                   onChange={(e) => {
                     const v = e.target.value;
                     if (v === "all") setTicketSinceDays("all");
@@ -1839,6 +1986,129 @@ export default function AdminDashboard() {
           </div>
         )}
       </div>
+
+      {/* ========= FULFILMENT SIDE PANEL ========= */}
+      {fulfilOrder && (
+        <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/50">
+          <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-[#050816] border border-white/10 p-4 sm:p-5 shadow-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs text-white/60 mb-0.5">
+                  Order fulfilment
+                </div>
+                <div className="text-sm font-semibold break-all">
+                  {fulfilOrder.user_email || "Customer"}
+                </div>
+                <div className="text-[11px] text-white/50 break-all">
+                  Order ID: {fulfilOrder.id}
+                </div>
+              </div>
+              <button
+                className="text-white/60 hover:text-white text-sm"
+                onClick={closeFulfilPanel}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-white/70">
+              <div>
+                Date:
+                <div className="text-white/80">
+                  {new Date(fulfilOrder.created_at).toLocaleString()}
+                </div>
+              </div>
+              <div>
+                Product:
+                <div className="text-white/80 capitalize">
+                  {fulfilOrder.fuel || "—"}
+                </div>
+              </div>
+              <div>
+                Litres:
+                <div className="text-white/80">
+                  {fulfilOrder.litres ?? "—"}
+                </div>
+              </div>
+              <div>
+                Amount:
+                <div className="text-white/80">
+                  {gbpFmt.format(toGBP(fulfilOrder.total_pence))}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <label className="block text-xs text-white/70 mb-1.5">
+                Fulfilment status
+              </label>
+              <select
+                value={fulfilStatusDraft}
+                onChange={(e) => setFulfilStatusDraft(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+              >
+                <option value="pending">pending</option>
+                <option value="ordered">ordered</option>
+                <option value="dispatched">dispatched</option>
+                <option value="out_for_delivery">out_for_delivery</option>
+                <option value="delivered">delivered</option>
+                <option value="cancelled">cancelled</option>
+              </select>
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                disabled={updatingFulfilment}
+                onClick={() =>
+                  updateOrderStatus(fulfilOrder.id, fulfilStatusDraft)
+                }
+                className={cx(
+                  "rounded-lg px-3 py-2 text-sm font-semibold",
+                  "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400",
+                  updatingFulfilment && "opacity-60 cursor-not-allowed"
+                )}
+              >
+                {updatingFulfilment ? "Updating…" : "Save status"}
+              </button>
+              <button
+                disabled={updatingFulfilment}
+                onClick={() => updateOrderStatus(fulfilOrder.id, "dispatched")}
+                className={cx(
+                  "rounded-lg px-3 py-2 text-xs sm:text-sm",
+                  "bg-white/10 hover:bg-white/15",
+                  updatingFulfilment && "opacity-60 cursor-not-allowed"
+                )}
+              >
+                Quick: Dispatched
+              </button>
+              <button
+                disabled={updatingFulfilment}
+                onClick={() => updateOrderStatus(fulfilOrder.id, "delivered")}
+                className={cx(
+                  "rounded-lg px-3 py-2 text-xs sm:text-sm",
+                  "bg-green-500 text-[#041F3E] hover:bg-green-400",
+                  updatingFulfilment && "opacity-60 cursor-not-allowed"
+                )}
+              >
+                Quick: Delivered
+              </button>
+            </div>
+
+            {fulfilError && (
+              <div className="mt-3 rounded border border-rose-400/40 bg-rose-500/10 p-2 text-xs text-rose-100">
+                {fulfilError}
+              </div>
+            )}
+
+            <p className="mt-3 text-[11px] text-white/50">
+              Use this panel to keep your internal view in sync with what the
+              refinery tells you (dispatched / delivered / cancelled). This does
+              not affect Stripe – it only updates the order row in Supabase and
+              the client/admin dashboards.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2009,7 +2279,6 @@ function TicketMessagesPanel({ messages }: { messages: TicketMsgRow[] }) {
     </div>
   );
 }
-
 
 
 
