@@ -1,12 +1,14 @@
 // src/pages/client-dashboard.tsx
 // src/pages/client-dashboard.tsx
 // src/pages/client-dashboard.tsx
+// src/pages/client-dashboard.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { GetServerSideProps } from "next";
 import { createClient } from "@supabase/supabase-js";
 import { getServerSupabase } from "@/lib/supabase-server";
+import { AIChat } from "@/components/AIChat";
 
 /* =========================
    Setup
@@ -542,8 +544,8 @@ export default function ClientDashboard() {
           </div>
         </div>
 
-        {/* Top cards: Prices + Documents */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Top cards: Prices + Documents + AI Assistant */}
+        <section className="grid grid-cols-1 lg:grid-cols-4 gap-4">
           <Card title="Petrol (95)">
             <div className="text-3xl font-bold">
               {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
@@ -578,6 +580,16 @@ export default function ClientDashboard() {
             >
               Open documents
             </a>
+          </div>
+
+          <div className="bg-gray-800 rounded-xl p-3 md:p-4 flex flex-col">
+            <p className="text-gray-400 mb-2 text-sm font-medium">
+              AI Assistant
+            </p>
+            <div className="flex-1 min-h-[260px]">
+              {/* AI chat box */}
+              <AIChat />
+            </div>
           </div>
         </section>
 
