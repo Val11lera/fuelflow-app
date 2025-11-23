@@ -951,23 +951,52 @@ export default function AdminDashboard() {
     });
   }, [orderConversations, conversationSearch, conversationFilter]);
 
-  async function sendAdminReply() {
-    if (!selectedConversation) return;
-    const text = adminReply.trim();
-    if (!text) return;
+async function sendAdminReply() {
+  if (!selectedConversation) return;
+  const text = adminReply.trim();
+  if (!text) return;
 
-    try {
-      setConversationMessagesLoading(true);
-      setOrderConversationsError(null);
+  try {
+    setConversationMessagesLoading(true);
+    setOrderConversationsError(null);
 
-      const { error } = await supabase.from("ai_order_messages").insert({
-        order_id: selectedConversation.order_id,
-        user_email: selectedConversation.user_email,
-        sender_type: "admin",
-        sender_email: me,
-        message_text: text,
-      } as any);
-      if (error) throw error;
+    const res = await fetch("/api/admin/order-ai-reply", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        orderId: selectedConversation.order_id,
+        userEmail: selectedConversation.user_email,
+        adminEmail: me,
+        reply: text,
+      }),
+    });
+
+    if (!res.ok) {
+      let message = `Failed (${res.status})`;
+      try {
+        const body = await res.json();
+        if (body?.error) message = body.error;
+      } catch {
+        // ignore JSON error
+      }
+      throw new Error(message);
+    }
+
+    // Clear textarea
+    setAdminReply("");
+
+    // Reload messages + list so you see your reply + updates
+    await loadConversationMessages(selectedConversation);
+    await loadOrderConversations();
+  } catch (e: any) {
+    setOrderConversationsError(e?.message || "Failed to send reply");
+  } finally {
+    setConversationMessagesLoading(false);
+  }
+}
+
 
       // Mark conversation as handled by admin if your schema supports it
       try {
