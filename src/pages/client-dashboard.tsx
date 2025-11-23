@@ -8,7 +8,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { GetServerSideProps } from "next";
 import { createClient } from "@supabase/supabase-js";
 import { getServerSupabase } from "@/lib/supabase-server";
-import { AIChat } from "@/components/AIChat";
+import { OrderAIChat } from "@/components/OrderAIChat";
 
 /* =========================
    Setup
@@ -447,7 +447,7 @@ export default function ClientDashboard() {
         </div>
 
         <div className="max-w-6xl mx-auto px-4">
-          <div className="mt-16 rounded-2xl border border-white/10 bg-white/[0.03] p-8 text-center">
+          <div className="mt-16 rounded-2xl border border-white/10 bg_WHITE/[0.03] p-8 text-center">
             <h1 className="text-2xl md:text-3xl font-bold">
               Loading dashboard
             </h1>
@@ -529,7 +529,7 @@ export default function ClientDashboard() {
               </a>
               <button
                 onClick={() => loadAll()}
-                className="h-9 inline-flex items-center rounded-lg bg-white/10 px-3 text-sm hover:bg-white/15"
+                className="h-9 inline-flex items-center rounded-lg bg_WHITE/10 px-3 text-sm hover:bg-white/15"
               >
                 Refresh
               </button>
@@ -576,7 +576,7 @@ export default function ClientDashboard() {
             <p className="text-gray-400 mb-2">Documents</p>
             <a
               href="/documents"
-              className="inline-flex items-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
+              className="inline-flex items-center rounded-lg bg_WHITE/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
             >
               Open documents
             </a>
@@ -586,9 +586,18 @@ export default function ClientDashboard() {
             <p className="text-gray-400 mb-2 text-sm font-medium">
               AI Assistant
             </p>
-            <div className="flex-1 min-h-[260px]">
-              {/* AI chat box */}
-              <AIChat />
+            <div className="flex-1 min-h-[320px]">
+              <OrderAIChat
+                orders={orders.map((o) => ({
+                  id: o.id,
+                  created_at: o.created_at,
+                  fuel: (o.fuel as string) ?? null,
+                  litres: o.litres,
+                  amount_gbp: o.amount_gbp,
+                  fulfilment_status: o.fulfilment_status,
+                }))}
+                userEmail={userEmail}
+              />
             </div>
           </div>
         </section>
@@ -601,7 +610,7 @@ export default function ClientDashboard() {
             </h2>
             <div className="flex items-center gap-2">
               <span className="text-sm text-white/70">Year:</span>
-              <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
+              <div className="flex overflow-hidden rounded-lg bg_WHITE/10 text-sm">
                 <button
                   onClick={() => setSelectedYear(currentYear - 1)}
                   disabled={selectedYear === currentYear - 1}
@@ -629,7 +638,7 @@ export default function ClientDashboard() {
               </div>
               <button
                 onClick={() => setShowAllMonths((s) => !s)}
-                className="ml-3 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+                className="ml-3 rounded-lg bg_WHITE/10 px-3 py-1.5 text-sm hover:bg-white/15"
               >
                 {showAllMonths ? "Show current month" : "Show 12 months"}
               </button>
@@ -656,7 +665,7 @@ export default function ClientDashboard() {
                     </td>
                     <td className="py-2 pr-4 align-middle">
                       {Math.round(r.litres).toLocaleString()}
-                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                      <div className="mt-1 h-1.5 w-full bg_WHITE/10 rounded">
                         <div
                           className="h-1.5 rounded bg-yellow-500/80"
                           style={{
@@ -667,7 +676,7 @@ export default function ClientDashboard() {
                     </td>
                     <td className="py-2 pr-4 align-middle">
                       {gbp.format(r.spend)}
-                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                      <div className="mt-1 h-1.5 w-full bg_WHITE/10 rounded">
                         <div
                           className="h-1.5 rounded bg-white/40"
                           style={{
@@ -695,7 +704,7 @@ export default function ClientDashboard() {
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
             <h2 className="text-xl md:text-2xl font-semibold">
               My Orders{" "}
-              <span className="text-white/50 text-sm">({orders.length})</span>
+              <span className="text_WHITE/50 text-sm">({orders.length})</span>
             </h2>
             <div className="flex items-center gap-2">
               {orders.length > 20 && (
@@ -762,10 +771,10 @@ export default function ClientDashboard() {
                   return (
                     <div
                       key={o.id}
-                      className="rounded-xl border border-white/10 bg-white/[0.03] p-3 space-y-2"
+                      className="rounded-xl border border-white/10 bg_WHITE/[0.03] p-3 space-y-2"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <div className="text-xs text-white/60">
+                        <div className="text-xs text_WHITE/60">
                           {new Date(o.created_at).toLocaleString()}
                         </div>
                         <div className="text-sm font-medium">
@@ -776,14 +785,14 @@ export default function ClientDashboard() {
                         <div className="capitalize">
                           {(o.fuel as string) || "—"}
                         </div>
-                        <div className="text-xs text-white/70">
+                        <div className="text-xs text_WHITE/70">
                           {o.litres ?? "—"} L
                         </div>
                       </div>
 
                       <div className="mt-2 grid grid-cols-1 gap-1.5 text-xs">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-white/60">Payment:</span>
+                          <span className="text_WHITE/60">Payment:</span>
                           <span
                             className={cx(
                               "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] capitalize",
@@ -793,14 +802,14 @@ export default function ClientDashboard() {
                                 "bg-rose-500/80 text-[#041F3E] font-semibold",
                               !paymentIsGood &&
                                 !paymentIsBad &&
-                                "bg-white/10 text-white/80"
+                                "bg_WHITE/10 text_WHITE/80"
                             )}
                           >
                             {payment}
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-white/60">Delivery:</span>
+                          <span className="text_WHITE/60">Delivery:</span>
                           <span
                             className={cx(
                               "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] capitalize",
@@ -811,7 +820,7 @@ export default function ClientDashboard() {
                                 "bg-yellow-500/80 text-[#041F3E] font-semibold",
                               !fulfilIsDelivered &&
                                 !fulfilIsMoving &&
-                                "bg-white/10 text-white/80"
+                                "bg_WHITE/10 text_WHITE/80"
                             )}
                           >
                             {fulfil}
@@ -820,17 +829,17 @@ export default function ClientDashboard() {
                       </div>
 
                       {o.fulfilment_notes && (
-                        <div className="mt-2 rounded-lg bg-white/5 border border-white/10 p-2">
-                          <div className="text-[11px] text-white/60 mb-0.5">
+                        <div className="mt-2 rounded-lg bg_WHITE/5 border border_WHITE/10 p-2">
+                          <div className="text-[11px] text_WHITE/60 mb-0.5">
                             Message from FuelFlow:
                           </div>
-                          <div className="text-xs leading-5 text-white/90">
+                          <div className="text-xs leading-5 text_WHITE/90">
                             {o.fulfilment_notes}
                           </div>
                         </div>
                       )}
 
-                      <div className="text-[10px] text-white/40 mt-1">
+                      <div className="text-[10px] text_WHITE/40 mt-1">
                         Order ID: {o.id}
                       </div>
                     </div>
@@ -921,13 +930,13 @@ export default function ClientDashboard() {
                             <td className="py-2 pr-4 max-w-xs">
                               {o.fulfilment_notes ? (
                                 <span
-                                  className="text-xs text-white/80"
+                                  className="text-xs text_WHITE/80"
                                   title={o.fulfilment_notes}
                                 >
                                   {truncate(o.fulfilment_notes, 70)}
                                 </span>
                               ) : (
-                                <span className="text-xs text-white/40">—</span>
+                                <span className="text-xs text_WHITE/40">—</span>
                               )}
                             </td>
                           </tr>
@@ -946,19 +955,19 @@ export default function ClientDashboard() {
                             Math.min(n + 20, orders.length)
                           )
                         }
-                        className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+                        className="rounded-lg bg_WHITE/10 px-4 py-2 text-sm hover:bg-white/15"
                       >
                         Show 20 more
                       </button>
                     ) : (
                       <button
                         onClick={() => setVisibleCount(20)}
-                        className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+                        className="rounded-lg bg_WHITE/10 px-4 py-2 text-sm hover:bg-white/15"
                       >
                         Collapse to last 20
                       </button>
                     )}
-                    <div className="text-xs text-white/60">
+                    <div className="text-xs text_WHITE/60">
                       Showing{" "}
                       <b>{Math.min(visibleCount, orders.length)}</b> of{" "}
                       <b>{orders.length}</b>
@@ -971,7 +980,7 @@ export default function ClientDashboard() {
         </section>
 
         {/* bottom refresh date */}
-        <div className="text-center text-xs text-white/50">
+        <div className="text-center text-xs text_WHITE/50">
           Refreshed: {formatShortDMY(refreshedAt)}
         </div>
       </div>
