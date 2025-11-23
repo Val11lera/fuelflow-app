@@ -1,4 +1,5 @@
 // src/components/OrderAIChat.tsx
+// src/components/OrderAIChat.tsx
 "use client";
 
 import React, { useMemo, useRef, useState, useEffect } from "react";
@@ -115,19 +116,20 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
     : null;
 
   return (
-    <div className="flex h-full flex-col rounded-2xl border border-white/10 bg-[#020617]/80 shadow-lg backdrop-blur-sm">
+    <div className="flex h-full flex-col rounded-2xl border border-white/10 bg-[#020617]/95 shadow-lg backdrop-blur-sm">
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b border-white/5 px-3 py-2">
         <div className="flex items-center gap-2">
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-yellow-500/90 text-xs font-bold text-[#041F3E]">
-            AI
+            ?
           </span>
           <div>
             <div className="text-xs font-semibold text-white">
-              FuelFlow Assistant
+              Need help?
             </div>
-            <div className="text-[11px] text-white/50">
-              Ask about your orders, deliveries, invoices…
+            <div className="text-[11px] text-white/60">
+              Ask about your orders, deliveries or invoices. Our assistant
+              replies instantly and our team can follow up if needed.
             </div>
           </div>
         </div>
@@ -144,7 +146,7 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
           className="w-full rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-white focus:border-yellow-500 focus:outline-none"
         >
           <option value="">
-            💬 No specific order – general question
+            💬 General question – not about a specific order
           </option>
           {recentOrders.map((o) => (
             <option key={o.id} value={o.id}>
@@ -154,7 +156,8 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
         </select>
         {selectedOrder && (
           <div className="mt-1 text-[11px] text-white/50">
-            Linked to order <span className="font-mono">{selectedOrder.id}</span>
+            Linked to order{" "}
+            <span className="font-mono">{selectedOrder.id}</span>
           </div>
         )}
       </div>
@@ -166,18 +169,16 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
       >
         {messages.length === 0 && (
           <div className="rounded-xl border border-dashed border-white/15 bg-white/5 px-3 py-3 text-[12px] leading-relaxed text-white/60">
-            Start a conversation with FuelFlow AI.
+            Start a conversation with our support assistant.
             <ul className="mt-1 list-disc space-y-1 pl-4">
-              <li>
-                “Where is my latest delivery?”
-              </li>
-              <li>
-                “Summarise the status of my last 3 orders.”
-              </li>
-              <li>
-                “Draft a polite email to ask about a delayed delivery.”
-              </li>
+              <li>“Where is my latest delivery?”</li>
+              <li>“Summarise the status of my last 3 orders.”</li>
+              <li>“Draft a polite message to ask about a delay.”</li>
             </ul>
+            <p className="mt-2 text-[11px] text-white/45">
+              If you need a person to step in, just say so and a team member
+              can review this thread.
+            </p>
           </div>
         )}
 
@@ -203,16 +204,11 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
 
       {/* Error */}
       {error && (
-        <div className="px-3 pb-1 text-[11px] text-rose-300">
-          {error}
-        </div>
+        <div className="px-3 pb-1 text-[11px] text-rose-300">{error}</div>
       )}
 
       {/* Input */}
-      <form
-        onSubmit={handleSend}
-        className="border-t border-white/10 px-3 py-2"
-      >
+      <form onSubmit={handleSend} className="border-t border-white/10 px-3 py-2">
         <div className="flex items-end gap-2">
           <textarea
             value={input}
@@ -221,7 +217,7 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
             placeholder={
               selectedOrder
                 ? "Ask a question about this order…"
-                : "Ask anything about your account or orders…"
+                : "Ask a question about your account or orders…"
             }
             className="max-h-32 flex-1 resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white placeholder:text-white/40 focus:border-yellow-500 focus:outline-none"
           />
@@ -238,7 +234,8 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
           </button>
         </div>
         <div className="mt-1 text-[10px] text-white/40">
-          Linked questions are saved with the order so our team can review.
+          Messages may be reviewed by our team to help resolve your query.
+          Linked questions are saved with the order.
         </div>
       </form>
     </div>
