@@ -1,0 +1,246 @@
+// src/components/OrderAIChat.tsx
+"use client";
+
+import React, { useMemo, useRef, useState, useEffect } from "react";
+
+type Role = "user" | "assistant";
+
+type LocalMessage = {
+  id: string;
+  role: Role;
+  content: string;
+};
+
+type OrderSummary = {
+  id: string;
+  created_at: string;
+  fuel: string | null;
+  litres: number | null;
+  amount_gbp: number;
+  fulfilment_status: string | null;
+};
+
+type Props = {
+  orders: OrderSummary[];
+  userEmail: string;
+};
+
+function formatOrderLabel(o: OrderSummary) {
+  const date = new Date(o.created_at).toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "2-digit",
+  });
+  const amount = o.amount_gbp.toFixed(2);
+  return `${date} • ${o.fuel ?? "Fuel"} • ${o.litres ?? "?"}L • £${amount}`;
+}
+
+export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
+  const [selectedOrderId, setSelectedOrderId] = useState<string | "">("");
+  const [messages, setMessages] = useState<LocalMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  // Only show last 8–10 orders in dropdown
+  const recentOrders = useMemo(
+    () => orders.slice(0, 10),
+    [orders]
+  );
+
+  async function handleSend(e: React.FormEvent) {
+    e.preventDefault();
+    if (!input.trim() || isSending) return;
+
+    const newUserMessage: LocalMessage = {
+      id: String(Date.now()),
+      role: "user",
+      content: input.trim(),
+    };
+
+    const nextMessages = [...messages, newUserMessage];
+
+    setMessages(nextMessages);
+    setInput("");
+    setIsSending(true);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/ai-order-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId: selectedOrderId || null,
+          userEmail: userEmail || null,
+          messages: nextMessages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        }),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        throw new Error(errJson?.error || "Something went wrong");
+      }
+
+      const data = (await res.json()) as { reply: string };
+
+      const assistantMsg: LocalMessage = {
+        id: String(Date.now() + 1),
+        role: "assistant",
+        content: data.reply,
+      };
+
+      setMessages((prev) => [...prev, assistantMsg]);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "Failed to send message");
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  const selectedOrder = selectedOrderId
+    ? recentOrders.find((o) => o.id === selectedOrderId)
+    : null;
+
+  return (
+    <div className="flex h-full flex-col rounded-2xl border border-white/10 bg-[#020617]/80 shadow-lg backdrop-blur-sm">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2 border-b border-white/5 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-yellow-500/90 text-xs font-bold text-[#041F3E]">
+            AI
+          </span>
+          <div>
+            <div className="text-xs font-semibold text-white">
+              FuelFlow Assistant
+            </div>
+            <div className="text-[11px] text-white/50">
+              Ask about your orders, deliveries, invoices…
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Order selector */}
+      <div className="border-b border-white/5 px-3 py-2">
+        <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-white/60">
+          Order context (optional)
+        </label>
+        <select
+          value={selectedOrderId}
+          onChange={(e) => setSelectedOrderId(e.target.value)}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-white focus:border-yellow-500 focus:outline-none"
+        >
+          <option value="">
+            💬 No specific order – general question
+          </option>
+          {recentOrders.map((o) => (
+            <option key={o.id} value={o.id}>
+              {formatOrderLabel(o)}
+            </option>
+          ))}
+        </select>
+        {selectedOrder && (
+          <div className="mt-1 text-[11px] text-white/50">
+            Linked to order <span className="font-mono">{selectedOrder.id}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Messages */}
+      <div
+        ref={scrollRef}
+        className="flex-1 space-y-2 overflow-y-auto px-3 py-2 text-sm"
+      >
+        {messages.length === 0 && (
+          <div className="rounded-xl border border-dashed border-white/15 bg-white/5 px-3 py-3 text-[12px] leading-relaxed text-white/60">
+            Start a conversation with FuelFlow AI.
+            <ul className="mt-1 list-disc space-y-1 pl-4">
+              <li>
+                “Where is my latest delivery?”
+              </li>
+              <li>
+                “Summarise the status of my last 3 orders.”
+              </li>
+              <li>
+                “Draft a polite email to ask about a delayed delivery.”
+              </li>
+            </ul>
+          </div>
+        )}
+
+        {messages.map((m) => (
+          <div
+            key={m.id}
+            className={`flex ${
+              m.role === "user" ? "justify-end" : "justify-start"
+            }`}
+          >
+            <div
+              className={`max-w-[85%] rounded-2xl px-3 py-2 text-[13px] leading-relaxed ${
+                m.role === "user"
+                  ? "bg-yellow-500 text-[#041F3E]"
+                  : "bg-white/8 text-white"
+              }`}
+            >
+              {m.content}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Error */}
+      {error && (
+        <div className="px-3 pb-1 text-[11px] text-rose-300">
+          {error}
+        </div>
+      )}
+
+      {/* Input */}
+      <form
+        onSubmit={handleSend}
+        className="border-t border-white/10 px-3 py-2"
+      >
+        <div className="flex items-end gap-2">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            rows={2}
+            placeholder={
+              selectedOrder
+                ? "Ask a question about this order…"
+                : "Ask anything about your account or orders…"
+            }
+            className="max-h-32 flex-1 resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white placeholder:text-white/40 focus:border-yellow-500 focus:outline-none"
+          />
+          <button
+            type="submit"
+            disabled={isSending || !input.trim()}
+            className={`inline-flex h-9 min-w-[70px] items-center justify-center rounded-xl px-3 text-xs font-semibold ${
+              isSending || !input.trim()
+                ? "cursor-not-allowed bg-white/10 text-white/30"
+                : "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
+            }`}
+          >
+            {isSending ? "…" : "Send"}
+          </button>
+        </div>
+        <div className="mt-1 text-[10px] text-white/40">
+          Linked questions are saved with the order so our team can review.
+        </div>
+      </form>
+    </div>
+  );
+};
