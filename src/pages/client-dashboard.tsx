@@ -140,7 +140,6 @@ export default function ClientDashboard() {
 
         if (cancelled) return;
 
-        // normalise to lower-case for lookups
         const lower = okEmail.toLowerCase();
         setUserEmail(lower);
         await loadAll(lower);
@@ -223,7 +222,6 @@ export default function ClientDashboard() {
 
   // ----------------- Load ORDERS for this customer -----------------
   async function loadOrders(emailLower: string) {
-    // 1) fetch this customer's orders, including fulfilment fields
     const { data: rawOrders, error: ordErr } = await supabase
       .from("orders")
       .select(
@@ -238,7 +236,7 @@ export default function ClientDashboard() {
     const ordersArr = (rawOrders || []) as OrderRow[];
     const ids = ordersArr.map((o) => o.id).filter(Boolean);
 
-    // 2) fetch payments for those orders (to show PAID / pending)
+    // payments
     let paymentMap = new Map<string, PaymentRow>();
     if (ids.length) {
       const { data: pays, error: payErr } = await supabase
@@ -252,7 +250,6 @@ export default function ClientDashboard() {
       });
     }
 
-    // 3) combine and compute final amount_gbp for each row
     const withTotals: OrderWithExtras[] = ordersArr.map((o) => {
       const pay = paymentMap.get(o.id || "");
       const fromOrders = o.total_pence ?? null;
@@ -268,8 +265,6 @@ export default function ClientDashboard() {
       }
 
       const amount_gbp = totalPence != null ? totalPence / 100 : 0;
-
-      // prefer Stripe payment status; fall back to order.status
       const payment_status = pay?.status ?? o.status ?? null;
 
       return {
@@ -280,7 +275,7 @@ export default function ClientDashboard() {
     });
 
     setOrders(withTotals);
-    setVisibleCount(20); // reset slice on each refresh
+    setVisibleCount(20);
   }
 
   // ------------ Latest prices ------------
@@ -302,7 +297,7 @@ export default function ClientDashboard() {
     const toGbp = (raw: number | undefined | null) => {
       if (!Number.isFinite(raw as number)) return null;
       const n = Number(raw);
-      const v = n > 10 ? n / 100 : n; // if stored in pence, convert
+      const v = n > 10 ? n / 100 : n;
       return Math.round(v * 1000) / 1000;
     };
 
@@ -367,7 +362,7 @@ export default function ClientDashboard() {
     }
   }
 
-  // ---------- Usage & Spend (by month, year) ----------
+  // ---------- Usage & Spend ----------
   const months = [
     "Jan",
     "Feb",
@@ -478,7 +473,7 @@ export default function ClientDashboard() {
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
-      {/* Sticky mobile CTA */}
+      {/* Sticky mobile CTA for ordering */}
       <div className="md:hidden fixed bottom-4 inset-x-4 z-40">
         <a
           href="/order"
@@ -535,14 +530,6 @@ export default function ClientDashboard() {
                 Refresh
               </button>
             </div>
-
-            {/* Support button (desktop + mobile) */}
-            <button
-              onClick={() => setSupportOpen(true)}
-              className="h-9 inline-flex items-center rounded-full border border-white/15 bg-white/5 px-3 text-xs md:text-sm font-semibold text-white hover:bg-white/10"
-            >
-              Need help?
-            </button>
 
             <button
               onClick={logout}
@@ -980,9 +967,34 @@ export default function ClientDashboard() {
         </div>
       </div>
 
-      {/* Support modal */}
+      {/* Floating "Need help?" button – bright & attention-grabbing */}
+      <button
+        onClick={() => setSupportOpen(true)}
+        className="
+          fixed
+          z-50
+          right-4
+          bottom-24
+          md:right-6
+          md:bottom-6
+          inline-flex items-center gap-2
+          rounded-full
+          bg-yellow-500
+          px-4 py-2
+          shadow-xl shadow-yellow-900/50
+          text-sm font-semibold text-[#041F3E]
+          hover:bg-yellow-400
+          focus:outline-none focus:ring-2 focus:ring-yellow-300
+          animate-bounce
+        "
+      >
+        <span className="hidden md:inline">Need help?</span>
+        <span className="md:hidden">Help</span>
+      </button>
+
+      {/* Support modal – larger for readability */}
       {supportOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center px-3 md:px-4">
+        <div className="fixed inset-0 z-60 flex items-center justify-center px-3 md:px-6">
           {/* backdrop */}
           <button
             className="absolute inset-0 bg-black/60 backdrop-blur-sm"
@@ -990,32 +1002,32 @@ export default function ClientDashboard() {
             aria-label="Close support"
           />
           {/* panel */}
-          <div className="relative z-10 w-full max-w-xl max-h-[85vh] rounded-2xl bg-slate-900 border border-white/10 shadow-2xl flex flex-col">
+          <div className="relative z-10 w-full max-w-3xl md:max-w-4xl w-[96%] md:w-[90%] max-h-[90vh] rounded-2xl bg-slate-900 border border-white/10 shadow-2xl flex flex-col">
             {/* drag handle */}
-            <div className="flex items-center justify-center pt-2">
-              <div className="h-1 w-16 rounded-full bg-white/20" />
+            <div className="flex items-center justify-center pt-3">
+              <div className="h-1 w-16 rounded-full bg-white/25" />
             </div>
 
-            <div className="flex items-center justify-between px-4 pt-3 pb-2">
+            <div className="flex items-center justify-between px-5 pt-3 pb-2">
               <div>
-                <h2 className="text-sm font-semibold text-white">
+                <h2 className="text-base md:text-lg font-semibold text-white">
                   Need help with your account?
                 </h2>
-                <p className="text-[11px] text-white/60">
-                  Ask a question and our assistant will reply. If you need a
-                  person to step in, just say so and our team can review this
-                  thread.
+                <p className="text-xs md:text-sm text-white/65">
+                  Ask a question and our assistant will reply instantly. If you
+                  need a person to step in, just say so and our team can review
+                  this thread.
                 </p>
               </div>
               <button
                 onClick={() => setSupportOpen(false)}
-                className="ml-3 inline-flex h-7 items-center justify-center rounded-full bg-white/10 px-3 text-xs text-white hover:bg-white/20"
+                className="ml-3 inline-flex h-8 items-center justify-center rounded-full bg-white/10 px-3 text-xs md:text-sm text-white hover:bg-white/20"
               >
                 Close
               </button>
             </div>
 
-            <div className="flex-1 px-3 pb-3">
+            <div className="flex-1 px-4 pb-4">
               <OrderAIChat
                 orders={orders.map((o) => ({
                   id: o.id,
@@ -1097,4 +1109,5 @@ function Card(props: { title: string; children: React.ReactNode }) {
     </div>
   );
 }
+
 
