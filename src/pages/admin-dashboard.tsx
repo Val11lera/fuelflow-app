@@ -1,6 +1,7 @@
 // src/pages/admin-dashboard.tsx
 // src/pages/admin-dashboard.tsx
 // src/pages/admin-dashboard.tsx
+// src/pages/admin-dashboard.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -27,8 +28,8 @@ type OrderRow = {
   litres: number | null;
   unit_price_pence: number | null;
   total_pence: number | null;
-  status: string | null;                // payment status (paid/succeeded/etc)
-  fulfilment_status: string | null;     // delivery status (pending/dispatched/etc)
+  status: string | null; // payment status (paid/succeeded/etc)
+  fulfilment_status: string | null; // delivery status (pending/dispatched/etc)
   fulfilment_notes?: string | null;
 };
 
@@ -76,6 +77,27 @@ type TicketMessageRow = {
   sender_email: string | null;
   body_text: string | null;
   body_html: string | null;
+};
+
+/** “Need help?” / AI order conversations */
+type OrderConversationSummary = {
+  id: string; // ai_order_questions.id
+  created_at: string;
+  user_email: string | null;
+  order_id: string | null;
+  question_text: string | null;
+  status: string | null; // e.g. 'resolved' | 'needs_human' | 'handled_by_admin'
+  escalated: boolean | null;
+};
+
+type OrderConversationMessage = {
+  id: string;
+  created_at: string;
+  order_id: string | null;
+  user_email: string | null;
+  sender_type: string | null; // 'customer' | 'assistant' | 'admin'
+  sender_email: string | null;
+  message_text: string | null;
 };
 
 /* =========================
@@ -128,6 +150,11 @@ function dateRange(r: "month" | "90d" | "ytd" | "all") {
       return { from: null as Date | null, to: null as Date | null };
   }
 }
+function truncate(text: string | null | undefined, max: number) {
+  if (!text) return "";
+  if (text.length <= max) return text;
+  return text.slice(0, max - 1) + "…";
+}
 
 /* =========================
    Page
@@ -156,13 +183,14 @@ export default function AdminDashboard() {
   const [openPayments, setOpenPayments] = useState(false);
   const [openInvoices, setOpenInvoices] = useState(false);
   const [openTickets, setOpenTickets] = useState(true);
+  const [openOrderConversations, setOpenOrderConversations] = useState(true);
 
   // Pagination (orders)
   const ORDERS_STEP = 20;
   const [ordersShown, setOrdersShown] = useState<number>(ORDERS_STEP);
 
   // Status filters
-  const [orderStatusFilter, setOrderStatusFilter] = useState<string>("all");    // fulfilment status filter
+  const [orderStatusFilter, setOrderStatusFilter] = useState<string>("all"); // fulfilment status filter
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("all");
 
   /* ====== APPROVALS (admin_customers_v) ====== */
@@ -513,8 +541,7 @@ export default function AdminDashboard() {
       const paymentStatus = (o.status || "").toLowerCase();
 
       const statusOk =
-        orderStatusFilter === "all" ||
-        fulfilStatus === orderStatusFilter;
+        orderStatusFilter === "all" || fulfilStatus === orderStatusFilter;
       if (!statusOk) return false;
 
       const customerOk =
@@ -569,10 +596,7 @@ export default function AdminDashboard() {
   });
 
   // Revenue is now based on paid payments, not all orders
-  const sumRevenue = paidPayments.reduce(
-    (a, b) => a + toGBP(b.amount),
-    0
-  );
+  const sumRevenue = paidPayments.reduce((a, b) => a + toGBP(b.amount), 0);
 
   const paidCount = paidPayments.length;
 
@@ -830,6 +854,145 @@ export default function AdminDashboard() {
   }
 
   /* =========================
+     “Need help?” Order conversations
+     ========================= */
+  const [orderConversations, setOrderConversations] = useState<
+    OrderConversationSummary[]
+  >([]);
+  const [orderConversationsLoading, setOrderConversationsLoading] =
+    useState(false);
+  const [orderConversationsError, setOrderConversationsError] = useState<
+    string | null
+  >(null);
+
+  const [selectedConversation, setSelectedConversation] =
+    useState<OrderConversationSummary | null>(null);
+  const [conversationMessages, setConversationMessages] = useState<
+    OrderConversationMessage[]
+  >([]);
+  const [conversationMessagesLoading, setConversationMessagesLoading] =
+    useState(false);
+  const [conversationSearch, setConversationSearch] = useState("");
+  const [conversationFilter, setConversationFilter] =
+    useState<"all" | "escalated">("escalated");
+  const [adminReply, setAdminReply] = useState("");
+
+  async function loadOrderConversations() {
+    if (isAdmin !== true) return;
+    setOrderConversationsLoading(true);
+    setOrderConversationsError(null);
+    try {
+      const { data, error } = await supabase
+        .from("ai_order_questions")
+        .select(
+          "id, created_at, user_email, order_id, question_text, status, escalated"
+        )
+        .order("created_at", { ascending: false })
+        .limit(200);
+      if (error) throw error;
+      setOrderConversations((data || []) as OrderConversationSummary[]);
+    } catch (e: any) {
+      setOrderConversationsError(
+        e?.message || "Failed to load order conversations"
+      );
+    } finally {
+      setOrderConversationsLoading(false);
+    }
+  }
+
+  async function loadConversationMessages(
+    conv: OrderConversationSummary | null
+  ) {
+    if (!conv) return;
+    setConversationMessages([]);
+    setConversationMessagesLoading(true);
+    try {
+      let q = supabase
+        .from("ai_order_messages")
+        .select(
+          "id, created_at, order_id, user_email, sender_type, sender_email, message_text"
+        )
+        .order("created_at", { ascending: true })
+        .limit(200);
+
+      if (conv.order_id) {
+        q = q.eq("order_id", conv.order_id);
+      }
+
+      const { data, error } = await q;
+      if (error) throw error;
+      setConversationMessages((data || []) as OrderConversationMessage[]);
+    } catch (e: any) {
+      setOrderConversationsError(
+        e?.message || "Failed to load conversation messages"
+      );
+    } finally {
+      setConversationMessagesLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAdmin === true) {
+      loadOrderConversations();
+    }
+  }, [isAdmin]);
+
+  const filteredOrderConversations = useMemo(() => {
+    const s = conversationSearch.trim().toLowerCase();
+    return orderConversations.filter((c) => {
+      if (conversationFilter === "escalated" && !c.escalated) return false;
+      if (!s) return true;
+      return (
+        (c.user_email || "").toLowerCase().includes(s) ||
+        (c.order_id || "").toLowerCase().includes(s) ||
+        (c.question_text || "").toLowerCase().includes(s) ||
+        (c.status || "").toLowerCase().includes(s)
+      );
+    });
+  }, [orderConversations, conversationSearch, conversationFilter]);
+
+  async function sendAdminReply() {
+    if (!selectedConversation) return;
+    const text = adminReply.trim();
+    if (!text) return;
+
+    try {
+      setConversationMessagesLoading(true);
+      setOrderConversationsError(null);
+
+      const { error } = await supabase.from("ai_order_messages").insert({
+        order_id: selectedConversation.order_id,
+        user_email: selectedConversation.user_email,
+        sender_type: "admin",
+        sender_email: me,
+        message_text: text,
+      } as any);
+      if (error) throw error;
+
+      // Mark conversation as handled by admin if your schema supports it
+      try {
+        await supabase
+          .from("ai_order_questions")
+          .update({
+            status: "handled_by_admin",
+            escalated: false,
+          } as any)
+          .eq("id", selectedConversation.id);
+      } catch {
+        // best-effort; ignore if columns don't exist
+      }
+
+      setAdminReply("");
+      await loadConversationMessages(selectedConversation);
+      await loadOrderConversations();
+    } catch (e: any) {
+      setOrderConversationsError(e?.message || "Failed to send reply");
+    } finally {
+      setConversationMessagesLoading(false);
+    }
+  }
+
+  /* =========================
      Render
      ========================= */
   if (isAdmin === null) {
@@ -848,7 +1011,11 @@ export default function AdminDashboard() {
       {/* Header */}
       <div className="sticky top-0 z-30 border-b border-white/10 bg-[#0b1220]/80 backdrop-blur">
         <div className="max-w-7xl mx-auto px-3 sm:px-4 h-14 flex items-center gap-3">
-          <img src="/logo-email.png" alt="FuelFlow" className="h-6 sm:h-7 w-auto" />
+          <img
+            src="/logo-email.png"
+            alt="FuelFlow"
+            className="h-6 sm:h-7 w-auto"
+          />
           <div className="hidden sm:block text-sm text-white/70">
             Signed in as <span className="font-medium">{me}</span>
           </div>
@@ -1788,6 +1955,212 @@ export default function AdminDashboard() {
           </div>
         </Accordion>
 
+        {/* ===== “Need help?” order conversations ===== */}
+        <Accordion
+          title='Need help? conversations'
+          subtitle={`${filteredOrderConversations.length} row(s)`}
+          open={openOrderConversations}
+          onToggle={() => setOpenOrderConversations((s) => !s)}
+          loading={orderConversationsLoading}
+          error={orderConversationsError}
+          right={
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                placeholder="Search email / order / question"
+                value={conversationSearch}
+                onChange={(e) => setConversationSearch(e.target.value)}
+              />
+              <label className="flex items-center gap-2 text-sm">
+                <span className="text-white/70">Filter:</span>
+                <select
+                  value={conversationFilter}
+                  onChange={(e) =>
+                    setConversationFilter(
+                      e.target.value as "all" | "escalated"
+                    )
+                  }
+                  className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm outline-none focus:ring focus:ring-yellow-500/30"
+                >
+                  <option value="escalated">Escalated only</option>
+                  <option value="all">All</option>
+                </select>
+              </label>
+              <button
+                onClick={loadOrderConversations}
+                className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+              >
+                Refresh
+              </button>
+            </div>
+          }
+        >
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+            {/* Conversation list */}
+            <div className="lg:col-span-5 rounded-lg border border-white/10 bg-white/[0.03] overflow-hidden">
+              <table className="w-full text-left text-sm">
+                <thead className="text-white/70">
+                  <tr className="border-b border-white/10">
+                    <th className="py-2 px-3">Order</th>
+                    <th className="py-2 px-3">Customer</th>
+                    <th className="py-2 px-3">Question</th>
+                    <th className="py-2 px-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredOrderConversations.map((c) => (
+                    <tr
+                      key={c.id}
+                      className={cx(
+                        "border-b border-white/5 cursor-pointer hover:bg-white/[0.06]",
+                        selectedConversation?.id === c.id && "bg-white/[0.08]"
+                      )}
+                      onClick={() => {
+                        setSelectedConversation(c);
+                        loadConversationMessages(c);
+                      }}
+                    >
+                      <td className="py-2 px-3">
+                        <div className="text-xs font-mono break-all">
+                          {c.order_id || "—"}
+                        </div>
+                        <div className="text-[11px] text-white/60">
+                          {new Date(c.created_at).toLocaleString()}
+                        </div>
+                      </td>
+                      <td className="py-2 px-3 text-xs">
+                        <div className="break-all">{c.user_email || "—"}</div>
+                      </td>
+                      <td className="py-2 px-3 text-xs">
+                        {truncate(c.question_text, 60) || "—"}
+                      </td>
+                      <td className="py-2 px-3 text-xs">
+                        <div className="flex flex-col gap-1">
+                          <span
+                            className={cx(
+                              "inline-flex items-center rounded px-2 py-0.5 text-[11px] capitalize",
+                              (c.status || "") === "handled_by_admin" &&
+                                "bg-green-600/70",
+                              (c.status || "") === "needs_human" &&
+                                "bg-yellow-600/70",
+                              !c.status && "bg-gray-600/70"
+                            )}
+                          >
+                            {c.status || "—"}
+                          </span>
+                          {c.escalated && (
+                            <span className="inline-flex items-center rounded px-2 py-0.5 text-[10px] bg-rose-600/70">
+                              Escalated
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredOrderConversations.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="py-3 px-3 text-white/60 text-sm">
+                        No conversations found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Conversation thread */}
+            <div className="lg:col-span-7 rounded-lg border border-white/10 bg-white/[0.03] p-3 flex flex-col">
+              {!selectedConversation ? (
+                <div className="text-white/60 text-sm">
+                  Select a conversation from the list on the left.
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-white/10 pb-2">
+                    <div className="text-sm">
+                      <div className="font-semibold">
+                        Order {selectedConversation.order_id || "—"}
+                      </div>
+                      <div className="text-white/60 text-xs sm:text-[13px]">
+                        {selectedConversation.user_email ||
+                          "Unknown customer"}{" "}
+                        •{" "}
+                        {new Date(
+                          selectedConversation.created_at
+                        ).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {selectedConversation.escalated && (
+                        <span className="rounded-full bg-rose-600/80 px-3 py-1 text-[11px] font-semibold">
+                          Escalated to human
+                        </span>
+                      )}
+                      <button
+                        onClick={() =>
+                          selectedConversation &&
+                          loadConversationMessages(selectedConversation)
+                        }
+                        className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex-1 min-h-[140px] max-h-[360px] overflow-y-auto space-y-2 pr-1">
+                    {conversationMessagesLoading ? (
+                      <div className="text-white/70 text-sm">
+                        Loading messages…
+                      </div>
+                    ) : conversationMessages.length === 0 ? (
+                      <div className="text-white/60 text-sm">
+                        No messages logged yet.
+                      </div>
+                    ) : (
+                      conversationMessages.map((m) => (
+                        <ConversationBubble key={m.id} msg={m} />
+                      ))
+                    )}
+                  </div>
+
+                  <div className="mt-3 border-t border-white/10 pt-3">
+                    <label className="block text-xs text-white/70 mb-1.5">
+                      Reply to customer (sent as FuelFlow support)
+                    </label>
+                    <textarea
+                      className="w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30 min-h-[70px]"
+                      placeholder="Write a clear, friendly answer. The customer will see this in their ‘Need help?’ chat."
+                      value={adminReply}
+                      onChange={(e) => setAdminReply(e.target.value)}
+                    />
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <p className="text-[11px] text-white/60">
+                        Your reply is saved against this order so the customer
+                        and your team can see the full history.
+                      </p>
+                      <button
+                        disabled={
+                          !adminReply.trim() || conversationMessagesLoading
+                        }
+                        onClick={sendAdminReply}
+                        className={cx(
+                          "rounded-lg px-4 py-2 text-sm font-semibold",
+                          adminReply.trim()
+                            ? "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
+                            : "bg-white/10 text-white/50 cursor-not-allowed"
+                        )}
+                      >
+                        Send reply
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </Accordion>
+
         {/* ===== Support Tickets ===== */}
         <Accordion
           title="Support Tickets"
@@ -2028,9 +2401,7 @@ export default function AdminDashboard() {
             </div>
 
             <div>
-              <label className="block text-xs text-white/70 mb-1">
-                Month
-              </label>
+              <label className="block text-xs text-white/70 mb-1">Month</label>
               <select
                 className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm"
                 value={invMonth}
@@ -2412,6 +2783,42 @@ function TicketMessagesPanel({ messages }: { messages: TicketMsgRow[] }) {
       ) : (
         <div className="text-white/60 text-sm">No messages.</div>
       )}
+    </div>
+  );
+}
+
+/* ===== Order “Need help?” conversation bubbles ===== */
+function ConversationBubble({ msg }: { msg: OrderConversationMessage }) {
+  const sender = (msg.sender_type || "").toLowerCase();
+  const isAdmin = sender === "admin";
+  const isAssistant = sender === "assistant";
+  const isCustomer = sender === "customer";
+
+  return (
+    <div
+      className={cx(
+        "rounded-2xl p-3 border text-sm leading-6",
+        isAdmin && "bg-yellow-500/10 border-yellow-400/40 self-end ml-8",
+        isAssistant && "bg-white/[0.04] border-white/15 mx-4",
+        isCustomer && "bg-[#111827] border-white/10 mr-8",
+        !isAdmin && !isAssistant && !isCustomer && "bg-white/[0.04] border-white/15"
+      )}
+    >
+      <div className="flex items-center justify-between text-[11px] text-white/60 mb-1.5 gap-2">
+        <span className="truncate">
+          {isAdmin
+            ? "FuelFlow support"
+            : isAssistant
+            ? "Assistant"
+            : msg.user_email || msg.sender_email || "Customer"}
+        </span>
+        <span>
+          {msg.created_at ? new Date(msg.created_at).toLocaleString() : "—"}
+        </span>
+      </div>
+      <div className="whitespace-pre-wrap break-words text-white/90">
+        {msg.message_text || "—"}
+      </div>
     </div>
   );
 }
