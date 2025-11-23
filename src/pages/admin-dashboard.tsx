@@ -27,7 +27,9 @@ type OrderRow = {
   litres: number | null;
   unit_price_pence: number | null;
   total_pence: number | null;
-  status: string | null;
+  status: string | null;                // payment status (paid/succeeded/etc)
+  fulfilment_status: string | null;     // delivery status (pending/dispatched/etc)
+  fulfilment_notes?: string | null;
 };
 
 type PaymentRow = {
@@ -160,7 +162,7 @@ export default function AdminDashboard() {
   const [ordersShown, setOrdersShown] = useState<number>(ORDERS_STEP);
 
   // Status filters
-  const [orderStatusFilter, setOrderStatusFilter] = useState<string>("all");
+  const [orderStatusFilter, setOrderStatusFilter] = useState<string>("all");    // fulfilment status filter
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("all");
 
   /* ====== APPROVALS (admin_customers_v) ====== */
@@ -266,6 +268,7 @@ export default function AdminDashboard() {
      ========================= */
   useEffect(() => {
     if (isAdmin !== true) return;
+
     (async () => {
       try {
         setLoading(true);
@@ -273,37 +276,37 @@ export default function AdminDashboard() {
 
         const { from, to } = dateRange(range);
 
-        // Orders
+        // Orders (with fulfilment_status + notes)
         let oq = supabase
           .from("orders")
           .select(
-            "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status"
+            "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status, fulfilment_status, fulfilment_notes"
           )
           .order("created_at", { ascending: false })
           .limit(1000);
+
         if (from) oq = oq.gte("created_at", from.toISOString());
         if (to) oq = oq.lte("created_at", to.toISOString());
+
         const { data: od, error: oe } = await oq;
         if (oe) throw oe;
 
-        // Payments
-        let pq = supabase
+        // Payments: always show the latest 1000, independent of range
+        const { data: pd, error: pe } = await supabase
           .from("payments")
           .select(
             "order_id, amount, currency, status, email, cs_id, pi_id, created_at, receipt_sent_at, receipt_path"
           )
           .order("created_at", { ascending: false })
           .limit(1000);
-        if (from) pq = pq.gte("created_at", from.toISOString());
-        if (to) pq = pq.lte("created_at", to.toISOString());
-        const { data: pd, error: pe } = await pq;
         if (pe) throw pe;
 
         setOrders((od || []) as OrderRow[]);
         setPayments((pd || []) as PaymentRow[]);
         setOrdersShown(ORDERS_STEP);
       } catch (e: any) {
-        setError(e?.message || "Failed to load admin data");
+        console.error(e);
+        setError(e?.message || "Failed to load orders and payments");
       } finally {
         setLoading(false);
       }
@@ -382,6 +385,8 @@ export default function AdminDashboard() {
   /* =========================
      FULFILMENT ACTIONS
      ========================= */
+
+  // Update ONLY the fulfilment_status column (not payment status)
   async function updateOrderStatus(orderId: string, newStatus: string) {
     try {
       setUpdatingFulfilment(true);
@@ -391,7 +396,7 @@ export default function AdminDashboard() {
 
       const { error } = await supabase
         .from("orders")
-        .update({ status: statusClean })
+        .update({ fulfilment_status: statusClean })
         .eq("id", orderId);
 
       if (error) throw error;
@@ -399,14 +404,14 @@ export default function AdminDashboard() {
       // Update local orders list
       setOrders((prev) =>
         prev.map((o) =>
-          o.id === orderId ? { ...o, status: statusClean } : o
+          o.id === orderId ? { ...o, fulfilment_status: statusClean } : o
         )
       );
 
       // Update currently selected order, if open
       setFulfilOrder((prev) =>
         prev && prev.id === orderId
-          ? { ...prev, status: statusClean }
+          ? { ...prev, fulfilment_status: statusClean }
           : prev
       );
 
@@ -419,9 +424,42 @@ export default function AdminDashboard() {
     }
   }
 
+  async function updateOrderNotes(orderId: string, note: string) {
+    try {
+      setUpdatingFulfilment(true);
+      setFulfilError(null);
+
+      const noteTrimmed = note.trim();
+      const { error } = await supabase
+        .from("orders")
+        .update({ fulfilment_notes: noteTrimmed })
+        .eq("id", orderId);
+
+      if (error) throw error;
+
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.id === orderId ? { ...o, fulfilment_notes: noteTrimmed } : o
+        )
+      );
+
+      setFulfilOrder((prev) =>
+        prev && prev.id === orderId
+          ? { ...prev, fulfilment_notes: noteTrimmed }
+          : prev
+      );
+    } catch (e: any) {
+      setFulfilError(e?.message || "Failed to update notes");
+    } finally {
+      setUpdatingFulfilment(false);
+    }
+  }
+
   function openFulfilPanel(order: OrderRow) {
     setFulfilOrder(order);
-    setFulfilStatusDraft((order.status || "pending").toLowerCase());
+    setFulfilStatusDraft(
+      (order.fulfilment_status || "pending").toLowerCase()
+    );
     setFulfilError(null);
   }
 
@@ -448,10 +486,10 @@ export default function AdminDashboard() {
   const orderStatusOptions = useMemo(() => {
     const set = new Set<string>();
     orders.forEach((o) => {
-      const s = (o.status || "").toLowerCase();
+      const s = (o.fulfilment_status || "").toLowerCase();
       if (s) set.add(s);
     });
-    // include defaults for consistency
+    // include defaults for consistency (fulfilment pipeline)
     ["pending", "ordered", "dispatched", "delivered", "cancelled"].forEach(
       (s) => set.add(s)
     );
@@ -467,27 +505,34 @@ export default function AdminDashboard() {
     return ["all", ...Array.from(set).sort()];
   }, [payments]);
 
-  // Orders (filtered)
+  // Orders (filtered) — filter by fulfilment_status
   const filteredOrders = useMemo(() => {
     const s = search.trim().toLowerCase();
     return orders.filter((o) => {
+      const fulfilStatus = (o.fulfilment_status || "").toLowerCase();
+      const paymentStatus = (o.status || "").toLowerCase();
+
       const statusOk =
         orderStatusFilter === "all" ||
-        (o.status || "").toLowerCase() === orderStatusFilter;
+        fulfilStatus === orderStatusFilter;
       if (!statusOk) return false;
+
       const customerOk =
         customerFilter === "all" ||
         (o.user_email || "").toLowerCase() === customerFilter;
       if (!customerOk) return false;
+
       if (!s) return true;
       return (
         (o.user_email || "").toLowerCase().includes(s) ||
         (o.fuel || "").toLowerCase().includes(s) ||
-        (o.status || "").toLowerCase().includes(s) ||
+        fulfilStatus.includes(s) ||
+        paymentStatus.includes(s) ||
         (o.id || "").toLowerCase().includes(s)
       );
     });
   }, [orders, search, orderStatusFilter, customerFilter]);
+
   const visibleOrders = useMemo(
     () => filteredOrders.slice(0, ordersShown),
     [filteredOrders, ordersShown]
@@ -516,13 +561,20 @@ export default function AdminDashboard() {
   }, [payments, search, paymentStatusFilter, customerFilter]);
 
   const sumLitres = filteredOrders.reduce((a, b) => a + (b.litres || 0), 0);
-  const sumRevenue = filteredOrders.reduce(
-    (a, b) => a + toGBP(b.total_pence),
+
+  // Only count payments that actually succeeded
+  const paidPayments = filteredPayments.filter((p) => {
+    const s = (p.status || "").toLowerCase();
+    return s === "succeeded" || s === "paid";
+  });
+
+  // Revenue is now based on paid payments, not all orders
+  const sumRevenue = paidPayments.reduce(
+    (a, b) => a + toGBP(b.amount),
     0
   );
-  const paidCount = filteredOrders.filter(
-    (o) => (o.status || "").toLowerCase() === "paid"
-  ).length;
+
+  const paidCount = paidPayments.length;
 
   /* ===== Usage & Spend (yearly view) ===== */
   const months = [
@@ -1042,7 +1094,7 @@ export default function AdminDashboard() {
                                   {(s === "pending" || s === "approved") && (
                                     <button
                                       onClick={() => onBlock(r.email)}
-                                      className="rounded bg-white/10 text-white text-xs px-3 py-1 hover:bg-white/15"
+                                      className="rounded bg-white/10 text:white text-xs px-3 py-1 hover:bg-white/15"
                                     >
                                       Block
                                     </button>
@@ -1050,7 +1102,7 @@ export default function AdminDashboard() {
                                   {s === "blocked" && (
                                     <button
                                       onClick={() => onUnblock(r.email)}
-                                      className="rounded bg-white/10 text-white text-xs px-3 py-1 hover:bg-white/15"
+                                      className="rounded bg-white/10 text-white text-xs px-3 py-1 hover:bg:white/15 hover:bg-white/15"
                                     >
                                       Unblock
                                     </button>
@@ -1271,7 +1323,7 @@ export default function AdminDashboard() {
               value={orderStatusFilter}
               onChange={setOrderStatusFilter}
               options={orderStatusOptions}
-              label="Status"
+              label="Fulfilment"
             />
           }
         >
@@ -1281,11 +1333,15 @@ export default function AdminDashboard() {
               <div className="text-white/60 text-sm px-1 py-2">No orders.</div>
             ) : (
               visibleOrders.map((o) => {
-                const statusLower = (o.status || "pending").toLowerCase();
-                const isDelivered = statusLower === "delivered";
+                const paymentStatus = (o.status || "—").toLowerCase();
+                const fulfilStatus = (
+                  o.fulfilment_status || "pending"
+                ).toLowerCase();
+                const isDelivered = fulfilStatus === "delivered";
                 const isDispatched =
-                  statusLower === "dispatched" ||
-                  statusLower === "out_for_delivery";
+                  fulfilStatus === "dispatched" ||
+                  fulfilStatus === "out_for_delivery";
+
                 return (
                   <div
                     key={o.id}
@@ -1304,9 +1360,9 @@ export default function AdminDashboard() {
                       </div>
                       <div>
                         Litres:{" "}
-                          <span className="text-white/80">
+                        <span className="text-white/80">
                           {o.litres ?? "—"}
-                          </span>
+                        </span>
                       </div>
                       <div>
                         Amount:{" "}
@@ -1314,28 +1370,47 @@ export default function AdminDashboard() {
                           {gbpFmt.format(toGBP(o.total_pence))}
                         </span>
                       </div>
-                      <div>
-                        Status:{" "}
-                        <span
-                          className={cx(
-                            "inline-flex items-center rounded px-2 py-0.5 text-[11px]",
-                            statusLower === "paid"
-                              ? "bg-green-600/70"
-                              : statusLower === "delivered"
-                              ? "bg-green-700/70"
-                              : statusLower === "dispatched" ||
-                                statusLower === "out_for_delivery"
-                              ? "bg-yellow-600/70"
-                              : "bg-gray-600/70"
-                          )}
-                        >
-                          {statusLower}
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[11px]">
+                          Payment:{" "}
+                          <span
+                            className={cx(
+                              "inline-flex items-center rounded px-2 py-0.5",
+                              paymentStatus === "succeeded" ||
+                                paymentStatus === "paid"
+                                ? "bg-green-600/70"
+                                : "bg-gray-600/70"
+                            )}
+                          >
+                            {paymentStatus}
+                          </span>
+                        </span>
+                        <span className="text-[11px]">
+                          Delivery:{" "}
+                          <span
+                            className={cx(
+                              "inline-flex items-center rounded px-2 py-0.5",
+                              fulfilStatus === "delivered"
+                                ? "bg-green-700/70"
+                                : fulfilStatus === "dispatched" ||
+                                  fulfilStatus === "out_for_delivery"
+                                ? "bg-yellow-600/70"
+                                : "bg-gray-600/70"
+                            )}
+                          >
+                            {fulfilStatus}
+                          </span>
                         </span>
                       </div>
                     </div>
                     <div className="mt-1 text-[11px] text-white/60 break-all">
                       Order ID: {o.id}
                     </div>
+                    {o.fulfilment_notes && (
+                      <div className="mt-1 text-[11px] text-white/70">
+                        Note: {o.fulfilment_notes}
+                      </div>
+                    )}
 
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
@@ -1343,6 +1418,15 @@ export default function AdminDashboard() {
                         className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium hover:bg-white/15"
                       >
                         Manage fulfilment
+                      </button>
+                      <button
+                        onClick={() => {
+                          const n = window.prompt("Add note to customer:");
+                          if (n) updateOrderNotes(o.id, n);
+                        }}
+                        className="rounded-lg bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
+                      >
+                        Add note
                       </button>
                       {!isDispatched && !isDelivered && (
                         <button
@@ -1369,7 +1453,7 @@ export default function AdminDashboard() {
 
           {/* Desktop table */}
           <div className="hidden sm:block overflow-x-auto">
-            <table className="w-full text-left text-sm min-w-[860px]">
+            <table className="w-full text-left text-sm min-w-[900px]">
               <thead className="text-white/70">
                 <tr className="border-b border-white/10">
                   <th className="py-2 pr-4">Date</th>
@@ -1377,18 +1461,22 @@ export default function AdminDashboard() {
                   <th className="py-2 pr-4">Product</th>
                   <th className="py-2 pr-4">Litres</th>
                   <th className="py-2 pr-4">Amount</th>
-                  <th className="py-2 pr-4">Status</th>
+                  <th className="py-2 pr-4">Statuses</th>
                   <th className="py-2 pr-4">Order ID</th>
                   <th className="py-2 pr-4 text-right">Fulfilment</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleOrders.map((o) => {
-                  const statusLower = (o.status || "pending").toLowerCase();
-                  const isDelivered = statusLower === "delivered";
+                  const paymentStatus = (o.status || "—").toLowerCase();
+                  const fulfilStatus = (
+                    o.fulfilment_status || "pending"
+                  ).toLowerCase();
+                  const isDelivered = fulfilStatus === "delivered";
                   const isDispatched =
-                    statusLower === "dispatched" ||
-                    statusLower === "out_for_delivery";
+                    fulfilStatus === "dispatched" ||
+                    fulfilStatus === "out_for_delivery";
+
                   return (
                     <tr key={o.id} className="border-b border-white/5">
                       <td className="py-2 pr-4 whitespace-nowrap">
@@ -1401,32 +1489,63 @@ export default function AdminDashboard() {
                         {gbpFmt.format(toGBP(o.total_pence))}
                       </td>
                       <td className="py-2 pr-4">
-                        <span
-                          className={cx(
-                            "inline-flex items-center rounded px-2 py-0.5 text-xs",
-                            statusLower === "paid"
-                              ? "bg-green-600/70"
-                              : statusLower === "delivered"
-                              ? "bg-green-700/70"
-                              : statusLower === "dispatched" ||
-                                statusLower === "out_for_delivery"
-                              ? "bg-yellow-600/70"
-                              : "bg-gray-600/70"
+                        <div className="flex flex-col gap-1">
+                          <div className="text-xs">
+                            Payment:{" "}
+                            <span
+                              className={cx(
+                                "inline-flex items-center rounded px-2 py-0.5",
+                                paymentStatus === "succeeded" ||
+                                  paymentStatus === "paid"
+                                  ? "bg-green-600/70"
+                                  : "bg-gray-600/70"
+                              )}
+                            >
+                              {paymentStatus}
+                            </span>
+                          </div>
+                          <div className="text-xs">
+                            Delivery:{" "}
+                            <span
+                              className={cx(
+                                "inline-flex items-center rounded px-2 py-0.5",
+                                fulfilStatus === "delivered"
+                                  ? "bg-green-700/70"
+                                  : fulfilStatus === "dispatched" ||
+                                    fulfilStatus === "out_for_delivery"
+                                  ? "bg-yellow-600/70"
+                                  : "bg-gray-600/70"
+                              )}
+                            >
+                              {fulfilStatus}
+                            </span>
+                          </div>
+                          {o.fulfilment_notes && (
+                            <div className="text-[11px] text-white/70 mt-1">
+                              Note: {o.fulfilment_notes}
+                            </div>
                           )}
-                        >
-                          {statusLower}
-                        </span>
+                        </div>
                       </td>
                       <td className="py-2 pr-4 font-mono text-[11px] break-all">
                         {o.id}
                       </td>
                       <td className="py-2 pr-4">
-                        <div className="flex justify-end gap-2">
+                        <div className="flex justify-end gap-2 flex-wrap">
                           <button
                             onClick={() => openFulfilPanel(o)}
                             className="rounded-lg bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
                           >
                             Manage
+                          </button>
+                          <button
+                            onClick={() => {
+                              const n = window.prompt("Add note to customer:");
+                              if (n) updateOrderNotes(o.id, n);
+                            }}
+                            className="rounded-lg bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
+                          >
+                            Add note
                           </button>
                           {!isDispatched && !isDelivered && (
                             <button
@@ -2057,6 +2176,23 @@ export default function AdminDashboard() {
               </select>
             </div>
 
+            <div className="mt-3">
+              <label className="block text-xs text-white/70 mb-1.5">
+                Notes to customer (optional)
+              </label>
+              <textarea
+                className="w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-2 text-sm outline-none focus:ring focus:ring-yellow-500/30 min-h-[60px]"
+                placeholder="Internal note to explain status or next steps…"
+                defaultValue={fulfilOrder.fulfilment_notes || ""}
+                onBlur={(e) => {
+                  const val = e.target.value;
+                  if (val !== (fulfilOrder.fulfilment_notes || "")) {
+                    updateOrderNotes(fulfilOrder.id, val);
+                  }
+                }}
+              />
+            </div>
+
             <div className="mt-3 flex flex-wrap gap-2">
               <button
                 disabled={updatingFulfilment}
@@ -2102,10 +2238,9 @@ export default function AdminDashboard() {
             )}
 
             <p className="mt-3 text-[11px] text-white/50">
-              Use this panel to keep your internal view in sync with what the
-              refinery tells you (dispatched / delivered / cancelled). This does
-              not affect Stripe – it only updates the order row in Supabase and
-              the client/admin dashboards.
+              Payment status (Stripe) remains separate. This panel updates only
+              the fulfilment fields in Supabase so your internal delivery
+              tracking stays clear and separate from payments.
             </p>
           </div>
         </div>
