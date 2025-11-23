@@ -108,6 +108,9 @@ export default function ClientDashboard() {
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [showAllMonths, setShowAllMonths] = useState<boolean>(false);
 
+  // support modal
+  const [supportOpen, setSupportOpen] = useState(false);
+
   // ----------------- Auth + access gate (allow-list / blocked) -----------------
   useEffect(() => {
     let cancelled = false;
@@ -280,7 +283,7 @@ export default function ClientDashboard() {
     setVisibleCount(20); // reset slice on each refresh
   }
 
-  // ------------ Latest prices (same as before, just tidied) ------------
+  // ------------ Latest prices ------------
   async function loadLatestPrices() {
     setPetrolPrice(null);
     setDieselPrice(null);
@@ -364,7 +367,7 @@ export default function ClientDashboard() {
     }
   }
 
-  // ---------- Usage & Spend (by month, year), based on THIS user's orders ----------
+  // ---------- Usage & Spend (by month, year) ----------
   const months = [
     "Jan",
     "Feb",
@@ -533,6 +536,14 @@ export default function ClientDashboard() {
               </button>
             </div>
 
+            {/* Support button (desktop + mobile) */}
+            <button
+              onClick={() => setSupportOpen(true)}
+              className="h-9 inline-flex items-center rounded-full border border-white/15 bg-white/5 px-3 text-xs md:text-sm font-semibold text-white hover:bg-white/10"
+            >
+              Need help?
+            </button>
+
             <button
               onClick={logout}
               className="h-9 inline-flex items-center rounded-lg bg-yellow-500 px-3 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
@@ -542,465 +553,484 @@ export default function ClientDashboard() {
           </div>
         </div>
 
-        {/* Main layout: left = data, right = AI (on desktop) */}
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(320px,2fr)] items-start">
-          {/* LEFT COLUMN */}
-          <main className="space-y-6">
-            {/* Top cards: Prices + Documents */}
-            <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <Card title="Petrol (95)">
-                <div className="text-3xl font-bold">
-                  {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
-                  <span className="text-base font-normal text-gray-300">
-                    {" "}
-                    / litre
-                  </span>
-                </div>
-                <div className="mt-1 text-xs text-white/60">
-                  Refreshed: {formatShortDMY(refreshedAt)}
-                </div>
-              </Card>
+        {/* Top cards: Prices + Documents */}
+        <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Card title="Petrol (95)">
+            <div className="text-3xl font-bold">
+              {petrolPrice != null ? gbp.format(petrolPrice) : "—"}
+              <span className="text-base font-normal text-gray-300">
+                {" "}
+                / litre
+              </span>
+            </div>
+            <div className="mt-1 text-xs text-white/60">
+              Refreshed: {formatShortDMY(refreshedAt)}
+            </div>
+          </Card>
 
-              <Card title="Diesel">
-                <div className="text-3xl font-bold">
-                  {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
-                  <span className="text-base font-normal text-gray-300">
-                    {" "}
-                    / litre
-                  </span>
-                </div>
-                <div className="mt-1 text-xs text-white/60">
-                  Refreshed: {formatShortDMY(refreshedAt)}
-                </div>
-              </Card>
+          <Card title="Diesel">
+            <div className="text-3xl font-bold">
+              {dieselPrice != null ? gbp.format(dieselPrice) : "—"}
+              <span className="text-base font-normal text-gray-300">
+                {" "}
+                / litre
+              </span>
+            </div>
+            <div className="mt-1 text-xs text-white/60">
+              Refreshed: {formatShortDMY(refreshedAt)}
+            </div>
+          </Card>
 
-              <div className="bg-gray-800 rounded-xl p-4 md:p-5 flex flex-col justify-between">
-                <div>
-                  <p className="text-gray-400 mb-2">Documents</p>
-                  <p className="text-xs text-white/60 mb-3">
-                    Invoices, receipts and other documents for your account.
-                  </p>
-                </div>
-                <a
-                  href="/documents"
-                  className="inline-flex items-center justify-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
-                >
-                  Open documents
-                </a>
-              </div>
-            </section>
+          <div className="bg-gray-800 rounded-xl p-4 md:p-5 flex flex-col justify-between">
+            <div>
+              <p className="text-gray-400 mb-2">Documents</p>
+              <p className="text-xs text-white/60 mb-3">
+                Invoices, receipts and other documents for your account.
+              </p>
+            </div>
+            <a
+              href="/documents"
+              className="inline-flex items-center justify-center rounded-lg bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm font-semibold"
+            >
+              Open documents
+            </a>
+          </div>
+        </section>
 
-            {/* Usage & Spend */}
-            <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
-                <h2 className="text-xl md:text-2xl font-semibold">
-                  Usage &amp; Spend
-                </h2>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-white/70">Year:</span>
-                  <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
-                    <button
-                      onClick={() => setSelectedYear(currentYear - 1)}
-                      disabled={selectedYear === currentYear - 1}
-                      className={cx(
-                        "px-3 py-1.5",
-                        selectedYear === currentYear - 1
-                          ? "bg-yellow-500 text-[#041F3E] font-semibold"
-                          : "hover:bg-white/15"
-                      )}
-                    >
-                      {currentYear - 1}
-                    </button>
-                    <button
-                      onClick={() => setSelectedYear(currentYear)}
-                      disabled={selectedYear === currentYear}
-                      className={cx(
-                        "px-3 py-1.5",
-                        selectedYear === currentYear
-                          ? "bg-yellow-500 text-[#041F3E] font-semibold"
-                          : "hover:bg-white/15"
-                      )}
-                    >
-                      {currentYear}
-                    </button>
-                  </div>
-                  <button
-                    onClick={() => setShowAllMonths((s) => !s)}
-                    className="ml-3 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-                  >
-                    {showAllMonths ? "Show current month" : "Show 12 months"}
-                  </button>
-                </div>
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="text-gray-300">
-                    <tr className="border-b border-gray-700/60">
-                      <th className="py-2 pr-4">Month</th>
-                      <th className="py-2 pr-4">Litres</th>
-                      <th className="py-2 pr-4">Spend</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
-                      <tr
-                        key={`${selectedYear}-${r.monthIdx}`}
-                        className="border-b border-gray-800/60"
-                      >
-                        <td className="py-2 pr-4">
-                          {months[r.monthIdx]} {String(selectedYear).slice(2)}
-                        </td>
-                        <td className="py-2 pr-4 align-middle">
-                          {Math.round(r.litres).toLocaleString()}
-                          <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                            <div
-                              className="h-1.5 rounded bg-yellow-500/80"
-                              style={{
-                                width: `${(r.litres / maxLitres) * 100}%`,
-                              }}
-                            />
-                          </div>
-                        </td>
-                        <td className="py-2 pr-4 align-middle">
-                          {gbp.format(r.spend)}
-                          <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
-                            <div
-                              className="h-1.5 rounded bg-white/40"
-                              style={{
-                                width: `${(r.spend / maxSpend) * 100}%`,
-                              }}
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-            {/* errors */}
-            {error && (
-              <div className="bg-red-800/60 border border-red-500 text-red-100 p-4 rounded">
-                {error}
-              </div>
-            )}
-
-            {/* My Orders */}
-            <section className="bg-gray-800 rounded-xl p-4 md:p-6 mb-24 md:mb-0">
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
-                <h2 className="text-xl md:text-2xl font-semibold">
-                  My Orders{" "}
-                  <span className="text-white/50 text-sm">
-                    ({orders.length})
-                  </span>
-                </h2>
-                <div className="flex items-center gap-2">
-                  {orders.length > 20 && (
-                    <>
-                      {!hasMore ? (
-                        <button
-                          onClick={() => setVisibleCount(20)}
-                          className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
-                        >
-                          Collapse to last 20
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() =>
-                            setVisibleCount((n) =>
-                              Math.min(n + 20, orders.length)
-                            )
-                          }
-                          className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
-                        >
-                          Show 20 more
-                        </button>
-                      )}
-                    </>
+        {/* Usage & Spend */}
+        <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
+            <h2 className="text-xl md:text-2xl font-semibold">
+              Usage &amp; Spend
+            </h2>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-white/70">Year:</span>
+              <div className="flex overflow-hidden rounded-lg bg-white/10 text-sm">
+                <button
+                  onClick={() => setSelectedYear(currentYear - 1)}
+                  disabled={selectedYear === currentYear - 1}
+                  className={cx(
+                    "px-3 py-1.5",
+                    selectedYear === currentYear - 1
+                      ? "bg-yellow-500 text-[#041F3E] font-semibold"
+                      : "hover:bg-white/15"
                   )}
-                  <button
-                    onClick={() => loadAll()}
-                    className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
+                >
+                  {currentYear - 1}
+                </button>
+                <button
+                  onClick={() => setSelectedYear(currentYear)}
+                  disabled={selectedYear === currentYear}
+                  className={cx(
+                    "px-3 py-1.5",
+                    selectedYear === currentYear
+                      ? "bg-yellow-500 text-[#041F3E] font-semibold"
+                      : "hover:bg-white/15"
+                  )}
+                >
+                  {currentYear}
+                </button>
+              </div>
+              <button
+                onClick={() => setShowAllMonths((s) => !s)}
+                className="ml-3 rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+              >
+                {showAllMonths ? "Show current month" : "Show 12 months"}
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-gray-300">
+                <tr className="border-b border-gray-700/60">
+                  <th className="py-2 pr-4">Month</th>
+                  <th className="py-2 pr-4">Litres</th>
+                  <th className="py-2 pr-4">Spend</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(showAllMonths ? usageByMonth : rowsToShow).map((r) => (
+                  <tr
+                    key={`${selectedYear}-${r.monthIdx}`}
+                    className="border-b border-gray-800/60"
                   >
-                    Refresh
-                  </button>
-                </div>
+                    <td className="py-2 pr-4">
+                      {months[r.monthIdx]} {String(selectedYear).slice(2)}
+                    </td>
+                    <td className="py-2 pr-4 align-middle">
+                      {Math.round(r.litres).toLocaleString()}
+                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                        <div
+                          className="h-1.5 rounded bg-yellow-500/80"
+                          style={{
+                            width: `${(r.litres / maxLitres) * 100}%`,
+                          }}
+                        />
+                      </div>
+                    </td>
+                    <td className="py-2 pr-4 align-middle">
+                      {gbp.format(r.spend)}
+                      <div className="mt-1 h-1.5 w-full bg-white/10 rounded">
+                        <div
+                          className="h-1.5 rounded bg-white/40"
+                          style={{
+                            width: `${(r.spend / maxSpend) * 100}%`,
+                          }}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* errors */}
+        {error && (
+          <div className="bg-red-800/60 border border-red-500 text-red-100 p-4 rounded">
+            {error}
+          </div>
+        )}
+
+        {/* My Orders */}
+        <section className="bg-gray-800 rounded-xl p-4 md:p-6 mb-24 md:mb-0">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+            <h2 className="text-xl md:text-2xl font-semibold">
+              My Orders{" "}
+              <span className="text-white/50 text-sm">({orders.length})</span>
+            </h2>
+            <div className="flex items-center gap-2">
+              {orders.length > 20 && (
+                <>
+                  {!hasMore ? (
+                    <button
+                      onClick={() => setVisibleCount(20)}
+                      className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
+                    >
+                      Collapse to last 20
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() =>
+                        setVisibleCount((n) =>
+                          Math.min(n + 20, orders.length)
+                        )
+                      }
+                      className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
+                    >
+                      Show 20 more
+                    </button>
+                  )}
+                </>
+              )}
+              <button
+                onClick={() => loadAll()}
+                className="h-9 inline-flex items-center rounded bg-gray-700 hover:bg-gray-600 px-3 text-sm"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="text-gray-300">Loading…</div>
+          ) : orders.length === 0 ? (
+            <div className="text-gray-400">
+              No orders yet. Your orders will appear here.
+            </div>
+          ) : (
+            <>
+              {/* Mobile: cards */}
+              <div className="md:hidden space-y-3">
+                {visibleOrders.map((o) => {
+                  const payment =
+                    (o.payment_status || "").toLowerCase() || "pending";
+                  const fulfil =
+                    (o.fulfilment_status || "pending").toLowerCase();
+
+                  const paymentIsGood =
+                    payment === "succeeded" || payment === "paid";
+                  const paymentIsBad =
+                    payment === "failed" ||
+                    payment === "canceled" ||
+                    payment === "cancelled";
+
+                  const fulfilIsDelivered = fulfil === "delivered";
+                  const fulfilIsMoving =
+                    fulfil === "dispatched" ||
+                    fulfil === "out_for_delivery" ||
+                    fulfil === "ordered";
+
+                  return (
+                    <div
+                      key={o.id}
+                      className="rounded-xl border border-white/10 bg-white/[0.03] p-3 space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs text-white/60">
+                          {new Date(o.created_at).toLocaleString()}
+                        </div>
+                        <div className="text-sm font-medium">
+                          {gbp.format(o.amount_gbp)}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-2 text-sm">
+                        <div className="capitalize">
+                          {(o.fuel as string) || "—"}
+                        </div>
+                        <div className="text-xs text-white/70">
+                          {o.litres ?? "—"} L
+                        </div>
+                      </div>
+
+                      <div className="mt-2 grid grid-cols-1 gap-1.5 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-white/60">Payment:</span>
+                          <span
+                            className={cx(
+                              "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] capitalize",
+                              paymentIsGood &&
+                                "bg-green-500/80 text-[#041F3E] font-semibold",
+                              paymentIsBad &&
+                                "bg-rose-500/80 text-[#041F3E] font-semibold",
+                              !paymentIsGood &&
+                                !paymentIsBad &&
+                                "bg-white/10 text-white/80"
+                            )}
+                          >
+                            {payment}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-white/60">Delivery:</span>
+                          <span
+                            className={cx(
+                              "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] capitalize",
+                              fulfilIsDelivered &&
+                                "bg-green-500/80 text-[#041F3E] font-semibold",
+                              fulfilIsMoving &&
+                                !fulfilIsDelivered &&
+                                "bg-yellow-500/80 text-[#041F3E] font-semibold",
+                              !fulfilIsDelivered &&
+                                !fulfilIsMoving &&
+                                "bg-white/10 text-white/80"
+                            )}
+                          >
+                            {fulfil}
+                          </span>
+                        </div>
+                      </div>
+
+                      {o.fulfilment_notes && (
+                        <div className="mt-2 rounded-lg bg-white/5 border border-white/10 p-2">
+                          <div className="text-[11px] text-white/60 mb-0.5">
+                            Message from FuelFlow:
+                          </div>
+                          <div className="text-xs leading-5 text-white/90">
+                            {o.fulfilment_notes}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="text-[10px] text-white/40 mt-1">
+                        Order ID: {o.id}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
-              {loading ? (
-                <div className="text-gray-300">Loading…</div>
-              ) : orders.length === 0 ? (
-                <div className="text-gray-400">
-                  No orders yet. Your orders will appear here.
-                </div>
-              ) : (
-                <>
-                  {/* Mobile: cards */}
-                  <div className="md:hidden space-y-3">
-                    {visibleOrders.map((o) => {
-                      const payment =
-                        (o.payment_status || "").toLowerCase() || "pending";
-                      const fulfil =
-                        (o.fulfilment_status || "pending").toLowerCase();
+              {/* Desktop: table */}
+              <div className="hidden md:block overflow-x-auto">
+                <div className="md:max-h-none max-h-[60vh] overflow-auto rounded-lg">
+                  <table className="w-full text-left text-sm">
+                    <thead className="text-gray-300 sticky top-0 bg-gray-800">
+                      <tr className="border-b border-gray-700">
+                        <th className="py-2 pr-4">Date</th>
+                        <th className="py-2 pr-4">Product</th>
+                        <th className="py-2 pr-4">Litres</th>
+                        <th className="py-2 pr-4">Amount</th>
+                        <th className="py-2 pr-4">Payment</th>
+                        <th className="py-2 pr-4">Delivery</th>
+                        <th className="py-2 pr-4">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleOrders.map((o) => {
+                        const payment =
+                          (o.payment_status || "").toLowerCase() || "pending";
+                        const fulfil =
+                          (o.fulfilment_status || "pending").toLowerCase();
 
-                      const paymentIsGood =
-                        payment === "succeeded" || payment === "paid";
-                      const paymentIsBad =
-                        payment === "failed" ||
-                        payment === "canceled" ||
-                        payment === "cancelled";
+                        const paymentIsGood =
+                          payment === "succeeded" || payment === "paid";
+                        const paymentIsBad =
+                          payment === "failed" ||
+                          payment === "canceled" ||
+                          payment === "cancelled";
 
-                      const fulfilIsDelivered = fulfil === "delivered";
-                      const fulfilIsMoving =
-                        fulfil === "dispatched" ||
-                        fulfil === "out_for_delivery" ||
-                        fulfil === "ordered";
+                        const fulfilIsDelivered = fulfil === "delivered";
+                        const fulfilIsMoving =
+                          fulfil === "dispatched" ||
+                          fulfil === "out_for_delivery" ||
+                          fulfil === "ordered";
 
-                      return (
-                        <div
-                          key={o.id}
-                          className="rounded-xl border border-white/10 bg-white/[0.03] p-3 space-y-2"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="text-xs text-white/60">
+                        return (
+                          <tr key={o.id} className="border-b border-gray-800">
+                            <td className="py-2 pr-4 whitespace-nowrap">
                               {new Date(o.created_at).toLocaleString()}
-                            </div>
-                            <div className="text-sm font-medium">
-                              {gbp.format(o.amount_gbp)}
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between gap-2 text-sm">
-                            <div className="capitalize">
+                            </td>
+                            <td className="py-2 pr-4 capitalize">
                               {(o.fuel as string) || "—"}
-                            </div>
-                            <div className="text-xs text-white/70">
-                              {o.litres ?? "—"} L
-                            </div>
-                          </div>
-
-                          <div className="mt-2 grid grid-cols-1 gap-1.5 text-xs">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-white/60">Payment:</span>
+                            </td>
+                            <td className="py-2 pr-4">{o.litres ?? "—"}</td>
+                            <td className="py-2 pr-4">
+                              {gbp.format(o.amount_gbp)}
+                            </td>
+                            <td className="py-2 pr-4">
                               <span
                                 className={cx(
-                                  "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] capitalize",
+                                  "inline-flex items-center rounded px-2 py-0.5 text-xs capitalize",
                                   paymentIsGood &&
-                                    "bg-green-500/80 text-[#041F3E] font-semibold",
+                                    "bg-green-600/80 text-[#041F3E] font-semibold",
                                   paymentIsBad &&
                                     "bg-rose-500/80 text-[#041F3E] font-semibold",
                                   !paymentIsGood &&
                                     !paymentIsBad &&
-                                    "bg-white/10 text-white/80"
+                                    "bg-gray-600/70"
                                 )}
                               >
                                 {payment}
                               </span>
-                            </div>
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-white/60">Delivery:</span>
+                            </td>
+                            <td className="py-2 pr-4">
                               <span
                                 className={cx(
-                                  "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] capitalize",
+                                  "inline-flex items-center rounded px-2 py-0.5 text-xs capitalize",
                                   fulfilIsDelivered &&
-                                    "bg-green-500/80 text-[#041F3E] font-semibold",
+                                    "bg-green-600/80 text-[#041F3E] font-semibold",
                                   fulfilIsMoving &&
                                     !fulfilIsDelivered &&
                                     "bg-yellow-500/80 text-[#041F3E] font-semibold",
                                   !fulfilIsDelivered &&
                                     !fulfilIsMoving &&
-                                    "bg-white/10 text-white/80"
+                                    "bg-gray-600/70"
                                 )}
                               >
                                 {fulfil}
                               </span>
-                            </div>
-                          </div>
-
-                          {o.fulfilment_notes && (
-                            <div className="mt-2 rounded-lg bg-white/5 border border-white/10 p-2">
-                              <div className="text-[11px] text-white/60 mb-0.5">
-                                Message from FuelFlow:
-                              </div>
-                              <div className="text-xs leading-5 text-white/90">
-                                {o.fulfilment_notes}
-                              </div>
-                            </div>
-                          )}
-
-                          <div className="text-[10px] text-white/40 mt-1">
-                            Order ID: {o.id}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Desktop: table */}
-                  <div className="hidden md:block overflow-x-auto">
-                    <div className="md:max-h-none max-h-[60vh] overflow-auto rounded-lg">
-                      <table className="w-full text-left text-sm">
-                        <thead className="text-gray-300 sticky top-0 bg-gray-800">
-                          <tr className="border-b border-gray-700">
-                            <th className="py-2 pr-4">Date</th>
-                            <th className="py-2 pr-4">Product</th>
-                            <th className="py-2 pr-4">Litres</th>
-                            <th className="py-2 pr-4">Amount</th>
-                            <th className="py-2 pr-4">Payment</th>
-                            <th className="py-2 pr-4">Delivery</th>
-                            <th className="py-2 pr-4">Notes</th>
+                            </td>
+                            <td className="py-2 pr-4 max-w-xs">
+                              {o.fulfilment_notes ? (
+                                <span
+                                  className="text-xs text-white/80"
+                                  title={o.fulfilment_notes}
+                                >
+                                  {truncate(o.fulfilment_notes, 70)}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-white/40">—</span>
+                              )}
+                            </td>
                           </tr>
-                        </thead>
-                        <tbody>
-                          {visibleOrders.map((o) => {
-                            const payment =
-                              (o.payment_status || "").toLowerCase() ||
-                              "pending";
-                            const fulfil =
-                              (o.fulfilment_status || "pending").toLowerCase();
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
 
-                            const paymentIsGood =
-                              payment === "succeeded" || payment === "paid";
-                            const paymentIsBad =
-                              payment === "failed" ||
-                              payment === "canceled" ||
-                              payment === "cancelled";
-
-                            const fulfilIsDelivered = fulfil === "delivered";
-                            const fulfilIsMoving =
-                              fulfil === "dispatched" ||
-                              fulfil === "out_for_delivery" ||
-                              fulfil === "ordered";
-
-                            return (
-                              <tr key={o.id} className="border-b border-gray-800">
-                                <td className="py-2 pr-4 whitespace-nowrap">
-                                  {new Date(o.created_at).toLocaleString()}
-                                </td>
-                                <td className="py-2 pr-4 capitalize">
-                                  {(o.fuel as string) || "—"}
-                                </td>
-                                <td className="py-2 pr-4">{o.litres ?? "—"}</td>
-                                <td className="py-2 pr-4">
-                                  {gbp.format(o.amount_gbp)}
-                                </td>
-                                <td className="py-2 pr-4">
-                                  <span
-                                    className={cx(
-                                      "inline-flex items-center rounded px-2 py-0.5 text-xs capitalize",
-                                      paymentIsGood &&
-                                        "bg-green-600/80 text-[#041F3E] font-semibold",
-                                      paymentIsBad &&
-                                        "bg-rose-500/80 text-[#041F3E] font-semibold",
-                                      !paymentIsGood &&
-                                        !paymentIsBad &&
-                                        "bg-gray-600/70"
-                                    )}
-                                  >
-                                    {payment}
-                                  </span>
-                                </td>
-                                <td className="py-2 pr-4">
-                                  <span
-                                    className={cx(
-                                      "inline-flex items-center rounded px-2 py-0.5 text-xs capitalize",
-                                      fulfilIsDelivered &&
-                                        "bg-green-600/80 text-[#041F3E] font-semibold",
-                                      fulfilIsMoving &&
-                                        !fulfilIsDelivered &&
-                                        "bg-yellow-500/80 text-[#041F3E] font-semibold",
-                                      !fulfilIsDelivered &&
-                                        !fulfilIsMoving &&
-                                        "bg-gray-600/70"
-                                    )}
-                                  >
-                                    {fulfil}
-                                  </span>
-                                </td>
-                                <td className="py-2 pr-4 max-w-xs">
-                                  {o.fulfilment_notes ? (
-                                    <span
-                                      className="text-xs text-white/80"
-                                      title={o.fulfilment_notes}
-                                    >
-                                      {truncate(o.fulfilment_notes, 70)}
-                                    </span>
-                                  ) : (
-                                    <span className="text-xs text-white/40">
-                                      —
-                                    </span>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {orders.length > 20 && (
-                      <div className="mt-3 flex items-center justify-center gap-2">
-                        {hasMore ? (
-                          <button
-                            onClick={() =>
-                              setVisibleCount((n) =>
-                                Math.min(n + 20, orders.length)
-                              )
-                            }
-                            className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
-                          >
-                            Show 20 more
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => setVisibleCount(20)}
-                            className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
-                          >
-                            Collapse to last 20
-                          </button>
-                        )}
-                        <div className="text-xs text-white/60">
-                          Showing{" "}
-                          <b>{Math.min(visibleCount, orders.length)}</b> of{" "}
-                          <b>{orders.length}</b>
-                        </div>
-                      </div>
+                {orders.length > 20 && (
+                  <div className="mt-3 flex items-center justify-center gap-2">
+                    {hasMore ? (
+                      <button
+                        onClick={() =>
+                          setVisibleCount((n) =>
+                            Math.min(n + 20, orders.length)
+                          )
+                        }
+                        className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+                      >
+                        Show 20 more
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => setVisibleCount(20)}
+                        className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+                      >
+                        Collapse to last 20
+                      </button>
                     )}
+                    <div className="text-xs text-white/60">
+                      Showing{" "}
+                      <b>{Math.min(visibleCount, orders.length)}</b> of{" "}
+                      <b>{orders.length}</b>
+                    </div>
                   </div>
-                </>
-              )}
-            </section>
-
-            {/* bottom refresh date */}
-            <div className="text-center text-xs text-white/50">
-              Refreshed: {formatShortDMY(refreshedAt)}
-            </div>
-          </main>
-
-          {/* RIGHT COLUMN – AI Assistant (moves below on mobile) */}
-          <aside className="space-y-4 lg:sticky lg:top-4">
-            <div className="bg-slate-900/90 rounded-2xl border border-white/10 p-3 md:p-4 shadow-xl">
-              <p className="text-gray-400 mb-2 text-sm font-medium">
-                AI Assistant
-              </p>
-              <div className="h-[420px] md:h-[460px]">
-                <OrderAIChat
-                  orders={orders.map((o) => ({
-                    id: o.id,
-                    created_at: o.created_at,
-                    fuel: (o.fuel as string) ?? null,
-                    litres: o.litres,
-                    amount_gbp: o.amount_gbp,
-                    fulfilment_status: o.fulfilment_status,
-                  }))}
-                  userEmail={userEmail}
-                />
+                )}
               </div>
-            </div>
-          </aside>
+            </>
+          )}
+        </section>
+
+        {/* bottom refresh date */}
+        <div className="text-center text-xs text-white/50">
+          Refreshed: {formatShortDMY(refreshedAt)}
         </div>
       </div>
+
+      {/* Support modal */}
+      {supportOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-3 md:px-4">
+          {/* backdrop */}
+          <button
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setSupportOpen(false)}
+            aria-label="Close support"
+          />
+          {/* panel */}
+          <div className="relative z-10 w-full max-w-xl max-h-[85vh] rounded-2xl bg-slate-900 border border-white/10 shadow-2xl flex flex-col">
+            {/* drag handle */}
+            <div className="flex items-center justify-center pt-2">
+              <div className="h-1 w-16 rounded-full bg-white/20" />
+            </div>
+
+            <div className="flex items-center justify-between px-4 pt-3 pb-2">
+              <div>
+                <h2 className="text-sm font-semibold text-white">
+                  Need help with your account?
+                </h2>
+                <p className="text-[11px] text-white/60">
+                  Ask a question and our assistant will reply. If you need a
+                  person to step in, just say so and our team can review this
+                  thread.
+                </p>
+              </div>
+              <button
+                onClick={() => setSupportOpen(false)}
+                className="ml-3 inline-flex h-7 items-center justify-center rounded-full bg-white/10 px-3 text-xs text-white hover:bg-white/20"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="flex-1 px-3 pb-3">
+              <OrderAIChat
+                orders={orders.map((o) => ({
+                  id: o.id,
+                  created_at: o.created_at,
+                  fuel: (o.fuel as string) ?? null,
+                  litres: o.litres,
+                  amount_gbp: o.amount_gbp,
+                  fulfilment_status: o.fulfilment_status,
+                }))}
+                userEmail={userEmail}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
