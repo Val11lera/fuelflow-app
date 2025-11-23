@@ -1,4 +1,5 @@
 // src/pages/api/ai-chat.ts
+// src/pages/api/ai-chat.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 
 type ChatMessage = {
@@ -65,3 +66,4 @@ export default async function handler(
     return res.status(500).json({ error: "Server error" });
   }
 }
+
