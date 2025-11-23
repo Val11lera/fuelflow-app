@@ -1,11 +1,13 @@
 // src/pages/api/admin/order-ai-reply.ts
+// src/pages/api/admin/order-ai-reply.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
 type Body = {
-  orderId: string;
+  conversationId: string;          // ai_order_questions.id
+  orderId: string | null;
   userEmail: string | null;
-  adminEmail: string; // who's replying
+  adminEmail: string;              // who is replying
   reply: string;
 };
 
@@ -26,29 +28,44 @@ export default async function handler(
   }
 
   try {
-    const { orderId, userEmail, adminEmail, reply } = req.body as Body;
+    const { conversationId, orderId, userEmail, adminEmail, reply } =
+      req.body as Body;
 
-    if (!orderId || !reply || !adminEmail) {
+    if (!conversationId || !reply || !adminEmail) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Insert as another assistant-style message, but tied to this admin
+    // 1) Insert the admin reply as another assistant-style message
     const row: any = {
       order_id: orderId,
-      user_email: userEmail ?? null,
-      role: "assistant", // client chat will treat it as assistant
+      user_email: userEmail,
+      role: "assistant", // client chat treats this as assistant/human reply
       message: reply,
-      // If you added a sender_email column in order_ai_messages, this will populate it:
+      // If your table has this column, it's nice to populate
       sender_email: adminEmail,
     };
 
-    const { error } = await supabaseAdmin
+    const { error: insertErr } = await supabaseAdmin
       .from("order_ai_messages")
       .insert(row);
 
-    if (error) {
-      console.error("Failed to insert admin reply:", error);
+    if (insertErr) {
+      console.error("Failed to insert admin reply:", insertErr);
       return res.status(500).json({ error: "Failed to save reply" });
+    }
+
+    // 2) Mark the conversation as handled_by_admin (so it disappears from "Escalated only")
+    const { error: updateErr } = await supabaseAdmin
+      .from("ai_order_questions")
+      .update({
+        status: "handled_by_admin",
+        escalated: false,
+      } as any)
+      .eq("id", conversationId);
+
+    if (updateErr) {
+      console.error("Failed to update ai_order_questions:", updateErr);
+      // don't fail the whole request; the important part (message) is saved
     }
 
     return res.status(200).json({ ok: true });
@@ -57,3 +74,4 @@ export default async function handler(
     return res.status(500).json({ error: "Server error" });
   }
 }
+
