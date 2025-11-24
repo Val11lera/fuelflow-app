@@ -1,5 +1,6 @@
 // src/pages/api/ai-order-chat.ts
 // src/pages/api/ai-order-chat.ts
+// src/pages/api/ai-order-chat.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
@@ -13,7 +14,7 @@ type ChatMessage = {
 type RequestBody = {
   orderId?: string | null;
   userEmail?: string | null;
-  messages: ChatMessage[]; // full history from the client
+  messages: ChatMessage[]; // full history from the client (current session)
 };
 
 type ResponseBody = { reply: string } | { error: string };
@@ -112,6 +113,26 @@ export default async function handler(
       }
     }
 
+    // 🔹 NEW: load full saved history (including admin replies) from order_ai_messages
+    let dbHistory: ChatMessage[] = [];
+    if (orderId && userEmail) {
+      const { data: history, error: historyErr } = await supabaseAdmin
+        .from("order_ai_messages")
+        .select("role, message, created_at")
+        .eq("order_id", orderId)
+        .eq("user_email", userEmail)
+        .order("created_at", { ascending: true });
+
+      if (historyErr) {
+        console.error("Failed to load order_ai_messages history:", historyErr);
+      } else if (history && history.length > 0) {
+        dbHistory = history.map((row: any) => ({
+          role: (row.role === "user" ? "user" : "assistant") as Role,
+          content: row.message as string,
+        }));
+      }
+    }
+
     // System instructions
     const systemBase =
       "You are FuelFlow's AI assistant inside the client dashboard. " +
@@ -122,6 +143,13 @@ export default async function handler(
       "  • Still give a short, helpful answer to their actual question.\n" +
       "  • AND clearly say that you are flagging this conversation for the FuelFlow team to review.\n" +
       "  • Do NOT say that you cannot arrange calls or contact. Instead, reassure them that a person can step in.\n";
+
+    // Use DB history when we have it (so admin replies + previous AI answers are included).
+    // Fall back to the messages from the client when there is no orderId/userEmail.
+    const conversationMessages: ChatMessage[] =
+      orderId && userEmail
+        ? [...dbHistory, latestUserMessage] // full saved history + newest question
+        : messages; // fallback (non-order chat)
 
     const apiMessages = [
       {
@@ -134,7 +162,7 @@ export default async function handler(
             content: "Context about the selected order:\n" + orderSummary,
           } as const)
         : null,
-      ...messages.map((m) => ({
+      ...conversationMessages.map((m) => ({
         role: m.role,
         content: m.content,
       })),
