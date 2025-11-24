@@ -1,8 +1,10 @@
 // src/components/OrderAIChat.tsx
 // src/components/OrderAIChat.tsx
+// src/components/OrderAIChat.tsx
 "use client";
 
 import React, { useMemo, useRef, useState, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 type Role = "user" | "assistant";
 
@@ -36,12 +38,23 @@ function formatOrderLabel(o: OrderSummary) {
   return `${date} • ${o.fuel ?? "Fuel"} • ${o.litres ?? "?"}L • £${amount}`;
 }
 
+// Browser Supabase client (anon key)
+const supabaseUrl =
+  process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+
+const supabase =
+  supabaseUrl && supabaseAnonKey
+    ? createClient(supabaseUrl, supabaseAnonKey)
+    : null;
+
 export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
   const [selectedOrderId, setSelectedOrderId] = useState<string | "">("");
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -53,10 +66,55 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
   }, [messages]);
 
   // Only show last 8–10 orders in dropdown
-  const recentOrders = useMemo(
-    () => orders.slice(0, 10),
-    [orders]
-  );
+  const recentOrders = useMemo(() => orders.slice(0, 10), [orders]);
+
+  // Load saved history for a specific order + user from ai_order_messages view
+  async function loadOrderHistory(orderId: string) {
+    if (!supabase || !userEmail) {
+      setMessages([]);
+      return;
+    }
+
+    setLoadingHistory(true);
+    setError(null);
+
+    try {
+      const { data, error } = await supabase
+        .from("ai_order_messages")
+        .select("id, created_at, sender_type, message_text")
+        .eq("order_id", orderId)
+        .eq("user_email", userEmail)
+        .order("created_at", { ascending: true });
+
+      if (error) throw error;
+
+      const mapped: LocalMessage[] = (data || []).map((row: any) => ({
+        id: row.id,
+        role: row.sender_type === "customer" ? "user" : "assistant",
+        content: row.message_text || "",
+      }));
+
+      setMessages(mapped);
+    } catch (e: any) {
+      console.error("Failed to load order chat history:", e);
+      setError(e?.message || "Failed to load previous messages");
+      setMessages([]);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  // Whenever the selected order changes:
+  // - if no order => general question => clear history (keep new session only)
+  // - if order selected => load full history from Supabase
+  useEffect(() => {
+    if (!selectedOrderId) {
+      setMessages([]);
+      return;
+    }
+    loadOrderHistory(selectedOrderId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOrderId, userEmail]);
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -124,9 +182,7 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
             ?
           </span>
           <div>
-            <div className="text-xs font-semibold text-white">
-              Need help?
-            </div>
+            <div className="text-xs font-semibold text-white">Need help?</div>
             <div className="text-[11px] text-white/60">
               Ask about your orders, deliveries or invoices. Our assistant
               replies instantly and our team can follow up if needed.
@@ -167,7 +223,13 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
         ref={scrollRef}
         className="flex-1 space-y-2 overflow-y-auto px-3 py-2 text-sm"
       >
-        {messages.length === 0 && (
+        {loadingHistory && (
+          <div className="rounded-xl border border-dashed border-white/15 bg-white/5 px-3 py-3 text-[12px] leading-relaxed text-white/60">
+            Loading previous messages…
+          </div>
+        )}
+
+        {!loadingHistory && messages.length === 0 && (
           <div className="rounded-xl border border-dashed border-white/15 bg-white/5 px-3 py-3 text-[12px] leading-relaxed text-white/60">
             Start a conversation with our support assistant.
             <ul className="mt-1 list-disc space-y-1 pl-4">
@@ -182,24 +244,25 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
           </div>
         )}
 
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            className={`flex ${
-              m.role === "user" ? "justify-end" : "justify-start"
-            }`}
-          >
+        {!loadingHistory &&
+          messages.map((m) => (
             <div
-              className={`max-w-[85%] rounded-2xl px-3 py-2 text-[13px] leading-relaxed ${
-                m.role === "user"
-                  ? "bg-yellow-500 text-[#041F3E]"
-                  : "bg-white/8 text-white"
+              key={m.id}
+              className={`flex ${
+                m.role === "user" ? "justify-end" : "justify-start"
               }`}
             >
-              {m.content}
+              <div
+                className={`max-w-[85%] rounded-2xl px-3 py-2 text-[13px] leading-relaxed ${
+                  m.role === "user"
+                    ? "bg-yellow-500 text-[#041F3E]"
+                    : "bg-white/8 text-white"
+                }`}
+              >
+                {m.content}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
       </div>
 
       {/* Error */}
@@ -241,3 +304,4 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
     </div>
   );
 };
+
