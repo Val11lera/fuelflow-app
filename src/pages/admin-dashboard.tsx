@@ -937,7 +937,7 @@ export default function AdminDashboard() {
     }
   }, [isAdmin]);
 
-  const filteredOrderConversations = useMemo(() => {
+   const filteredOrderConversations = useMemo(() => {
     const s = conversationSearch.trim().toLowerCase();
     return orderConversations.filter((c) => {
       if (conversationFilter === "escalated" && !c.escalated) return false;
@@ -951,54 +951,43 @@ export default function AdminDashboard() {
     });
   }, [orderConversations, conversationSearch, conversationFilter]);
 
-async function sendAdminReply() {
-  if (!selectedConversation) return;
-  const text = adminReply.trim();
-  if (!text) return;
+  async function sendAdminReply() {
+    if (!selectedConversation) return;
+    const text = adminReply.trim();
+    if (!text) return;
 
-  try {
-    setConversationMessagesLoading(true);
-    setOrderConversationsError(null);
+    try {
+      setConversationMessagesLoading(true);
+      setOrderConversationsError(null);
 
-    const res = await fetch("/api/admin/order-ai-reply", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        orderId: selectedConversation.order_id,
-        userEmail: selectedConversation.user_email,
-        adminEmail: me,
-        reply: text,
-      }),
-    });
+      const res = await fetch("/api/admin/order-ai-reply", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          orderId: selectedConversation.order_id,
+          userEmail: selectedConversation.user_email,
+          adminEmail: me,
+          reply: text,
+        }),
+      });
 
-    if (!res.ok) {
-      let message = `Failed (${res.status})`;
-      try {
-        const body = await res.json();
-        if (body?.error) message = body.error;
-      } catch {
-        // ignore JSON error
+      if (!res.ok) {
+        let message = `Failed (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) message = body.error;
+        } catch {
+          // ignore JSON parse error
+        }
+        throw new Error(message);
       }
-      throw new Error(message);
-    }
 
-    // Clear textarea
-    setAdminReply("");
-
-    // Reload messages + list so you see your reply + updates
-    await loadConversationMessages(selectedConversation);
-    await loadOrderConversations();
-  } catch (e: any) {
-    setOrderConversationsError(e?.message || "Failed to send reply");
-  } finally {
-    setConversationMessagesLoading(false);
-  }
-}
-
-
+      // Clear textarea
       setAdminReply("");
+
+      // Reload messages + list so you see your reply + updates
       await loadConversationMessages(selectedConversation);
       await loadOrderConversations();
     } catch (e: any) {
@@ -1007,6 +996,11 @@ async function sendAdminReply() {
       setConversationMessagesLoading(false);
     }
   }
+
+  /* =========================
+     Render
+     ========================= */
+
 
   /* =========================
      Render
