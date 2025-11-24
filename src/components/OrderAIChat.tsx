@@ -220,9 +220,9 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
 
       {/* Messages */}
       <div
-        ref={scrollRef}
-        className="flex-1 space-y-2 overflow-y-auto px-3 py-2 text-sm"
-      >
+  ref={scrollRef}
+  className="flex-1 min-h-0 space-y-2 overflow-y-auto px-3 py-2 text-sm"
+>
         {loadingHistory && (
           <div className="rounded-xl border border-dashed border-white/15 bg-white/5 px-3 py-3 text-[12px] leading-relaxed text-white/60">
             Loading previous messages…
