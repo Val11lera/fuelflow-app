@@ -2156,38 +2156,75 @@ export default function AdminDashboard() {
                 </div>
               ) : (
                 <>
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-white/10 pb-2">
-                    <div className="text-sm">
-                      <div className="font-semibold">
-                        Order {selectedConversation.order_id || "—"}
-                      </div>
-                      <div className="text-white/60 text-xs sm:text-[13px]">
-                        {selectedConversation.user_email ||
-                          "Unknown customer"}{" "}
-                        •{" "}
-                        {new Date(
-                          selectedConversation.created_at
-                        ).toLocaleString()}
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      {selectedConversation.escalated && (
-                        <span className="rounded-full bg-rose-600/80 px-3 py-1 text-[11px] font-semibold">
-                          Escalated to human
-                        </span>
-                      )}
-                      <button
-                        onClick={() =>
-                          selectedConversation &&
-                          loadConversationMessages(selectedConversation)
-                        }
-                        className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
-                      >
-                        Refresh
-                      </button>
-                    </div>
-                  </div>
+<div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-white/10 pb-2">
+  <div className="text-sm">
+    <div className="font-semibold">
+      Order {selectedConversation.order_id || "—"}
+    </div>
+    <div className="text-white/60 text-xs sm:text-[13px]">
+      {selectedConversation.user_email || "Unknown customer"} •{" "}
+      {new Date(selectedConversation.created_at).toLocaleString()}
+    </div>
+  </div>
+  <div className="flex flex-wrap items-center gap-2">
+    {/* Status pill */}
+    <span
+      className={cx(
+        "rounded-full px-3 py-1 text-[11px] font-semibold capitalize",
+        (selectedConversation.status || "") === "handled_by_admin" &&
+          "bg-green-600/80",
+        (selectedConversation.status || "") === "needs_human" &&
+          "bg-yellow-500/80 text-[#041F3E]",
+        !selectedConversation.status && "bg-white/10"
+      )}
+    >
+      {selectedConversation.status || "no status"}
+    </span>
 
+    {selectedConversation.escalated && (
+      <span className="rounded-full bg-rose-600/80 px-3 py-1 text-[11px] font-semibold">
+        Escalated to human
+      </span>
+    )}
+
+    <button
+      onClick={() =>
+        selectedConversation &&
+        loadConversationMessages(selectedConversation)
+      }
+      className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+    >
+      Refresh
+    </button>
+
+    {/* Close / reopen */}
+    <button
+      onClick={markConversationHandled}
+      disabled={selectedConversation.status === "handled_by_admin"}
+      className={cx(
+        "rounded-lg px-3 py-1.5 text-sm",
+        selectedConversation.status === "handled_by_admin"
+          ? "bg-white/10 text-white/50 cursor-not-allowed"
+          : "bg-yellow-500 text-[#041F3E] font-semibold hover:bg-yellow-400"
+      )}
+    >
+      Mark handled
+    </button>
+
+    <button
+      onClick={reopenConversation}
+      disabled={selectedConversation.status === "needs_human"}
+      className={cx(
+        "rounded-lg px-3 py-1.5 text-sm",
+        selectedConversation.status === "needs_human"
+          ? "bg-white/10 text-white/50 cursor-not-allowed"
+          : "bg-white/10 hover:bg-white/15"
+      )}
+    >
+      Re-open
+    </button>
+  </div>
+</div>
                   <div className="mt-3 flex-1 min-h-[140px] max-h-[360px] overflow-y-auto space-y-2 pr-1">
                     {conversationMessagesLoading ? (
                       <div className="text-white/70 text-sm">
