@@ -998,19 +998,6 @@ async function sendAdminReply() {
 }
 
 
-      // Mark conversation as handled by admin if your schema supports it
-      try {
-        await supabase
-          .from("ai_order_questions")
-          .update({
-            status: "handled_by_admin",
-            escalated: false,
-          } as any)
-          .eq("id", selectedConversation.id);
-      } catch {
-        // best-effort; ignore if columns don't exist
-      }
-
       setAdminReply("");
       await loadConversationMessages(selectedConversation);
       await loadOrderConversations();
