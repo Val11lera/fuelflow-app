@@ -951,7 +951,7 @@ export default function AdminDashboard() {
     });
   }, [orderConversations, conversationSearch, conversationFilter]);
 
-  async function sendAdminReply() {
+    async function sendAdminReply() {
     if (!selectedConversation) return;
     const text = adminReply.trim();
     if (!text) return;
@@ -984,7 +984,7 @@ export default function AdminDashboard() {
         throw new Error(message);
       }
 
-      // Clear textarea
+      // Clear the text area
       setAdminReply("");
 
       // Reload messages + list so you see your reply + updates
@@ -996,6 +996,7 @@ export default function AdminDashboard() {
       setConversationMessagesLoading(false);
     }
   }
+
 
   /* =========================
      Render
