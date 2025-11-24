@@ -173,8 +173,8 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
     ? recentOrders.find((o) => o.id === selectedOrderId)
     : null;
 
-  return (
-    <div className="flex h-full flex-col rounded-2xl border border-white/10 bg-[#020617]/95 shadow-lg backdrop-blur-sm">
+ return (
+  <div className="flex h-[60vh] max-h-[70vh] flex-col rounded-2xl border border-white/10 bg-[#020617]/95 shadow-lg backdrop-blur-sm">
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b border-white/5 px-3 py-2">
         <div className="flex items-center gap-2">
