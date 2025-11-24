@@ -1,23 +1,25 @@
 // src/pages/api/admin/order-ai-reply.ts
 // src/pages/api/admin/order-ai-reply.ts
+// Handles admin replies to escalated order conversations
+
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
-type Body = {
-  conversationId: string;          // ai_order_questions.id
-  orderId: string | null;
-  userEmail: string | null;
-  adminEmail: string;              // who is replying
-  reply: string;
-};
-
 type ResponseBody = { ok: true } | { error: string };
 
-const supabaseAdmin = createClient(
-  (process.env.SUPABASE_URL as string) ||
-    (process.env.NEXT_PUBLIC_SUPABASE_URL as string),
-  process.env.SUPABASE_SERVICE_ROLE_KEY as string
-);
+function getSupabaseAdmin() {
+  const url =
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key) {
+    throw new Error(
+      "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variables"
+    );
+  }
+
+  return createClient(url, key);
+}
 
 export default async function handler(
   req: NextApiRequest,
@@ -28,49 +30,87 @@ export default async function handler(
   }
 
   try {
-    const { conversationId, orderId, userEmail, adminEmail, reply } =
-      req.body as Body;
+    const body = req.body || {};
 
-    if (!conversationId || !reply || !adminEmail) {
-      return res.status(400).json({ error: "Missing required fields" });
+    const conversationId = body.conversationId || null; // ai_order_questions.id
+    const orderId = body.orderId || null;
+    const userEmail = body.userEmail || null;
+    const adminEmail = body.adminEmail || null;
+    const reply = body.reply || "";
+
+    //
+    // -------------------------------
+    // Validate fields
+    // -------------------------------
+    //
+    if (!reply || !adminEmail) {
+      return res
+        .status(400)
+        .json({ error: "Missing required fields (reply, adminEmail)" });
     }
 
-    // 1) Insert the admin reply as another assistant-style message
-    const row: any = {
+    // Note — conversationId is optional so older conversations can still be answered.
+    // userEmail is optional because not all conversations may include it.
+    // orderId is optional for generic customer questions.
+    //
+
+    const supabase = getSupabaseAdmin();
+
+    //
+    // -------------------------------
+    // 1) Insert the admin reply message
+    // -------------------------------
+    //
+    const insertPayload: any = {
       order_id: orderId,
       user_email: userEmail,
-      role: "assistant", // client chat treats this as assistant/human reply
+      role: "assistant", // your UI uses this to detect admin/AI side
       message: reply,
-      // If your table has this column, it's nice to populate
       sender_email: adminEmail,
     };
 
-    const { error: insertErr } = await supabaseAdmin
+    const { error: insertErr } = await supabase
       .from("order_ai_messages")
-      .insert(row);
+      .insert(insertPayload);
 
     if (insertErr) {
-      console.error("Failed to insert admin reply:", insertErr);
-      return res.status(500).json({ error: "Failed to save reply" });
+      console.error("Error inserting admin reply:", insertErr);
+      return res
+        .status(500)
+        .json({ error: insertErr.message || "Failed to save reply" });
     }
 
-    // 2) Mark the conversation as handled_by_admin (so it disappears from "Escalated only")
-    const { error: updateErr } = await supabaseAdmin
-      .from("ai_order_questions")
-      .update({
-        status: "handled_by_admin",
-        escalated: false,
-      } as any)
-      .eq("id", conversationId);
+    //
+    // -------------------------------
+    // 2) Mark conversation as handled (if conversationId exists)
+    // -------------------------------
+    //
+    if (conversationId) {
+      const { error: updateErr } = await supabase
+        .from("ai_order_questions")
+        .update({
+          status: "handled_by_admin",
+          escalated: false,
+        })
+        .eq("id", conversationId);
 
-    if (updateErr) {
-      console.error("Failed to update ai_order_questions:", updateErr);
-      // don't fail the whole request; the important part (message) is saved
+      if (updateErr) {
+        console.error(
+          "Warning: Failed to update ai_order_questions:",
+          updateErr
+        );
+        // Don't fail the request — the important part (admin message) is saved
+      }
     }
 
+    //
+    // -------------------------------
+    // DONE
+    // -------------------------------
+    //
     return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error("Admin order-ai-reply error:", err);
+    console.error("order-ai-reply unexpected error:", err);
     return res.status(500).json({ error: "Server error" });
   }
 }
