@@ -951,7 +951,7 @@ export default function AdminDashboard() {
     });
   }, [orderConversations, conversationSearch, conversationFilter]);
 
-    async function sendAdminReply() {
+  async function sendAdminReply() {
     if (!selectedConversation) return;
     const text = adminReply.trim();
     if (!text) return;
@@ -966,7 +966,7 @@ export default function AdminDashboard() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-         conversationId: selectedConversation.id,
+          conversationId: selectedConversation.id,
           orderId: selectedConversation.order_id,
           userEmail: selectedConversation.user_email,
           adminEmail: me,
@@ -984,6 +984,19 @@ export default function AdminDashboard() {
         }
         throw new Error(message);
       }
+
+      // Clear the text area
+      setAdminReply("");
+
+      // Reload messages + list so you see your reply + updates
+      await loadConversationMessages(selectedConversation);
+      await loadOrderConversations();
+    } catch (e: any) {
+      setOrderConversationsError(e?.message || "Failed to send reply");
+    } finally {
+      setConversationMessagesLoading(false);
+    }
+  }
 
   async function markConversationHandled() {
     if (!selectedConversation) return;
@@ -1049,20 +1062,6 @@ export default function AdminDashboard() {
       );
     } catch (e: any) {
       setOrderConversationsError(e?.message || "Failed to update status");
-    }
-  }
-
-       
-      // Clear the text area
-      setAdminReply("");
-
-      // Reload messages + list so you see your reply + updates
-      await loadConversationMessages(selectedConversation);
-      await loadOrderConversations();
-    } catch (e: any) {
-      setOrderConversationsError(e?.message || "Failed to send reply");
-    } finally {
-      setConversationMessagesLoading(false);
     }
   }
 
