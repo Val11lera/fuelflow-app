@@ -5,6 +5,14 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
+type Body = {
+  conversationId?: string | null;   // ai_order_questions.id
+  orderId?: string | null;          // public.orders.id
+  userEmail?: string | null;        // customer email
+  adminEmail?: string | null;       // who is replying (admin)
+  reply?: string | null;            // message text
+};
+
 type ResponseBody = { ok: true } | { error: string };
 
 function getSupabaseAdmin() {
@@ -26,47 +34,33 @@ export default async function handler(
   res: NextApiResponse<ResponseBody>
 ) {
   if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const body = req.body || {};
+    const { conversationId, orderId, userEmail, adminEmail, reply } =
+      (req.body || {}) as Body;
 
-    const conversationId = body.conversationId || null; // ai_order_questions.id
-    const orderId = body.orderId || null;
-    const userEmail = body.userEmail || null;
-    const adminEmail = body.adminEmail || null;
-    const reply = body.reply || "";
-
-    //
-    // -------------------------------
-    // Validate fields
-    // -------------------------------
-    //
-    if (!reply || !adminEmail) {
-      return res
-        .status(400)
-        .json({ error: "Missing required fields (reply, adminEmail)" });
+    // These are required so the client dashboard can find the message
+    if (!orderId || !userEmail || !reply || !adminEmail) {
+      return res.status(400).json({
+        error:
+          "Missing required fields (orderId, userEmail, reply, adminEmail)",
+      });
     }
-
-    // Note — conversationId is optional so older conversations can still be answered.
-    // userEmail is optional because not all conversations may include it.
-    // orderId is optional for generic customer questions.
-    //
 
     const supabase = getSupabaseAdmin();
 
     //
-    // -------------------------------
-    // 1) Insert the admin reply message
-    // -------------------------------
+    // 1) Insert the admin reply into order_ai_messages
     //
     const insertPayload: any = {
       order_id: orderId,
       user_email: userEmail,
-      role: "assistant", // your UI uses this to detect admin/AI side
+      role: "assistant",        // allowed by your CHECK (user | assistant)
       message: reply,
-      sender_email: adminEmail,
+      sender_email: adminEmail, // new column we added
     };
 
     const { error: insertErr } = await supabase
@@ -81,9 +75,7 @@ export default async function handler(
     }
 
     //
-    // -------------------------------
-    // 2) Mark conversation as handled (if conversationId exists)
-    // -------------------------------
+    // 2) Mark the conversation as handled_by_admin (if we know which one)
     //
     if (conversationId) {
       const { error: updateErr } = await supabase
@@ -96,21 +88,19 @@ export default async function handler(
 
       if (updateErr) {
         console.error(
-          "Warning: Failed to update ai_order_questions:",
+          "Warning: failed to update ai_order_questions:",
           updateErr
         );
-        // Don't fail the request — the important part (admin message) is saved
+        // Do not fail the whole request; the reply is already stored.
       }
     }
 
     //
-    // -------------------------------
-    // DONE
-    // -------------------------------
+    // Done
     //
     return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error("order-ai-reply unexpected error:", err);
+    console.error("Admin order-ai-reply error:", err);
     return res.status(500).json({ error: "Server error" });
   }
 }
