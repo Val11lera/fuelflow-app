@@ -966,6 +966,7 @@ export default function AdminDashboard() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+         conversationId: selectedConversation.id,
           orderId: selectedConversation.order_id,
           userEmail: selectedConversation.user_email,
           adminEmail: me,
