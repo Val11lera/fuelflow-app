@@ -81,9 +81,12 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
     try {
       const { data, error } = await supabase
         .from("ai_order_messages")
-        .select("id, created_at, sender_type, message_text")
+        .select("id, created_at, sender_type, message_text, status")
         .eq("order_id", orderId)
         .eq("user_email", userEmail)
+        // Only show history if the conversation is not marked as handled/closed
+        // (status is NULL or anything except 'handled_by_admin')
+        .or("status.is.null,status.neq.handled_by_admin")
         .order("created_at", { ascending: true });
 
       if (error) throw error;
@@ -105,7 +108,7 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
   }
 
   // Whenever the selected order changes:
-  // - if no order => general question => clear history (keep new session only)
+  // - if no order => general question => clear history
   // - if order selected => load full history from Supabase
   useEffect(() => {
     if (!selectedOrderId) {
@@ -173,8 +176,8 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
     ? recentOrders.find((o) => o.id === selectedOrderId)
     : null;
 
- return (
-  <div className="flex h-[60vh] max-h-[70vh] flex-col rounded-2xl border border-white/10 bg-[#020617]/95 shadow-lg backdrop-blur-sm">
+  return (
+    <div className="flex h-[60vh] max-h-[70vh] flex-col rounded-2xl border border-white/10 bg-[#020617]/95 shadow-lg backdrop-blur-sm">
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b border-white/5 px-3 py-2">
         <div className="flex items-center gap-2">
@@ -182,7 +185,9 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
             ?
           </span>
           <div>
-            <div className="text-xs font-semibold text-white">Need help?</div>
+            <div className="text-xs font-semibold text-white">
+              Need help?
+            </div>
             <div className="text-[11px] text-white/60">
               Ask about your orders, deliveries or invoices. Our assistant
               replies instantly and our team can follow up if needed.
@@ -220,9 +225,9 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
 
       {/* Messages */}
       <div
-  ref={scrollRef}
-  className="flex-1 min-h-0 space-y-2 overflow-y-auto px-3 py-2 text-sm"
->
+        ref={scrollRef}
+        className="flex-1 min-h-0 space-y-2 overflow-y-auto px-3 py-2 text-sm"
+      >
         {loadingHistory && (
           <div className="rounded-xl border border-dashed border-white/15 bg-white/5 px-3 py-3 text-[12px] leading-relaxed text-white/60">
             Loading previous messages…
