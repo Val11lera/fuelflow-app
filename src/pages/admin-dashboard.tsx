@@ -985,6 +985,74 @@ export default function AdminDashboard() {
         throw new Error(message);
       }
 
+  async function markConversationHandled() {
+    if (!selectedConversation) return;
+
+    try {
+      setOrderConversationsError(null);
+
+      const { error } = await supabase
+        .from("ai_order_questions")
+        .update({
+          status: "handled_by_admin",
+          escalated: false,
+        })
+        .eq("id", selectedConversation.id);
+
+      if (error) throw error;
+
+      // Update local state so UI reflects the change without full reload
+      setSelectedConversation((prev) =>
+        prev && prev.id === selectedConversation.id
+          ? { ...prev, status: "handled_by_admin", escalated: false }
+          : prev
+      );
+      setOrderConversations((prev) =>
+        prev.map((c) =>
+          c.id === selectedConversation.id
+            ? { ...c, status: "handled_by_admin", escalated: false }
+            : c
+        )
+      );
+    } catch (e: any) {
+      setOrderConversationsError(e?.message || "Failed to update status");
+    }
+  }
+
+  async function reopenConversation() {
+    if (!selectedConversation) return;
+
+    try {
+      setOrderConversationsError(null);
+
+      const { error } = await supabase
+        .from("ai_order_questions")
+        .update({
+          status: "needs_human",
+          escalated: true,
+        })
+        .eq("id", selectedConversation.id);
+
+      if (error) throw error;
+
+      setSelectedConversation((prev) =>
+        prev && prev.id === selectedConversation.id
+          ? { ...prev, status: "needs_human", escalated: true }
+          : prev
+      );
+      setOrderConversations((prev) =>
+        prev.map((c) =>
+          c.id === selectedConversation.id
+            ? { ...c, status: "needs_human", escalated: true }
+            : c
+        )
+      );
+    } catch (e: any) {
+      setOrderConversationsError(e?.message || "Failed to update status");
+    }
+  }
+
+       
       // Clear the text area
       setAdminReply("");
 
