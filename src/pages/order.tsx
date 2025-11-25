@@ -568,7 +568,7 @@ export default function OrderPage() {
                   <p className="mt-1 text-[11px] text-white/60">
                     For standard deliveries the minimum order is{" "}
                     <strong>{BUSINESS_MIN_LITRES} litres</strong>. Any
-                    amount upto {BUSINESS_MIN_LITRES } is not allowed.
+                    amount up to {BUSINESS_MIN_LITRES } is not allowed.
                   </p>
                 )}
                 {litresError && (
