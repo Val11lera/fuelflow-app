@@ -1,6 +1,7 @@
 // src/pages/api/stripe/webhook.ts
 // src/pages/api/stripe/webhook.ts
-// src/pages/api/stripe/webhook.ts
+// Stripe webhook handler for FuelFlow
+
 import type { NextApiRequest, NextApiResponse } from "next";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
@@ -19,6 +20,9 @@ function sb() {
   );
 }
 
+/* =========================
+   Types
+   ========================= */
 type OrderRow = {
   id?: string;
   product?: string | null;
@@ -34,6 +38,10 @@ type OrderRow = {
   delivery_date?: string | null;
   user_email?: string | null;
 };
+
+/* =========================
+   Helpers
+   ========================= */
 
 function readRawBody(req: any): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -56,6 +64,7 @@ const WEBHOOK_DEBUG =
   String(process.env.INVOICE_DEBUG_IN_WEBHOOK || "").toLowerCase() === "true";
 
 /* ---------- logging & helpers ---------- */
+
 async function logRow(row: {
   event_type: string;
   order_id?: string | null;
@@ -71,7 +80,9 @@ async function logRow(row: {
       error: row.error ?? null,
       extra: row.extra ?? null,
     } as any);
-  } catch {}
+  } catch (e) {
+    console.error("[webhook] failed to log row", e);
+  }
 }
 
 async function saveWebhookEvent(e: Stripe.Event) {
@@ -81,7 +92,9 @@ async function saveWebhookEvent(e: Stripe.Event) {
       .upsert([{ id: e.id, type: e.type, raw: e as any }], {
         onConflict: "id",
       });
-  } catch {}
+  } catch (error) {
+    console.error("[webhook] failed to save event", error);
+  }
 }
 
 /** Idempotency guard: has an invoice already been sent for this order? */
@@ -94,9 +107,13 @@ async function invoiceAlreadySent(orderId?: string | null): Promise<boolean> {
       .eq("event_type", "invoice_sent")
       .eq("order_id", orderId)
       .limit(1);
-    if (error) return false;
+    if (error) {
+      console.error("[webhook] invoiceAlreadySent error", error);
+      return false;
+    }
     return (data?.length || 0) > 0;
-  } catch {
+  } catch (e) {
+    console.error("[webhook] invoiceAlreadySent crash", e);
     return false;
   }
 }
@@ -110,7 +127,8 @@ async function hasCheckoutSessionForPI(piId?: string | null): Promise<boolean> {
       limit: 1,
     });
     return (list.data?.length || 0) > 0;
-  } catch {
+  } catch (e) {
+    console.error("[webhook] hasCheckoutSessionForPI error", e);
     return false;
   }
 }
@@ -139,6 +157,7 @@ function buildItemsFromOrderOrStripe(args: {
 }) {
   const { order, lineItems, session } = args;
 
+  // Prefer order row if present
   if (order && (order.litres || order.total_pence || order.unit_price_pence)) {
     const litres = Number(order.litres || 0);
     const desc =
@@ -160,12 +179,14 @@ function buildItemsFromOrderOrStripe(args: {
       return [{ description: desc, litres, unitPrice: unitMajor }];
   }
 
+  // Fallback: derive from Stripe line items
   const items: Array<{
     description: string;
     litres: number;
     total?: number;
     unitPrice?: number;
   }> = [];
+
   if (lineItems) {
     for (const row of lineItems.data) {
       const qty = row.quantity ?? 1;
@@ -189,13 +210,15 @@ function buildItemsFromOrderOrStripe(args: {
       const name =
         row.description ||
         ((row.price?.product as Stripe.Product | undefined)?.name ?? "Item");
+
       items.push({ description: name, litres, total: totalMajor });
     }
   }
 
+  // Last resort: just use session amount_total
   if (items.length === 0) {
     const totalMajor =
-      (typeof session?.amount_total === "number" ? session!.amount_total : 0) /
+      (typeof session?.amount_total === "number" ? session.amount_total : 0) /
       100;
     items.push({
       description: "Payment",
@@ -203,6 +226,7 @@ function buildItemsFromOrderOrStripe(args: {
       total: totalMajor,
     });
   }
+
   return items;
 }
 
@@ -225,6 +249,7 @@ async function callInvoiceRoute(payload: any) {
   const url = `${CANONICAL_BASE}/api/invoices/create${
     WEBHOOK_DEBUG ? `?debug=1` : ""
   }`;
+
   const resp = await fetch(url, {
     method: "POST",
     headers: {
@@ -239,7 +264,10 @@ async function callInvoiceRoute(payload: any) {
   let json: any = null;
   try {
     json = JSON.parse(text);
-  } catch {}
+  } catch {
+    // ignore
+  }
+
   if (!resp.ok) {
     console.error("[invoice] route call failed", {
       url,
@@ -255,7 +283,10 @@ async function callInvoiceRoute(payload: any) {
       status: "ok",
       extra: { storagePath: json?.storagePath, id: json?.id },
     });
-  } catch {}
+  } catch (e) {
+    console.error("[invoice] failed to log invoice_created", e);
+  }
+
   if (WEBHOOK_DEBUG && json?.debug) {
     console.log("[invoice] debug.normalized:", json.debug.normalized);
     console.log("[invoice] pages:", json.debug.pages);
@@ -264,9 +295,14 @@ async function callInvoiceRoute(payload: any) {
       json.debug.storagePath || json.storagePath
     );
   }
+
   return json;
 }
 
+/**
+ * Insert or update a payment row for this PI.
+ * This version NEVER swallows errors – they are logged in webhook_logs.
+ */
 async function upsertPaymentRow(args: {
   pi_id?: string | null;
   amount?: number | null; // pence
@@ -277,55 +313,46 @@ async function upsertPaymentRow(args: {
   cs_id?: string | null;
   meta?: any;
 }) {
-  try {
-    const row = {
-      pi_id: args.pi_id ?? undefined,
-      amount: args.amount ?? undefined,
-      currency: args.currency ?? undefined,
-      status: args.status ?? undefined,
-      email: args.email ?? undefined,
-      order_id: args.order_id ?? undefined,
-      cs_id: args.cs_id ?? undefined,
-      meta: args.meta ?? undefined,
-    };
-    if (row.pi_id)
-      await sb().from("payments").upsert([row as any], { onConflict: "pi_id" });
-    else await sb().from("payments").insert(row as any);
-  } catch {}
-}
-
-async function markPaymentReceiptSent(args: {
-  pi_id?: string | null;
-  order_id?: string | null;
-  storagePath?: string | null;
-}) {
-  const storagePath = args.storagePath;
-  if (!storagePath) return;
-
-  const updates: any = {
-    receipt_path: storagePath,
-    receipt_sent_at: new Date().toISOString(),
+  const row = {
+    pi_id: args.pi_id ?? null,
+    amount: args.amount ?? null,
+    currency: args.currency ?? null,
+    status: args.status ?? null,
+    email: args.email ?? null,
+    order_id: args.order_id ?? null,
+    cs_id: args.cs_id ?? null,
+    meta: args.meta ?? null,
   };
 
-  let q = sb().from("payments").update(updates);
-
-  if (args.pi_id) {
-    q = q.eq("pi_id", args.pi_id);
-  } else if (args.order_id) {
-    q = q.eq("order_id", args.order_id);
-  } else {
-    return;
-  }
-
   try {
-    await q;
-  } catch (e) {
-    console.error("[webhook] markPaymentReceiptSent error:", e);
+    const { error } = await sb()
+      .from("payments")
+      .upsert([row as any], { onConflict: "pi_id" });
+
+    if (error) {
+      console.error("[payments] upsert error:", error);
+      await logRow({
+        event_type: "payment_upsert_error",
+        order_id: args.order_id ?? null,
+        error: error.message,
+        extra: row,
+      });
+    }
+  } catch (err: any) {
+    console.error("[payments] upsert crash:", err);
+    await logRow({
+      event_type: "payment_upsert_crash",
+      order_id: args.order_id ?? null,
+      error: err?.message || String(err),
+      extra: row,
+    });
   }
 }
 
+/* =========================
+   Main handler
+   ========================= */
 
-/* ---------- Handler ---------- */
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
@@ -346,6 +373,7 @@ export default async function handler(
       process.env.STRIPE_WEBHOOK_SECRET as string
     );
   } catch (err: any) {
+    console.error("[webhook] bad signature", err);
     await logRow({ event_type: "bad_signature", error: err?.message });
     return res.status(400).send(`Webhook Error: ${err?.message}`);
   }
@@ -355,7 +383,7 @@ export default async function handler(
   try {
     switch (event.type) {
       /* ============================================================
-         PRIMARY path for invoicing
+         PRIMARY path for invoicing: Checkout Session completed
          ============================================================ */
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
@@ -365,20 +393,21 @@ export default async function handler(
             ? session.payment_intent
             : session.payment_intent?.id || null;
 
-        // 🔑 MAIN FIX:
-        // 1) try metadata.order_id
-        // 2) try to read orderId from success_url ?orderId=...
-        // 3) fallback to PI metadata.order_id
-        let orderId: string | undefined =
-          (session.metadata as any)?.order_id || undefined;
+        // Resolve orderId robustly:
+        // 1) metadata.order_id
+        // 2) success_url ?orderId=...
+        // 3) payment_intent.metadata.order_id
+        let orderId: string | undefined = undefined;
+
+        if ((session.metadata as any)?.order_id) {
+          orderId = (session.metadata as any).order_id;
+        }
 
         if (!orderId && typeof session.success_url === "string") {
           try {
             const u = new URL(session.success_url);
             const fromQuery = u.searchParams.get("orderId");
-            if (fromQuery) {
-              orderId = fromQuery;
-            }
+            if (fromQuery) orderId = fromQuery;
           } catch {
             // ignore parse errors
           }
@@ -387,15 +416,25 @@ export default async function handler(
         if (!orderId && piId) {
           try {
             const pi = await stripe.paymentIntents.retrieve(piId);
-            orderId = (pi.metadata as any)?.order_id || undefined;
-          } catch {
-            // ignore
+            if ((pi.metadata as any)?.order_id) {
+              orderId = (pi.metadata as any).order_id;
+            }
+          } catch (e) {
+            console.error(
+              "[webhook] failed to fetch PI for orderId resolution",
+              e
+            );
           }
         }
 
         await logRow({
           event_type: "checkout.session.completed/received",
           order_id: orderId ?? null,
+          extra: {
+            session_id: session.id,
+            pi_id: piId,
+            metadata: session.metadata || null,
+          },
         });
 
         // Mark order as paid
@@ -409,7 +448,10 @@ export default async function handler(
               stripe_payment_intent: piId ?? null,
             } as any)
             .eq("id", orderId);
-          if (error) throw new Error(`Supabase update failed: ${error.message}`);
+
+          if (error)
+            throw new Error(`Supabase order update failed: ${error.message}`);
+
           await logRow({
             event_type: "order_updated_to_paid",
             order_id: orderId,
@@ -419,6 +461,10 @@ export default async function handler(
           await logRow({
             event_type: "missing_order_id_on_session",
             status: "pending",
+            extra: {
+              session_id: session.id,
+              metadata: session.metadata || null,
+            },
           });
         }
 
@@ -437,7 +483,7 @@ export default async function handler(
               (session.metadata as any)?.email) ?? null,
           order_id: orderId ?? null,
           cs_id: session.id,
-          meta: session.metadata ?? null,
+          meta: session.metadata ? { ...(session.metadata as any) } : null,
         });
 
         // Idempotency: if we already sent an invoice for this order, skip.
@@ -454,6 +500,7 @@ export default async function handler(
           limit: 100,
           expand: ["data.price.product"],
         });
+
         const order = await fetchOrder(orderId ?? null);
         const items = buildItemsFromOrderOrStripe({
           order,
@@ -496,28 +543,16 @@ export default async function handler(
         };
 
         const resp = await callInvoiceRoute(payload);
-        const storagePath =
-          (resp as any)?.debug?.storagePath ||
-          (resp as any)?.storagePath ||
-          (resp as any)?.receipt_path ||
-          null;
-
-        if (storagePath) {
-          await markPaymentReceiptSent({
-            pi_id: piId,
-            order_id: orderId ?? null,
-            storagePath,
-          });
-        }
 
         await logRow({
           event_type: "invoice_sent",
           order_id: orderId ?? null,
           status: "paid",
-          extra: { storagePath },
+          extra: { storagePath: resp?.storagePath },
         });
-        break;
 
+        break;
+      }
 
       /* ============================================================
          SECONDARY path — only when there is NO Checkout Session
@@ -527,7 +562,7 @@ export default async function handler(
         const pi = event.data.object as Stripe.PaymentIntent;
         const piId = pi.id;
 
-        // If this PI is tied to a Checkout Session:
+        // If this PI is tied to a Checkout Session,
         // still mark the order as paid and save the payment,
         // but leave invoicing to checkout.session.completed.
         if (await hasCheckoutSessionForPI(piId)) {
@@ -536,8 +571,12 @@ export default async function handler(
           if (orderIdFromPi) {
             const { error } = await sb()
               .from("orders")
-              .update({ status: "paid", paid_at: new Date().toISOString() })
+              .update({
+                status: "paid",
+                paid_at: new Date().toISOString(),
+              })
               .eq("id", orderIdFromPi);
+
             if (error)
               throw new Error(`Supabase update failed: ${error.message}`);
 
@@ -581,6 +620,7 @@ export default async function handler(
         await logRow({
           event_type: "payment_intent.succeeded/received",
           order_id: orderId ?? null,
+          extra: { pi_id: piId, metadata: pi.metadata || null },
         });
 
         const order = await fetchOrder(orderId);
@@ -588,9 +628,15 @@ export default async function handler(
         if (orderId) {
           const { error } = await sb()
             .from("orders")
-            .update({ status: "paid", paid_at: new Date().toISOString() })
+            .update({
+              status: "paid",
+              paid_at: new Date().toISOString(),
+            })
             .eq("id", orderId);
-          if (error) throw new Error(`Supabase update failed: ${error.message}`);
+
+          if (error)
+            throw new Error(`Supabase update failed: ${error.message}`);
+
           await logRow({
             event_type: "order_updated_to_paid",
             order_id: orderId,
@@ -625,6 +671,7 @@ export default async function handler(
           total?: number;
           unitPrice?: number;
         }>;
+
         if (
           order &&
           (order.litres || order.total_pence || order.unit_price_pence)
@@ -639,6 +686,7 @@ export default async function handler(
               ? totalMajor / litres
               : undefined;
           const desc = order.product || order.fuel || "Payment";
+
           items =
             totalMajor != null
               ? [{ description: desc, litres, total: totalMajor }]
@@ -692,6 +740,7 @@ export default async function handler(
           status: "paid",
           extra: { storagePath: resp?.storagePath },
         });
+
         break;
       }
 
@@ -712,7 +761,9 @@ export default async function handler(
           try {
             const pi = await stripe.paymentIntents.retrieve(piId);
             orderId = (pi.metadata as any)?.order_id || null;
-          } catch {}
+          } catch (e) {
+            console.error("[webhook] refund: failed to fetch PI", e);
+          }
         }
 
         const total = typeof charge.amount === "number" ? charge.amount : null;
@@ -733,10 +784,12 @@ export default async function handler(
             .from("orders")
             .update({ status: newStatus })
             .eq("id", orderId);
+
           if (error)
             throw new Error(
               `Supabase order refund update failed: ${error.message}`
             );
+
           await logRow({
             event_type: "order_refund_status_update",
             order_id: orderId,
@@ -789,6 +842,7 @@ export default async function handler(
       }
 
       default:
+        // Ignore other events but still return 200 so Stripe is happy
         break;
     }
   } catch (e: any) {
