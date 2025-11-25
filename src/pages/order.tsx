@@ -328,7 +328,7 @@ export default function OrderPage() {
     }
     if (!isValidLitres(litres)) {
       setLitresError(
-        `Normal minimum order is ${BUSINESS_MIN_LITRES} litres. For testing you can also place an order for exactly ${TEST_LITRES} litre.`
+        `Normal minimum order is ${BUSINESS_MIN_LITRES} litres.`
       );
       return;
     }
