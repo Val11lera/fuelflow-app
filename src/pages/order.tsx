@@ -18,6 +18,9 @@ type ContractStatus = "draft" | "signed" | "approved" | "cancelled";
 
 const TERMS_VERSION = "v1.2";
 
+// 👉 Business minimum. For testing this is 1; when you go live set to 500.
+const BUSINESS_MIN_LITRES = 1;
+
 type ContractRow = {
   id: string;
   tank_option: TankOption;
@@ -77,10 +80,10 @@ function ymd(d: Date) {
   return `${y}-${m}-${day}`;
 }
 
-// --- working-day helpers ---
+// ---- working-day helpers ----
 
-function isWorkingDay(d: Date) {
-  const day = d.getDay(); // 0 = Sun, 6 = Sat
+function isWorkingDay(date: Date) {
+  const day = date.getDay(); // 0 = Sun, 6 = Sat
   return day !== 0 && day !== 6;
 }
 
@@ -102,20 +105,20 @@ function addWorkingDays(from: Date, days: number) {
  */
 function getEarliestDeliveryDate() {
   const now = new Date();
-  const start = new Date(now);
+  const processing = new Date(now);
 
   const hour = now.getHours();
 
-  // If weekend or outside 9–17, move to next working day 09:00
   if (!isWorkingDay(now) || hour < 9 || hour >= 17) {
+    // move to next working day at 09:00
     do {
-      start.setDate(start.getDate() + 1);
-    } while (!isWorkingDay(start));
-    start.setHours(9, 0, 0, 0);
+      processing.setDate(processing.getDate() + 1);
+    } while (!isWorkingDay(processing));
+    processing.setHours(9, 0, 0, 0);
   }
 
-  // Then add 3 working days
-  const earliest = addWorkingDays(start, 3);
+  // add 3 working days
+  const earliest = addWorkingDays(processing, 3);
   return earliest;
 }
 
@@ -148,6 +151,7 @@ export default function OrderPage() {
   // validation state
   const [dateError, setDateError] = useState<string | null>(null);
   const [showDeliveryInfo, setShowDeliveryInfo] = useState(false);
+  const [showLitresInfo, setShowLitresInfo] = useState(false);
 
   // requirements
   const [termsAccepted, setTermsAccepted] = useState(false);
@@ -156,7 +160,7 @@ export default function OrderPage() {
 
   const [startingCheckout, setStartingCheckout] = useState(false);
 
-  // Earliest date based on business rules above
+  // Earliest date based on working-days rule
   const minDeliveryDateStr = useMemo(() => {
     const earliest = getEarliestDeliveryDate();
     return ymd(earliest);
@@ -279,7 +283,7 @@ export default function OrderPage() {
   const hasRentApproved = !!rentContract;
   const requirementsMet = termsAccepted && (hasBuy || hasRentApproved);
 
-  // date validation
+  // date validation (weekday + minimum date)
   useEffect(() => {
     if (!deliveryDate) {
       setDateError(null);
@@ -289,13 +293,21 @@ export default function OrderPage() {
     const min = new Date(minDeliveryDateStr);
     if (isNaN(chosen.getTime())) {
       setDateError("Please choose a valid date.");
-    } else if (chosen < min) {
-      setDateError(
-        `Earliest delivery is ${min.toLocaleDateString()} (based on our 3-working-day rule).`
-      );
-    } else {
-      setDateError(null);
+      return;
     }
+    if (!isWorkingDay(chosen)) {
+      setDateError(
+        "Deliveries are Monday to Friday only. Please choose a weekday."
+      );
+      return;
+    }
+    if (chosen < min) {
+      setDateError(
+        `Earliest delivery is ${min.toLocaleDateString()} (3 working days after the processing day).`
+      );
+      return;
+    }
+    setDateError(null);
   }, [deliveryDate, minDeliveryDateStr]);
 
   const payDisabled =
@@ -307,7 +319,7 @@ export default function OrderPage() {
     !city ||
     !deliveryDate ||
     !Number.isFinite(litres) ||
-    litres <= 0 ||
+    litres < BUSINESS_MIN_LITRES ||
     unitPrice <= 0 ||
     !receiptEmail;
 
@@ -316,18 +328,24 @@ export default function OrderPage() {
     try {
       setStartingCheckout(true);
 
-      // final guard on date rule
-      const min = new Date(minDeliveryDateStr);
+      const litresNum = Number(litres);
+
+      // final guards
       const chosen = new Date(deliveryDate);
-      if (!deliveryDate || isNaN(chosen.getTime()) || chosen < min) {
+      const min = new Date(minDeliveryDateStr);
+
+      if (
+        !deliveryDate ||
+        isNaN(chosen.getTime()) ||
+        chosen < min ||
+        !isWorkingDay(chosen)
+      ) {
         alert(
-          `Earliest delivery is ${min.toLocaleDateString()} (3 working days after the processing day).`
+          `Please choose a weekday delivery date on or after ${min.toLocaleDateString()}.`
         );
         return;
       }
 
-      // Extra sanity check for all order details (matches API expectations)
-      const litresNum = Number(litres);
       if (
         !fuel ||
         !receiptEmail ||
@@ -337,9 +355,9 @@ export default function OrderPage() {
         !postcode ||
         !deliveryDate ||
         !Number.isFinite(litresNum) ||
-        litresNum <= 0
+        litresNum < BUSINESS_MIN_LITRES
       ) {
-        alert("Missing order details");
+        alert("Missing or invalid order details.");
         return;
       }
 
@@ -363,7 +381,6 @@ export default function OrderPage() {
       const data = (await res.json()) as { url?: string; error?: string };
 
       if (!res.ok || !data.url) {
-        // Show the real API / Supabase error so we can diagnose
         alert(data.error || `Checkout failed (${res.status})`);
         return;
       }
@@ -502,14 +519,32 @@ export default function OrderPage() {
               </div>
 
               <div>
-                <label className={label}>Litres</label>
+                <div className="flex items-center justify-between">
+                  <label className={label}>Litres</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowLitresInfo((v) => !v)}
+                    className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full border border-yellow-400 bg-yellow-500/10 text-[10px] text-yellow-300 hover:bg-yellow-500/20"
+                    aria-label="Minimum order information"
+                  >
+                    ?
+                  </button>
+                </div>
                 <input
                   className={input}
                   type="number"
-                  min={1}
+                  min={BUSINESS_MIN_LITRES}
                   value={litres}
                   onChange={(e) => setLitres(Number(e.target.value))}
                 />
+                {showLitresInfo && (
+                  <p className="mt-1 text-[11px] text-white/60">
+                    For live deliveries the normal minimum order is{" "}
+                    <strong>500 litres</strong>. This environment is currently
+                    configured to allow smaller test orders so you can try out
+                    the system. When you go live, you can increase the minimum.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -524,7 +559,7 @@ export default function OrderPage() {
                   <button
                     type="button"
                     onClick={() => setShowDeliveryInfo((v) => !v)}
-                    className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full border border-white/30 text-[10px] text-white/80 hover:bg-white/10"
+                    className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full border border-yellow-400 bg-yellow-500/10 text-[10px] text-yellow-300 hover:bg-yellow-500/20"
                     aria-label="How we calculate earliest delivery"
                   >
                     ?
@@ -540,16 +575,15 @@ export default function OrderPage() {
                 {showDeliveryInfo && (
                   <p className="mt-1 text-[11px] text-white/60">
                     Orders are processed Monday–Friday, 9am–5pm. If you order
-                    outside those hours (for example at night or over the
-                    weekend), we treat it as received on the next working day.
-                    The earliest delivery is then three working days after that
-                    processing day.
+                    outside those hours (for example late at night or over the
+                    weekend), we treat it as received on the{" "}
+                    <strong>next working day</strong>. The earliest delivery is
+                    then <strong>three working days</strong> after that
+                    processing day. Deliveries are on weekdays only.
                   </p>
                 )}
                 {dateError && (
-                  <div className="mt-1 text-xs text-rose-300">
-                    {dateError}
-                  </div>
+                  <div className="mt-1 text-xs text-rose-300">{dateError}</div>
                 )}
               </div>
 
@@ -662,9 +696,9 @@ export default function OrderPage() {
             </div>
 
             <p className="mt-4 text-xs text-white/70">
-              Final amount may vary if delivery conditions require adjustments
-              (e.g., timed slots, restricted access or waiting time). You’ll
-              receive a receipt by email.
+              The actual amount you pay is handled securely by Stripe. We split
+              the payment between the refinery and FuelFlow&apos;s commission
+              using Stripe Connect. You&apos;ll receive a receipt by email.
             </p>
 
             <button
@@ -673,7 +707,7 @@ export default function OrderPage() {
               onClick={startCheckout}
               title={!requirementsMet ? "Complete Documents first" : ""}
             >
-              {startingCheckout ? "Processing…" : "Pay"}
+              {startingCheckout ? "Processing…" : "Go to payment"}
             </button>
           </aside>
         </div>
@@ -691,7 +725,7 @@ export default function OrderPage() {
             disabled={payDisabled || startingCheckout}
             onClick={startCheckout}
           >
-            {startingCheckout ? "Processing…" : "Pay"}
+            {startingCheckout ? "Processing…" : "Go to payment"}
           </button>
         </div>
       </div>
@@ -772,4 +806,3 @@ function DocumentIcon({ className }: { className?: string }) {
     </svg>
   );
 }
-
