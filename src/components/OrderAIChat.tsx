@@ -1,6 +1,7 @@
 // src/components/OrderAIChat.tsx
 // src/components/OrderAIChat.tsx
 // src/components/OrderAIChat.tsx
+// src/components/OrderAIChat.tsx
 "use client";
 
 import React, { useMemo, useRef, useState, useEffect } from "react";
@@ -68,7 +69,7 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
   // Only show last 8–10 orders in dropdown
   const recentOrders = useMemo(() => orders.slice(0, 10), [orders]);
 
-  // Load saved history for a specific order + user from ai_order_messages view
+  // Load saved history for a specific order + user from ai_order_messages table / view
   async function loadOrderHistory(orderId: string) {
     if (!supabase || !userEmail) {
       setMessages([]);
