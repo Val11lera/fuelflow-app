@@ -71,7 +71,39 @@ export default async function handler(
         "can i speak to someone",
       ].some((phrase) => userText.includes(phrase)) || userText.includes("human");
 
-    // Pull order + payments + fulfilment notes for extra context (if there is an orderId)
+    // --- NEW: ensure ai_order_questions is kept in sync for the admin dashboard ---
+    if (orderId && userEmail) {
+      const emailLower = userEmail.toLowerCase();
+
+      // Base row: update the latest question text
+      const convRow: any = {
+        order_id: orderId,
+        user_email: emailLower,
+        question_text: latestUserMessage.content,
+      };
+
+      // Only force status/escalated when the user explicitly asks for a human.
+      // If they don't, we leave existing status as-is (open / needs_human / handled_by_admin).
+      if (needsHuman) {
+        convRow.status = "needs_human";
+        convRow.escalated = true;
+      }
+
+      const { error: convErr } = await supabaseAdmin
+        .from("ai_order_questions")
+        .upsert(convRow, {
+          // Matches the UNIQUE(order_id, user_email) constraint
+          onConflict: "order_id,user_email",
+        });
+
+      if (convErr) {
+        console.error("Failed to upsert ai_order_questions:", convErr);
+        // don’t fail the whole request – AI reply should still work
+      }
+    }
+    // ---------------------------------------------------------------------------
+
+    // Pull order + payments + fulfilment notes for extra context
     let orderSummary = "";
     if (orderId) {
       const { data: order, error: orderErr } = await supabaseAdmin
@@ -114,7 +146,27 @@ export default async function handler(
       }
     }
 
-    // System prompt
+    // 🔹 Load full saved history (including admin replies) from order_ai_messages
+    let dbHistory: ChatMessage[] = [];
+    if (orderId && userEmail) {
+      const { data: history, error: historyErr } = await supabaseAdmin
+        .from("order_ai_messages")
+        .select("role, message, created_at")
+        .eq("order_id", orderId)
+        .eq("user_email", userEmail)
+        .order("created_at", { ascending: true });
+
+      if (historyErr) {
+        console.error("Failed to load order_ai_messages history:", historyErr);
+      } else if (history && history.length > 0) {
+        dbHistory = history.map((row: any) => ({
+          role: (row.role === "user" ? "user" : "assistant") as Role,
+          content: row.message as string,
+        }));
+      }
+    }
+
+    // System instructions
     const systemBase =
       "You are FuelFlow's AI assistant inside the client dashboard. " +
       "Always be concise, friendly and practical. " +
@@ -124,6 +176,13 @@ export default async function handler(
       "  • Still give a short, helpful answer to their actual question.\n" +
       "  • AND clearly say that you are flagging this conversation for the FuelFlow team to review.\n" +
       "  • Do NOT say that you cannot arrange calls or contact. Instead, reassure them that a person can step in.\n";
+
+    // Use DB history when we have it (so admin replies + previous AI answers are included).
+    // Fall back to the messages from the client when there is no orderId/userEmail.
+    const conversationMessages: ChatMessage[] =
+      orderId && userEmail
+        ? [...dbHistory, latestUserMessage] // full saved history + newest question
+        : messages; // fallback (non-order chat)
 
     const apiMessages = [
       {
@@ -136,7 +195,7 @@ export default async function handler(
             content: "Context about the selected order:\n" + orderSummary,
           } as const)
         : null,
-      ...messages.map((m) => ({
+      ...conversationMessages.map((m) => ({
         role: m.role,
         content: m.content,
       })),
@@ -166,42 +225,34 @@ export default async function handler(
       data?.choices?.[0]?.message?.content ??
       "Sorry, I couldn't generate a reply.";
 
+    // Make 100% sure we tell them it's flagged when they want a human
     const reply = needsHuman
       ? `${rawReply}\n\nI've flagged this conversation for our support team to review, so a person can step in and follow up if needed.`
       : rawReply;
 
-    // Save the new user message + AI reply to Supabase (linked to order if provided)
-    try {
-      const statusValue = needsHuman ? "awaiting_admin" : null;
-
+    // Save the new user message + AI reply to Supabase (linked to order)
+    if (orderId) {
       const inserts = [
         {
-          order_id: orderId ?? null,
+          order_id: orderId,
           user_email: userEmail ?? null,
-          sender_type: "customer",
-          sender_email: userEmail ?? null,
-          message_text: latestUserMessage.content,
-          status: statusValue,
+          role: "user" as Role,
+          message: latestUserMessage.content,
         },
         {
-          order_id: orderId ?? null,
+          order_id: orderId,
           user_email: userEmail ?? null,
-          sender_type: "assistant",
-          sender_email: null,
-          message_text: reply,
-          status: statusValue,
+          role: "assistant" as Role,
+          message: reply,
         },
       ];
 
       const { error: insertErr } = await supabaseAdmin
-        .from("ai_order_messages")
+        .from("order_ai_messages")
         .insert(inserts as any);
-
       if (insertErr) {
         console.error("Failed to insert AI messages:", insertErr);
       }
-    } catch (e) {
-      console.error("Crash inserting AI messages:", e);
     }
 
     return res.status(200).json({ reply });
