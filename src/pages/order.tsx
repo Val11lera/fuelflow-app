@@ -18,8 +18,11 @@ type ContractStatus = "draft" | "signed" | "approved" | "cancelled";
 
 const TERMS_VERSION = "v1.2";
 
-// 👉 Business minimum. For testing this is 1; when you go live set to 500.
-const BUSINESS_MIN_LITRES = 1;
+// Special litres rules:
+// - In production: 500+ litres
+// - For testing: exactly 1 litre is also allowed.
+const TEST_LITRES = 1;
+const BUSINESS_MIN_LITRES = 500;
 
 type ContractRow = {
   id: string;
@@ -122,6 +125,12 @@ function getEarliestDeliveryDate() {
   return earliest;
 }
 
+function isValidLitres(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return false;
+  if (value === TEST_LITRES) return true; // 1L test orders
+  return value >= BUSINESS_MIN_LITRES; // real orders
+}
+
 /* =========================
    Page
    ========================= */
@@ -150,6 +159,7 @@ export default function OrderPage() {
 
   // validation state
   const [dateError, setDateError] = useState<string | null>(null);
+  const [litresError, setLitresError] = useState<string | null>(null);
   const [showDeliveryInfo, setShowDeliveryInfo] = useState(false);
   const [showLitresInfo, setShowLitresInfo] = useState(false);
 
@@ -310,16 +320,31 @@ export default function OrderPage() {
     setDateError(null);
   }, [deliveryDate, minDeliveryDateStr]);
 
+  // litres validation
+  useEffect(() => {
+    if (!Number.isFinite(litres) || litres <= 0) {
+      setLitresError("Please enter a valid number of litres.");
+      return;
+    }
+    if (!isValidLitres(litres)) {
+      setLitresError(
+        `Normal minimum order is ${BUSINESS_MIN_LITRES} litres. For testing you can also place an order for exactly ${TEST_LITRES} litre.`
+      );
+      return;
+    }
+    setLitresError(null);
+  }, [litres]);
+
   const payDisabled =
     !requirementsMet ||
     !!dateError ||
+    !!litresError ||
     !fullName ||
     !address1 ||
     !postcode ||
     !city ||
     !deliveryDate ||
     !Number.isFinite(litres) ||
-    litres < BUSINESS_MIN_LITRES ||
     unitPrice <= 0 ||
     !receiptEmail;
 
@@ -355,9 +380,11 @@ export default function OrderPage() {
         !postcode ||
         !deliveryDate ||
         !Number.isFinite(litresNum) ||
-        litresNum < BUSINESS_MIN_LITRES
+        !isValidLitres(litresNum)
       ) {
-        alert("Missing or invalid order details.");
+        alert(
+          `Normal minimum order is ${BUSINESS_MIN_LITRES} litres (or ${TEST_LITRES} litre for testing).`
+        );
         return;
       }
 
@@ -470,7 +497,7 @@ export default function OrderPage() {
             value={dieselPrice != null ? GBP(dieselPrice) : "—"}
             suffix="/ litre"
           />
-          <Tile title="Estimated Total" value={GBP(estTotal)} />
+          <Tile title="Estimated total" value={GBP(estTotal)} />
         </section>
         <div className="text-xs text-white/70">
           {loadingPrices
@@ -533,17 +560,24 @@ export default function OrderPage() {
                 <input
                   className={input}
                   type="number"
-                  min={BUSINESS_MIN_LITRES}
+                  min={TEST_LITRES}
                   value={litres}
                   onChange={(e) => setLitres(Number(e.target.value))}
                 />
                 {showLitresInfo && (
                   <p className="mt-1 text-[11px] text-white/60">
-                    For live deliveries the normal minimum order is{" "}
-                    <strong>500 litres</strong>. This environment is currently
-                    configured to allow smaller test orders so you can try out
-                    the system. When you go live, you can increase the minimum.
+                    For standard deliveries the minimum order is{" "}
+                    <strong>{BUSINESS_MIN_LITRES} litres</strong>. For testing
+                    purposes this system also allows a{" "}
+                    <strong>single {TEST_LITRES} litre</strong> order. Any
+                    amount between {TEST_LITRES + 1} and{" "}
+                    {BUSINESS_MIN_LITRES - 1} is not allowed.
                   </p>
+                )}
+                {litresError && (
+                  <div className="mt-1 text-xs text-rose-300">
+                    {litresError}
+                  </div>
                 )}
               </div>
 
@@ -695,12 +729,7 @@ export default function OrderPage() {
               <span className="font-semibold">{GBP(estTotal)}</span>
             </div>
 
-            <p className="mt-4 text-xs text-white/70">
-              The actual amount you pay is handled securely by Stripe. We split
-              the payment between the refinery and FuelFlow&apos;s commission
-              using Stripe Connect. You&apos;ll receive a receipt by email.
-            </p>
-
+            {/* No explanatory paragraph here – back to clean layout */}
             <button
               className={`${button} ${buttonPrimary} w-full mt-4 hidden md:block`}
               disabled={payDisabled || startingCheckout}
