@@ -496,14 +496,28 @@ export default async function handler(
         };
 
         const resp = await callInvoiceRoute(payload);
+        const storagePath =
+          (resp as any)?.debug?.storagePath ||
+          (resp as any)?.storagePath ||
+          (resp as any)?.receipt_path ||
+          null;
+
+        if (storagePath) {
+          await markPaymentReceiptSent({
+            pi_id: piId,
+            order_id: orderId ?? null,
+            storagePath,
+          });
+        }
+
         await logRow({
           event_type: "invoice_sent",
           order_id: orderId ?? null,
           status: "paid",
-          extra: { storagePath: resp?.storagePath },
+          extra: { storagePath },
         });
         break;
-      }
+
 
       /* ============================================================
          SECONDARY path — only when there is NO Checkout Session
