@@ -288,7 +288,7 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
                   {/* small header for admin messages */}
                   {isAdmin && (
                     <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
-                      FuelFlow support (human)
+                      FuelFlow support team
                     </div>
                   )}
                   <div className="whitespace-pre-wrap break-words">
