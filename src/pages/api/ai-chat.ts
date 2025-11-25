@@ -1,5 +1,6 @@
 // src/pages/api/ai-chat.ts
 // src/pages/api/ai-chat.ts
+// src/pages/api/ai-chat.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 
 type ChatMessage = {
@@ -36,6 +37,16 @@ export default async function handler(
       return res.status(400).json({ error: "Invalid messages" });
     }
 
+    const messages: ChatMessage[] = [
+      {
+        role: "system",
+        content:
+          "You are FuelFlow's customer-facing assistant. Be concise, friendly and clear. " +
+          "You can help with questions about ordering fuel, delivery windows, pricing, and basic account support.",
+      },
+      ...body.messages,
+    ];
+
     const apiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -44,7 +55,7 @@ export default async function handler(
       },
       body: JSON.stringify({
         model: "gpt-4o-mini", // small + cheap, good for chat
-        messages: body.messages,
+        messages,
       }),
     });
 
@@ -66,4 +77,3 @@ export default async function handler(
     return res.status(500).json({ error: "Server error" });
   }
 }
-
