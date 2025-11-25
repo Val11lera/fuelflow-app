@@ -1,7 +1,6 @@
 // src/components/OrderAIChat.tsx
 // src/components/OrderAIChat.tsx
 // src/components/OrderAIChat.tsx
-// src/components/OrderAIChat.tsx
 "use client";
 
 import React, { useMemo, useRef, useState, useEffect } from "react";
@@ -9,10 +8,21 @@ import { createClient } from "@supabase/supabase-js";
 
 type Role = "user" | "assistant";
 
+/**
+ * senderType:
+ *  - "customer"  -> customer bubble (yellow, right)
+ *  - "assistant" -> AI assistant bubble
+ *  - "admin"     -> human support bubble (highlighted)
+ */
+type SenderType = "customer" | "assistant" | "admin";
+
 type LocalMessage = {
   id: string;
   role: Role;
   content: string;
+  senderType?: SenderType;
+  senderEmail?: string | null;
+  createdAt?: string | null;
 };
 
 type OrderSummary = {
@@ -69,7 +79,7 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
   // Only show last 8–10 orders in dropdown
   const recentOrders = useMemo(() => orders.slice(0, 10), [orders]);
 
-  // Load saved history for a specific order + user from ai_order_messages table / view
+  /** Load saved history for a specific order + user from ai_order_messages view */
   async function loadOrderHistory(orderId: string) {
     if (!supabase || !userEmail) {
       setMessages([]);
@@ -82,12 +92,12 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
     try {
       const { data, error } = await supabase
         .from("ai_order_messages")
-        .select("id, created_at, sender_type, message_text, status")
+        .select(
+          "id, created_at, sender_type, sender_email, message_text, status"
+        )
         .eq("order_id", orderId)
         .eq("user_email", userEmail)
-        // Only show history if the conversation is not marked as handled/closed
-        // (status is NULL or anything except 'handled_by_admin')
-        .or("status.is.null,status.neq.handled_by_admin")
+        // ❌ removed status filter so handled conversations still show
         .order("created_at", { ascending: true });
 
       if (error) throw error;
@@ -96,6 +106,9 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
         id: row.id,
         role: row.sender_type === "customer" ? "user" : "assistant",
         content: row.message_text || "",
+        senderType: row.sender_type || undefined,
+        senderEmail: row.sender_email || null,
+        createdAt: row.created_at || null,
       }));
 
       setMessages(mapped);
@@ -109,8 +122,6 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
   }
 
   // Whenever the selected order changes:
-  // - if no order => general question => clear history
-  // - if order selected => load full history from Supabase
   useEffect(() => {
     if (!selectedOrderId) {
       setMessages([]);
@@ -128,6 +139,9 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
       id: String(Date.now()),
       role: "user",
       content: input.trim(),
+      senderType: "customer",
+      senderEmail: userEmail,
+      createdAt: new Date().toISOString(),
     };
 
     const nextMessages = [...messages, newUserMessage];
@@ -162,6 +176,8 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
         id: String(Date.now() + 1),
         role: "assistant",
         content: data.reply,
+        senderType: "assistant",
+        createdAt: new Date().toISOString(),
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
@@ -186,9 +202,7 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
             ?
           </span>
           <div>
-            <div className="text-xs font-semibold text-white">
-              Need help?
-            </div>
+            <div className="text-xs font-semibold text-white">Need help?</div>
             <div className="text-[11px] text-white/60">
               Ask about your orders, deliveries or invoices. Our assistant
               replies instantly and our team can follow up if needed.
@@ -251,24 +265,44 @@ export const OrderAIChat: React.FC<Props> = ({ orders, userEmail }) => {
         )}
 
         {!loadingHistory &&
-          messages.map((m) => (
-            <div
-              key={m.id}
-              className={`flex ${
-                m.role === "user" ? "justify-end" : "justify-start"
-              }`}
-            >
+          messages.map((m) => {
+            const isUser = m.role === "user";
+            const isAdmin = m.senderType === "admin";
+
+            return (
               <div
-                className={`max-w-[85%] rounded-2xl px-3 py-2 text-[13px] leading-relaxed ${
-                  m.role === "user"
-                    ? "bg-yellow-500 text-[#041F3E]"
-                    : "bg-white/8 text-white"
+                key={m.id}
+                className={`flex ${
+                  isUser ? "justify-end" : "justify-start"
                 }`}
               >
-                {m.content}
+                <div
+                  className={`max-w-[85%] rounded-2xl px-3 py-2 text-[13px] leading-relaxed ${
+                    isUser
+                      ? "bg-yellow-500 text-[#041F3E]"
+                      : isAdmin
+                      ? "bg-emerald-500/10 border border-emerald-400/60 text-white"
+                      : "bg-white/8 text-white"
+                  }`}
+                >
+                  {/* small header for admin messages */}
+                  {isAdmin && (
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
+                      FuelFlow support (human)
+                    </div>
+                  )}
+                  <div className="whitespace-pre-wrap break-words">
+                    {m.content}
+                  </div>
+                  {m.createdAt && (
+                    <div className="mt-1 text-[10px] text-white/50">
+                      {new Date(m.createdAt).toLocaleString()}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
       </div>
 
       {/* Error */}
