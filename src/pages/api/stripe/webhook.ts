@@ -294,6 +294,37 @@ async function upsertPaymentRow(args: {
   } catch {}
 }
 
+async function markPaymentReceiptSent(args: {
+  pi_id?: string | null;
+  order_id?: string | null;
+  storagePath?: string | null;
+}) {
+  const storagePath = args.storagePath;
+  if (!storagePath) return;
+
+  const updates: any = {
+    receipt_path: storagePath,
+    receipt_sent_at: new Date().toISOString(),
+  };
+
+  let q = sb().from("payments").update(updates);
+
+  if (args.pi_id) {
+    q = q.eq("pi_id", args.pi_id);
+  } else if (args.order_id) {
+    q = q.eq("order_id", args.order_id);
+  } else {
+    return;
+  }
+
+  try {
+    await q;
+  } catch (e) {
+    console.error("[webhook] markPaymentReceiptSent error:", e);
+  }
+}
+
+
 /* ---------- Handler ---------- */
 export default async function handler(
   req: NextApiRequest,
