@@ -19,15 +19,25 @@ const supabase = createClient(
 );
 
 // Commission per litre in pence (from env)
-function getCommissionPencePerLitre(fuel: Fuel): number {
+// Platform commission as a percentage of the total order (from env).
+// Example: 5 => 5% of totalAmountPence.
+// Supports different % for petrol vs diesel, with an optional global fallback.
+function getCommissionPercent(fuel: Fuel): number {
+  const fallback = Number(process.env.PLATFORM_COMMISSION_PERCENT || "0");
+
   if (fuel === "petrol") {
-    return Number(process.env.PETROL_COMMISSION_PENCE_PER_LITRE || "0");
+    const raw = process.env.PETROL_COMMISSION_PERCENT;
+    return Number(raw ?? String(fallback));
   }
+
   if (fuel === "diesel") {
-    return Number(process.env.DIESEL_COMMISSION_PENCE_PER_LITRE || "0");
+    const raw = process.env.DIESEL_COMMISSION_PERCENT;
+    return Number(raw ?? String(fallback));
   }
-  return 0;
+
+  return fallback;
 }
+
 
 export default async function handler(
   req: NextApiRequest,
@@ -139,8 +149,12 @@ export default async function handler(
     const orderId = orderRow.id as string;
 
     // 3) Calculate your commission (platform fee)
-    const commissionPencePerLitre = getCommissionPencePerLitre(fuel);
-    const platformFeeAmount = commissionPencePerLitre * qty; // in pence
+    // 3) Calculate your commission (platform fee) as % of order total
+    const commissionPercent = getCommissionPercent(fuel);
+    const platformFeeAmount = Math.round(
+      (totalAmountPence * commissionPercent) / 100
+    ); // still in pence (smallest currency unit)
+
 
     // 4) Prepare Connect split – only if account configured
     const refineryAccountId = process.env.REFINERY_STRIPE_ACCOUNT_ID;
