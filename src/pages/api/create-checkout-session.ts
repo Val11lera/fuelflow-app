@@ -146,14 +146,18 @@ export default async function handler(
     const refineryAccountId = process.env.REFINERY_STRIPE_ACCOUNT_ID;
 
     const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData =
-      refineryAccountId && platformFeeAmount > 0
+      refineryAccountId
         ? {
-            application_fee_amount: platformFeeAmount,
+            // only send application_fee_amount if you actually have a fee
+            ...(platformFeeAmount > 0
+              ? { application_fee_amount: platformFeeAmount }
+              : {}),
             transfer_data: {
               destination: refineryAccountId,
             },
           }
         : {};
+
 
     // 5) Build a valid origin (with https://)
     const envAppUrl = process.env.NEXT_PUBLIC_APP_URL;
