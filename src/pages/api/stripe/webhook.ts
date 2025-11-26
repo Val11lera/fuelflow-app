@@ -349,6 +349,55 @@ async function upsertPaymentRow(args: {
   }
 }
 
+/* ---------- NEW: refinery helper (very small, additive) ---------- */
+
+async function markRefineryReady(args: {
+  orderId?: string | null;
+  storagePath?: string | null;
+}) {
+  const orderId = args.orderId;
+  if (!orderId) return; // nothing to do
+
+  const storagePath = args.storagePath ?? null;
+
+  try {
+    const { error } = await sb()
+      .from("orders")
+      .update({
+        refinery_notified_at: new Date().toISOString(),
+        refinery_notification_status: "ready", // simple status for dashboards
+        refinery_invoice_storage_path: storagePath,
+      } as any)
+      .eq("id", orderId);
+
+    if (error) {
+      console.error("[refinery] update failed:", error);
+      await logRow({
+        event_type: "refinery_update_error",
+        order_id: orderId,
+        error: error.message,
+        extra: { storagePath },
+      });
+      return;
+    }
+
+    await logRow({
+      event_type: "refinery_ready",
+      order_id: orderId,
+      status: "ready",
+      extra: { storagePath },
+    });
+  } catch (err: any) {
+    console.error("[refinery] crash:", err);
+    await logRow({
+      event_type: "refinery_update_crash",
+      order_id: orderId,
+      error: err?.message || String(err),
+      extra: { storagePath },
+    });
+  }
+}
+
 /* =========================
    Main handler
    ========================= */
@@ -551,6 +600,12 @@ export default async function handler(
           extra: { storagePath: resp?.storagePath },
         });
 
+        // NEW: mark refinery as ready (uses same invoice PDF path)
+        await markRefineryReady({
+          orderId: orderId ?? null,
+          storagePath: resp?.storagePath,
+        });
+
         break;
       }
 
@@ -678,7 +733,9 @@ export default async function handler(
         ) {
           const litres = Number(order.litres || 0);
           const totalMajor =
-            order.total_pence != null ? Number(order.total_pence) / 100 : undefined;
+            order.total_pence != null
+              ? Number(order.total_pence) / 100
+              : undefined;
           const unitMajor =
             order.unit_price_pence != null
               ? Number(order.unit_price_pence) / 100
@@ -739,6 +796,12 @@ export default async function handler(
           order_id: orderId ?? null,
           status: "paid",
           extra: { storagePath: resp?.storagePath },
+        });
+
+        // NEW: mark refinery as ready for non-Checkout flows as well
+        await markRefineryReady({
+          orderId: orderId ?? null,
+          storagePath: resp?.storagePath,
         });
 
         break;
