@@ -316,11 +316,13 @@ export default function AdminDashboard() {
         const { from, to } = dateRange(range);
 
         // Orders (with fulfilment_status + notes)
+        // Orders (with fulfilment_status + notes + refinery status)
         let oq = supabase
           .from("orders")
           .select(
-            "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status, fulfilment_status, fulfilment_notes"
+            "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status, fulfilment_status, fulfilment_notes, refinery_notification_status, refinery_notified_at"
           )
+
           .order("created_at", { ascending: false })
           .limit(1000);
 
