@@ -1871,6 +1871,7 @@ export default function AdminDashboard() {
                         {o.id}
                       </td>
                       <td className="py-2 pr-4">
+                      <td className="py-2 pr-4">
                         <div className="flex justify-end gap-2 flex-wrap">
                           <button
                             onClick={() => openFulfilPanel(o)}
@@ -1887,6 +1888,29 @@ export default function AdminDashboard() {
                           >
                             Add note
                           </button>
+
+                          {/* NEW: Send to refinery */}
+                          <button
+                            onClick={() => sendOrderToRefinery(o.id)}
+                            disabled={
+                              !canSendRefinery ||
+                              refinerySendingOrderId === o.id
+                            }
+                            className={cx(
+                              "rounded-lg px-3 py-1.5 text-xs",
+                              canSendRefinery &&
+                                refinerySendingOrderId !== o.id
+                                ? "bg-white/10 hover:bg-white/15"
+                                : "bg-white/10 text-white/40 cursor-not-allowed"
+                            )}
+                          >
+                            {refinerySendingOrderId === o.id
+                              ? "Sending…"
+                              : refineryStatus === "sent"
+                              ? "Sent to refinery"
+                              : "Send to refinery"}
+                          </button>
+
                           {!isDispatched && !isDelivered && (
                             <button
                               onClick={() =>
