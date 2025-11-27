@@ -230,10 +230,17 @@ export default function AdminDashboard() {
   const [invLoading, setInvLoading] = useState<boolean>(false);
 
   /* ====== FULFILMENT PANEL STATE ====== */
+  /* ====== FULFILMENT PANEL STATE ====== */
   const [fulfilOrder, setFulfilOrder] = useState<OrderRow | null>(null);
   const [fulfilStatusDraft, setFulfilStatusDraft] = useState<string>("pending");
   const [updatingFulfilment, setUpdatingFulfilment] = useState(false);
   const [fulfilError, setFulfilError] = useState<string | null>(null);
+
+  // ===== REFINERY SEND STATE (for button loading) =====
+  const [refinerySendingOrderId, setRefinerySendingOrderId] = useState<
+    string | null
+  >(null);
+
 
   /* =========================
      Auth / Admin check
