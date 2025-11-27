@@ -11,9 +11,8 @@ type Fuel = "petrol" | "diesel";
 
 type OrderRow = {
   id: string;
-  created_at: string;
   user_email: string | null;
-  fuel: Fuel | string | null;
+  fuel: Fuel | null;
   litres: number | null;
   unit_price_pence: number | null;
   total_pence: number | null;
@@ -28,53 +27,36 @@ type OrderRow = {
   refinery_invoice_storage_path: string | null;
 };
 
-type PaymentRow = {
-  created_at: string | null;
-  amount: number | null;
-  currency: string | null;
-  status: string | null;
-  pi_id: string | null;
-  cs_id: string | null;
-};
-
 type Body = {
   orderId?: string;
-  adminEmail?: string; // email of the admin clicking the button
+  adminEmail?: string;
 };
 
-type OkResponse = {
-  ok: true;
-  refineryOrder: {
-    orderId: string;
-    customerName: string | null;
-    customerEmail: string | null;
-    address: {
-      line1: string | null;
-      line2: string | null;
-      city: string | null;
-      postcode: string | null;
-    };
-    fuel: string | null;
-    litres: number | null;
-    unitPriceRefineryGbp: number | null;
-    totalRefineryGbp: number | null;
-    deliveryDate: string | null;
-    payment: {
-      paidAt: string | null;
-      stripePiId: string | null;
-      stripeSessionId: string | null;
-      currency: string | null;
-      grossAmountGbp: number | null;
-    } | null;
-    invoiceStoragePath: string | null;
+type RefOrder = {
+  orderId: string;
+  customerName: string | null;
+  customerEmail: string | null;
+  address: {
+    line1: string | null;
+    line2: string | null;
+    city: string | null;
+    postcode: string | null;
   };
+  fuel: string | null;
+  litres: number | null;
+  unitPriceGbp: number | null;
+  totalCustomerGbp: number | null;
+  totalForRefineryGbp: number | null;
+  deliveryDate: string | null;
+  invoiceStoragePath: string | null;
 };
 
+type OkResponse = { ok: true; refineryOrder: RefOrder };
 type ErrorResponse = { ok: false; error: string };
 
 export type SendRefineryOrderResponse = OkResponse | ErrorResponse;
 
-/* ===== Supabase (service role) ===== */
+// ----- Supabase (service role) -----
 
 function sbAdmin() {
   const url =
@@ -90,159 +72,16 @@ function sbAdmin() {
   return createClient(url, key);
 }
 
-/* ===== Email (Resend) ===== */
-
-const resendApiKey = process.env.RESEND_API_KEY || "";
-const resend = resendApiKey ? new Resend(resendApiKey) : null;
-
-/* ===== Helpers ===== */
-
-function toGbp(pence: number | null | undefined): number | null {
-  if (pence == null) return null;
-  return Math.round(pence) / 100;
-}
-
-// Same % env vars you used for commission maths (we *don’t* send commission to refinery)
-function getCommissionPercent(fuel: Fuel | string | null): number {
-  const f = (fuel || "").toString().toLowerCase();
-  if (f === "petrol") {
+// Same % env vars you used in create-checkout-session
+function getCommissionPercent(fuel: Fuel | null): number {
+  if (fuel === "petrol") {
     return Number(process.env.PETROL_COMMISSION_PERCENT || "0");
   }
-  if (f === "diesel") {
+  if (fuel === "diesel") {
     return Number(process.env.DIESEL_COMMISSION_PERCENT || "0");
   }
   return 0;
 }
-
-function buildRefineryEmailHtml(args: {
-  refineryOrder: OkResponse["refineryOrder"];
-  refineryName?: string;
-}) {
-  const { refineryOrder } = args;
-  const o = refineryOrder;
-  const fmt = (n: number | null) =>
-    n == null ? "—" : `£${n.toFixed(2)}`;
-
-  const addrLines = [
-    o.address.line1,
-    o.address.line2,
-    o.address.city,
-    o.address.postcode,
-  ]
-    .filter(Boolean)
-    .join("<br />");
-
-  const paidAt = o.payment?.paidAt
-    ? new Date(o.payment.paidAt).toLocaleString("en-GB")
-    : "—";
-
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charSet="utf-8" />
-    <title>New FuelFlow Order – ${o.orderId}</title>
-    <style>
-      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0b1220; color:#f9fafb; margin:0; padding:24px; }
-      .card { max-width:640px; margin:0 auto; background:#020617; border-radius:16px; border:1px solid rgba(148,163,184,0.35); padding:24px; }
-      h1 { font-size:20px; margin:0 0 4px 0; }
-      h2 { font-size:16px; margin:16px 0 8px 0; }
-      .muted { color:#9ca3af; font-size:12px; }
-      table { width:100%; border-collapse:collapse; margin-top:8px; }
-      th, td { text-align:left; padding:8px 6px; font-size:13px; }
-      th { background:#020617; border-bottom:1px solid #1f2937; color:#e5e7eb; }
-      tr:nth-child(even) td { background:#020617; }
-      tr:nth-child(odd) td { background:#020617; }
-      .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; background:#047857; color:white; }
-      .footer { margin-top:16px; font-size:11px; color:#6b7280; }
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <h1>New paid fuel order for delivery</h1>
-      <div class="muted">Order reference: ${o.orderId}</div>
-
-      <h2>Customer</h2>
-      <table>
-        <tbody>
-          <tr>
-            <th scope="row">Name</th>
-            <td>${o.customerName || "—"}</td>
-          </tr>
-          <tr>
-            <th scope="row">Email</th>
-            <td>${o.customerEmail || "—"}</td>
-          </tr>
-          <tr>
-            <th scope="row">Delivery address</th>
-            <td>${addrLines || "—"}</td>
-          </tr>
-          <tr>
-            <th scope="row">Requested delivery date</th>
-            <td>${o.deliveryDate || "—"}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <h2>Order details</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Product</th>
-            <th>Litres</th>
-            <th>Unit price (to refinery)</th>
-            <th>Total payable to refinery</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>${o.fuel || "—"}</td>
-            <td>${o.litres ?? "—"}</td>
-            <td>${fmt(o.unitPriceRefineryGbp)}</td>
-            <td>${fmt(o.totalRefineryGbp)}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <h2>Payment</h2>
-      <table>
-        <tbody>
-          <tr>
-            <th scope="row">Status</th>
-            <td><span class="pill">Paid</span></td>
-          </tr>
-          <tr>
-            <th scope="row">Paid at</th>
-            <td>${paidAt}</td>
-          </tr>
-          <tr>
-            <th scope="row">Stripe Payment Intent</th>
-            <td>${o.payment?.stripePiId || "—"}</td>
-          </tr>
-          <tr>
-            <th scope="row">Stripe Session</th>
-            <td>${o.payment?.stripeSessionId || "—"}</td>
-          </tr>
-          <tr>
-            <th scope="row">Gross amount (customer)</th>
-            <td>${fmt(o.payment?.grossAmountGbp ?? null)}</td>
-          </tr>
-          <tr>
-            <th scope="row">Currency</th>
-            <td>${(o.payment?.currency || "GBP").toUpperCase()}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <div class="footer">
-        This summary excludes FuelFlow commission and shows only the amount payable to the refinery.
-        If you need a formal invoice PDF, please reply to this email.
-      </div>
-    </div>
-  </body>
-</html>`;
-}
-
-/* ===== Handler ===== */
 
 export default async function handler(
   req: NextApiRequest,
@@ -268,22 +107,29 @@ export default async function handler(
         .json({ ok: false, error: "Missing adminEmail in request body" });
     }
 
-    if (!resend) {
+    // --- ENV CHECKS (gives clear errors in the popup) ---
+    const resendApiKey = process.env.RESEND_API_KEY;
+    const fromEmail = process.env.REFINERY_FROM_EMAIL;
+    const refineryEmail = process.env.REFINERY_NOTIFICATION_EMAIL;
+
+    if (!resendApiKey) {
       return res
         .status(500)
-        .json({ ok: false, error: "Email service not configured" });
+        .json({ ok: false, error: "Missing RESEND_API_KEY env var" });
     }
-
-    const refineryTo = process.env.REFINERY_NOTIFICATION_EMAIL;
-    const fromEmail =
-      process.env.REFINERY_FROM_EMAIL || "FuelFlow <no-reply@fuelflow.co.uk>";
-
-    if (!refineryTo) {
+    if (!fromEmail) {
       return res
         .status(500)
-        .json({ ok: false, error: "REFINERY_NOTIFICATION_EMAIL not set" });
+        .json({ ok: false, error: "Missing REFINERY_FROM_EMAIL env var" });
+    }
+    if (!refineryEmail) {
+      return res.status(500).json({
+        ok: false,
+        error: "Missing REFINERY_NOTIFICATION_EMAIL env var",
+      });
     }
 
+    const resend = new Resend(resendApiKey);
     const supabase = sbAdmin();
 
     // --- 1) Check this email is an admin ---
@@ -310,7 +156,7 @@ export default async function handler(
     const { data: order, error: orderError } = await supabase
       .from("orders")
       .select(
-        "id,created_at,user_email,fuel,litres,unit_price_pence,total_pence,delivery_date,name,address_line1,address_line2,city,postcode,status,refinery_notification_status,refinery_invoice_storage_path"
+        "id,user_email,fuel,litres,unit_price_pence,total_pence,delivery_date,name,address_line1,address_line2,city,postcode,status,refinery_notification_status,refinery_invoice_storage_path"
       )
       .eq("id", orderId)
       .maybeSingle();
@@ -345,49 +191,25 @@ export default async function handler(
       });
     }
 
-    // --- 3) Find the successful payment row (for confirmation details) ---
-    const { data: paymentRow, error: paymentError } = await supabase
-      .from("payments")
-      .select(
-        "created_at, amount, currency, status, pi_id, cs_id"
-      )
-      .eq("order_id", o.id)
-      .in("status", ["paid", "succeeded"] as any)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (paymentError) {
-      console.error(
-        "[send-refinery-order] payment query error:",
-        paymentError
-      );
-    }
-
-    const p = (paymentRow || null) as PaymentRow | null;
-
-    // --- 4) Compute the amount refinery should see (hide commission) ---
     const totalPence = o.total_pence ?? null;
     const unitPence = o.unit_price_pence ?? null;
 
-    let totalRefineryGbp: number | null = null;
-    let unitRefineryGbp: number | null = null;
+    const totalCustomerGbp =
+      totalPence != null ? Math.round(totalPence) / 100 : null;
+    const unitPriceGbp =
+      unitPence != null ? Math.round(unitPence) / 100 : null;
 
+    // --- 3) Compute amount refinery sees (no commission) ---
+    let totalForRefineryGbp: number | null = null;
     if (totalPence != null) {
       const pct = getCommissionPercent(o.fuel);
       const commissionPence = Math.round(totalPence * (pct / 100));
       const refineryPence = totalPence - commissionPence;
-      totalRefineryGbp = refineryPence / 100;
+      totalForRefineryGbp = refineryPence / 100;
     }
 
-    if (unitPence != null) {
-      const pct = getCommissionPercent(o.fuel);
-      const commissionPerLitre = Math.round(unitPence * (pct / 100));
-      const refineryUnitPence = unitPence - commissionPerLitre;
-      unitRefineryGbp = refineryUnitPence / 100;
-    }
-
-    const refineryOrder: OkResponse["refineryOrder"] = {
+    // --- 4) Build refinery-friendly order object ---
+    const refineryOrder: RefOrder = {
       orderId: o.id,
       customerName: o.name,
       customerEmail: o.user_email,
@@ -397,45 +219,159 @@ export default async function handler(
         city: o.city,
         postcode: o.postcode,
       },
-      fuel: (o.fuel || "") as string | null,
+      fuel: o.fuel,
       litres: o.litres,
-      unitPriceRefineryGbp: unitRefineryGbp,
-      totalRefineryGbp,
+      unitPriceGbp,
+      totalCustomerGbp,
+      totalForRefineryGbp,
       deliveryDate: o.delivery_date,
-      payment: p
-        ? {
-            paidAt: p.created_at,
-            stripePiId: p.pi_id,
-            stripeSessionId: p.cs_id,
-            currency: p.currency || "GBP",
-            grossAmountGbp: toGbp(p.amount),
-          }
-        : null,
       invoiceStoragePath: o.refinery_invoice_storage_path,
     };
 
-    // --- 5) Build the HTML email (similar structure to your invoices) ---
-    const html = buildRefineryEmailHtml({ refineryOrder });
+    // --- 5) Compose email (similar layout style to your invoices) ---
+    const subject = `FuelFlow order ${o.id} - ${o.fuel || ""} ${
+      o.litres ?? ""
+    }L`;
 
-    const subject = `New paid fuel order – ${refineryOrder.fuel || "Fuel"} – ${
-      refineryOrder.litres ?? ""
-    }L – ${refineryOrder.orderId}`;
+    const addressLines = [
+      o.address_line1,
+      o.address_line2,
+      [o.city, o.postcode].filter(Boolean).join(" "),
+    ]
+      .filter(Boolean)
+      .join("<br />");
 
-    const { error: emailError } = await resend.emails.send({
+    const html = `
+      <div style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color:#0b1220; font-size:14px; line-height:1.5;">
+        <h1 style="font-size:18px; margin-bottom:6px;">New FuelFlow order</h1>
+        <p style="margin-top:0; margin-bottom:16px;">
+          Please find the order details below. Commission amounts are excluded – totals shown are the amounts payable to the refinery.
+        </p>
+
+        <table style="border-collapse:collapse; width:100%; max-width:640px;">
+          <tbody>
+            <tr>
+              <td style="padding:4px 8px; font-weight:600;">Order reference</td>
+              <td style="padding:4px 8px;">${o.id}</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 8px; font-weight:600;">Customer</td>
+              <td style="padding:4px 8px;">${o.name || "—"} (${o.user_email || "—"})</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 8px; font-weight:600;">Delivery address</td>
+              <td style="padding:4px 8px;">${addressLines || "—"}</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 8px; font-weight:600;">Delivery date</td>
+              <td style="padding:4px 8px;">${
+                o.delivery_date
+                  ? new Date(o.delivery_date).toLocaleDateString("en-GB")
+                  : "As soon as possible"
+              }</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 8px; font-weight:600;">Product</td>
+              <td style="padding:4px 8px; text-transform:capitalize;">${
+                o.fuel || "—"
+              }</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 8px; font-weight:600;">Litres</td>
+              <td style="padding:4px 8px;">${o.litres ?? "—"}</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 8px; font-weight:600;">Unit price (customer)</td>
+              <td style="padding:4px 8px;">${
+                unitPriceGbp != null ? `£${unitPriceGbp.toFixed(3)}` : "—"
+              }</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 8px; font-weight:600;">Total paid by customer</td>
+              <td style="padding:4px 8px;">${
+                totalCustomerGbp != null ? `£${totalCustomerGbp.toFixed(2)}` : "—"
+              }</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 8px; font-weight:600;">Total payable to refinery</td>
+              <td style="padding:4px 8px; font-weight:600;">${
+                totalForRefineryGbp != null
+                  ? `£${totalForRefineryGbp.toFixed(2)}`
+                  : "—"
+              }</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p style="margin-top:16px; font-size:12px; color:#6b7280;">
+          This order has already been paid by the customer via FuelFlow. Please arrange delivery and invoice FuelFlow for the
+          <strong>“Total payable to refinery”</strong> amount only.
+        </p>
+      </div>
+    `;
+
+    const text = `
+New FuelFlow order
+
+Order reference: ${o.id}
+Customer: ${o.name || "—"} (${o.user_email || "—"})
+Delivery address:
+  ${o.address_line1 || ""}
+  ${o.address_line2 || ""}
+  ${[o.city || "", o.postcode || ""].filter(Boolean).join(" ")}
+
+Delivery date: ${
+      o.delivery_date
+        ? new Date(o.delivery_date).toLocaleDateString("en-GB")
+        : "As soon as possible"
+    }
+Product: ${o.fuel || "—"}
+Litres: ${o.litres ?? "—"}
+Unit price (customer): ${
+      unitPriceGbp != null ? `£${unitPriceGbp.toFixed(3)}` : "—"
+    }
+Total paid by customer: ${
+      totalCustomerGbp != null ? `£${totalCustomerGbp.toFixed(2)}` : "—"
+    }
+Total payable to refinery: ${
+      totalForRefineryGbp != null ? `£${totalForRefineryGbp.toFixed(2)}` : "—"
+    }
+
+This order has already been paid by the customer via FuelFlow.
+Please arrange delivery and invoice FuelFlow for the "Total payable to refinery" amount only.
+    `.trim();
+
+    // --- 6) Send email via Resend ---
+    const { data: emailData, error: emailError } = await resend.emails.send({
       from: fromEmail,
-      to: refineryTo,
+      to: refineryEmail,
       subject,
       html,
+      text,
     });
 
     if (emailError) {
-      console.error("[send-refinery-order] email send error:", emailError);
-      return res
-        .status(500)
-        .json({ ok: false, error: "Failed to send refinery email" });
+      console.error("[send-refinery-order] Resend error:", emailError);
+      return res.status(500).json({
+        ok: false,
+        error:
+          emailError.message ||
+          "Failed to send refinery email (Resend error)",
+      });
     }
 
-    // --- 6) Mark the order as "sent" (so we don't send twice) ---
+    if (!emailData?.id) {
+      console.error(
+        "[send-refinery-order] Resend returned no email id:",
+        emailData
+      );
+      return res.status(500).json({
+        ok: false,
+        error: "Failed to send refinery email (no id returned)",
+      });
+    }
+
+    // --- 7) Mark the order as "sent" only after email succeeds ---
     const { error: updateError } = await supabase
       .from("orders")
       .update({
@@ -449,9 +385,11 @@ export default async function handler(
         "[send-refinery-order] failed to update order status:",
         updateError
       );
-      return res
-        .status(500)
-        .json({ ok: false, error: "Failed to update order status" });
+      return res.status(500).json({
+        ok: false,
+        error:
+          "Email sent but failed to update order status in database. Please check Supabase.",
+      });
     }
 
     return res.status(200).json({
@@ -460,9 +398,10 @@ export default async function handler(
     });
   } catch (err: any) {
     console.error("[send-refinery-order] crash:", err);
-    return res
-      .status(500)
-      .json({ ok: false, error: err?.message || "Server error" });
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || "Server error",
+    });
   }
 }
 
