@@ -1,290 +1,213 @@
 // src/pages/api/admin/send-refinery-order.ts
-// Sends a net-of-commission order email to the refinery
+// src/pages/api/admin/send-refinery-order.ts
+// Creates a refinery-friendly "order sheet" (no commission shown)
+// and marks the order as sent to the refinery.
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
-import Stripe from "stripe";
-import nodemailer from "nodemailer";
 
-/* =========================
-   Supabase + Stripe helpers
-   ========================= */
-
-function sb() {
-  return createClient(
-    (process.env.SUPABASE_URL as string) ||
-      (process.env.NEXT_PUBLIC_SUPABASE_URL as string),
-    process.env.SUPABASE_SERVICE_ROLE_KEY as string
-  );
-}
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: "2024-06-20",
-});
+type Fuel = "petrol" | "diesel";
 
 type OrderRow = {
   id: string;
-  status: string | null;
-  fuel: string | null;
+  user_email: string | null;
+  fuel: Fuel | null;
   litres: number | null;
+  unit_price_pence: number | null;
   total_pence: number | null;
+  delivery_date: string | null;
   name: string | null;
   address_line1: string | null;
   address_line2: string | null;
   city: string | null;
   postcode: string | null;
-  delivery_date: string | null;
-  user_email: string | null;
+  status: string | null;
   refinery_notification_status: string | null;
-  refinery_notified_at: string | null;
   refinery_invoice_storage_path: string | null;
-  stripe_payment_intent: string | null;
 };
 
 type Body = {
   orderId?: string;
+  adminEmail?: string; // email of the admin clicking the button
 };
 
-type ResponseBody =
-  | { ok: true; orderId: string; netAmountPence: number; emailSentTo: string }
-  | { error: string };
+type OkResponse = {
+  ok: true;
+  refineryOrder: {
+    orderId: string;
+    customerName: string | null;
+    customerEmail: string | null;
+    address: {
+      line1: string | null;
+      line2: string | null;
+      city: string | null;
+      postcode: string | null;
+    };
+    fuel: string | null;
+    litres: number | null;
+    unitPriceGbp: number | null;
+    totalCustomerGbp: number | null;
+    totalForRefineryGbp: number | null;
+    deliveryDate: string | null;
+    invoiceStoragePath: string | null;
+  };
+};
 
-/* =========================
-   Nodemailer helper
-   ========================= */
+type ErrorResponse = { ok: false; error: string };
 
-function getTransport() {
-  if (!process.env.SMTP_HOST) {
-    throw new Error("SMTP_HOST not set (email transport not configured)");
+export type SendRefineryOrderResponse = OkResponse | ErrorResponse;
+
+// ----- Supabase (service role) -----
+
+function sbAdmin() {
+  const url =
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key) {
+    throw new Error(
+      "Missing SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"
+    );
   }
 
-  const port = Number(process.env.SMTP_PORT || "587");
-
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port,
-    secure: port === 465,
-    auth: process.env.SMTP_USER
-      ? {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS,
-        }
-      : undefined,
-  });
-
-  return transporter;
+  return createClient(url, key);
 }
 
-/* =========================
-   Main handler
-   ========================= */
+// Same % env vars you used in create-checkout-session
+function getCommissionPercent(fuel: Fuel | null): number {
+  if (fuel === "petrol") {
+    return Number(process.env.PETROL_COMMISSION_PERCENT || "0");
+  }
+  if (fuel === "diesel") {
+    return Number(process.env.DIESEL_COMMISSION_PERCENT || "0");
+  }
+  return 0;
+}
 
 export default async function handler(
   req: NextApiRequest,
-  res: NextApiResponse<ResponseBody>
+  res: NextApiResponse<SendRefineryOrderResponse>
 ) {
-  // 1) Only allow POST
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
-  // 2) Check admin secret
-  const secretHeader = req.headers["x-refinery-secret"];
-  const expectedSecret = process.env.REFINERY_ORDER_SECRET;
-
-  if (
-    !expectedSecret ||
-    !secretHeader ||
-    secretHeader.toString() !== expectedSecret
-  ) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-
-  // 3) Parse orderId
-  const { orderId } = (req.body || {}) as Body;
-
-  if (!orderId) {
-    return res.status(400).json({ error: "Missing orderId" });
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
   try {
-    const supabase = sb();
+    const { orderId, adminEmail } = (req.body || {}) as Body;
 
-    // 4) Load the order
+    if (!orderId) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Missing orderId in request body" });
+    }
+
+    if (!adminEmail) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Missing adminEmail in request body" });
+    }
+
+    const supabase = sbAdmin();
+
+    // --- 1) Check this email is an admin (very simple check to avoid random calls) ---
+    const { data: adminRow, error: adminError } = await supabase
+      .from("admins")
+      .select("id")
+      .eq("email", adminEmail.toLowerCase())
+      .maybeSingle();
+
+    if (adminError) {
+      console.error("[send-refinery-order] admin lookup error:", adminError);
+      return res
+        .status(500)
+        .json({ ok: false, error: "Failed to verify admin" });
+    }
+
+    if (!adminRow) {
+      return res
+        .status(403)
+        .json({ ok: false, error: "Not authorised (admin only)" });
+    }
+
+    // --- 2) Load the order ---
     const { data: order, error: orderError } = await supabase
       .from("orders")
       .select(
-        [
-          "id",
-          "status",
-          "fuel",
-          "litres",
-          "total_pence",
-          "name",
-          "address_line1",
-          "address_line2",
-          "city",
-          "postcode",
-          "delivery_date",
-          "user_email",
-          "refinery_notification_status",
-          "refinery_notified_at",
-          "refinery_invoice_storage_path",
-          "stripe_payment_intent",
-        ].join(",")
+        "id,user_email,fuel,litres,unit_price_pence,total_pence,delivery_date,name,address_line1,address_line2,city,postcode,status,refinery_notification_status,refinery_invoice_storage_path"
       )
       .eq("id", orderId)
       .maybeSingle();
 
-    if (orderError || !order) {
-      console.error("[refinery] order lookup error:", orderError);
-      return res.status(404).json({ error: "Order not found" });
+    if (orderError) {
+      console.error("[send-refinery-order] order query error:", orderError);
+      return res
+        .status(500)
+        .json({ ok: false, error: "Failed to load order" });
+    }
+
+    if (!order) {
+      return res
+        .status(404)
+        .json({ ok: false, error: "Order not found" });
     }
 
     const o = order as unknown as OrderRow;
 
     if (o.status !== "paid") {
-      return res
-        .status(400)
-        .json({ error: "Order is not paid – cannot notify refinery" });
+      return res.status(400).json({
+        ok: false,
+        error: `Order is not paid (current status: ${o.status || "unknown"})`,
+      });
     }
 
-    // 5) Work out net amount to refinery (no commission)
-    let netAmountPence: number;
-
-    if (!o.stripe_payment_intent) {
-      // Fallback – no PI stored, use total_pence
-      netAmountPence = Number(o.total_pence || 0);
-    } else {
-      const pi = await stripe.paymentIntents.retrieve(o.stripe_payment_intent);
-      const total =
-        (typeof pi.amount_received === "number"
-          ? pi.amount_received
-          : pi.amount) ?? 0;
-      const appFee =
-        typeof pi.application_fee_amount === "number"
-          ? pi.application_fee_amount
-          : 0;
-      netAmountPence = total - appFee;
+    // Optional guard: don't resend if already marked sent
+    if (o.refinery_notification_status === "sent") {
+      return res.status(400).json({
+        ok: false,
+        error: "Order already marked as sent to refinery",
+      });
     }
 
-    // 6) Build a link to the refinery PDF (same layout as customer invoice)
-    let refineryUrl: string | null = null;
-    if (o.refinery_invoice_storage_path) {
-      const base =
-        (process.env.SUPABASE_URL as string) ||
-        (process.env.NEXT_PUBLIC_SUPABASE_URL as string);
-      if (base) {
-        refineryUrl = `${base.replace(
-          /\/+$/,
-          ""
-        )}/storage/v1/object/public/invoices/${encodeURI(
-          o.refinery_invoice_storage_path
-        )}`;
-      }
+    const totalPence = o.total_pence ?? null;
+    const unitPence = o.unit_price_pence ?? null;
+
+    const totalCustomerGbp =
+      totalPence != null ? Math.round(totalPence) / 100 : null;
+    const unitPriceGbp =
+      unitPence != null ? Math.round(unitPence) / 100 : null;
+
+    // --- 3) Compute the amount refinery should see (hide platform commission) ---
+    let totalForRefineryGbp: number | null = null;
+    if (totalPence != null) {
+      const pct = getCommissionPercent(o.fuel);
+      const commissionPence = Math.round(totalPence * (pct / 100));
+      const refineryPence = totalPence - commissionPence;
+      totalForRefineryGbp = refineryPence / 100;
     }
 
-    // 7) Compose email to refinery (no commission info)
-    const refineryTo =
-      process.env.REFINERY_ORDER_EMAIL_TO || "orders@refinery.example";
+    // --- 4) Build refinery-friendly order sheet (no commission visible) ---
+    const refineryOrder = {
+      orderId: o.id,
+      customerName: o.name,
+      customerEmail: o.user_email,
+      address: {
+        line1: o.address_line1,
+        line2: o.address_line2,
+        city: o.city,
+        postcode: o.postcode,
+      },
+      fuel: o.fuel,
+      litres: o.litres,
+      unitPriceGbp,
+      totalCustomerGbp,
+      totalForRefineryGbp,
+      deliveryDate: o.delivery_date,
+      invoiceStoragePath: o.refinery_invoice_storage_path,
+    };
 
-    const litres = Number(o.litres || 0);
-    const fuel = (o.fuel || "fuel").toString().toUpperCase();
-    const netGbp = (netAmountPence / 100).toFixed(2);
-    const deliveryDate = o.delivery_date || "N/A";
-
-    const subject = `Fuel order for ${litres}L ${fuel} – order ${o.id}`;
-
-    const htmlLines: string[] = [];
-
-    htmlLines.push(`<p>Dear Refinery,</p>`);
-    htmlLines.push(
-      `<p>Please supply the following fuel order. Payment has been received in full via FuelFlow.</p>`
-    );
-
-    htmlLines.push(`<h3>Order details</h3>`);
-    htmlLines.push(`<ul>`);
-    htmlLines.push(`<li><strong>Order ID:</strong> ${o.id}</li>`);
-    htmlLines.push(`<li><strong>Fuel:</strong> ${fuel}</li>`);
-    htmlLines.push(`<li><strong>Litres:</strong> ${litres}</li>`);
-    htmlLines.push(
-      `<li><strong>Net amount to refinery:</strong> £${netGbp}</li>`
-    );
-    htmlLines.push(`<li><strong>Requested delivery date:</strong> ${deliveryDate}</li>`);
-    htmlLines.push(`</ul>`);
-
-    htmlLines.push(`<h3>Customer details</h3>`);
-    htmlLines.push(`<ul>`);
-    htmlLines.push(`<li><strong>Name:</strong> ${o.name || "N/A"}</li>`);
-    htmlLines.push(
-      `<li><strong>Email:</strong> ${o.user_email || "N/A"}</li>`
-    );
-    htmlLines.push(`<li><strong>Address line 1:</strong> ${o.address_line1 || "N/A"}</li>`);
-    if (o.address_line2) {
-      htmlLines.push(
-        `<li><strong>Address line 2:</strong> ${o.address_line2}</li>`
-      );
-    }
-    htmlLines.push(`<li><strong>City:</strong> ${o.city || "N/A"}</li>`);
-    htmlLines.push(`<li><strong>Postcode:</strong> ${o.postcode || "N/A"}</li>`);
-    htmlLines.push(`</ul>`);
-
-    if (refineryUrl) {
-      htmlLines.push(
-        `<p>You can download the order PDF here (same layout as the customer invoice, but net of commission):</p>`
-      );
-      htmlLines.push(
-        `<p><a href="${refineryUrl}" target="_blank" rel="noopener">Download order PDF</a></p>`
-      );
-    }
-
-    htmlLines.push(`<p>Best regards,<br/>FuelFlow</p>`);
-
-    const html = htmlLines.join("\n");
-
-    const text = [
-      "Dear Refinery,",
-      "",
-      "Please supply the following fuel order. Payment has been received in full via FuelFlow.",
-      "",
-      "Order details",
-      `- Order ID: ${o.id}`,
-      `- Fuel: ${fuel}`,
-      `- Litres: ${litres}`,
-      `- Net amount to refinery: £${netGbp}`,
-      `- Requested delivery date: ${deliveryDate}`,
-      "",
-      "Customer details",
-      `- Name: ${o.name || "N/A"}`,
-      `- Email: ${o.user_email || "N/A"}`,
-      `- Address line 1: ${o.address_line1 || "N/A"}`,
-      ...(o.address_line2 ? [`- Address line 2: ${o.address_line2}`] : []),
-      `- City: ${o.city || "N/A"}`,
-      `- Postcode: ${o.postcode || "N/A"}`,
-      "",
-      refineryUrl ? `Order PDF: ${refineryUrl}` : "",
-      "",
-      "Best regards,",
-      "FuelFlow",
-    ].join("\n");
-
-    const from =
-      process.env.SMTP_FROM || "orders@fuelflow.co.uk";
-
-    // 8) Send the email
-    const transporter = getTransport();
-
-    await transporter.sendMail({
-      from,
-      to: refineryTo,
-      subject,
-      text,
-      html,
-    });
-
-    // 9) Update order status so we don’t send twice
-    await supabase
+    // --- 5) Mark the order as "sent" (so we don't send twice) ---
+    const { error: updateError } = await supabase
       .from("orders")
       .update({
         refinery_notification_status: "sent",
@@ -292,14 +215,29 @@ export default async function handler(
       } as any)
       .eq("id", o.id);
 
+    if (updateError) {
+      console.error(
+        "[send-refinery-order] failed to update order status:",
+        updateError
+      );
+      return res
+        .status(500)
+        .json({ ok: false, error: "Failed to update order status" });
+    }
+
+    // NOTE: At this point you have a clean `refineryOrder` object.
+    // You can plug in your email sending here if you want to fully automate it.
+    // For now we just return it to the admin dashboard to display / copy.
+
     return res.status(200).json({
       ok: true,
-      orderId: o.id,
-      netAmountPence,
-      emailSentTo: refineryTo,
+      refineryOrder,
     });
   } catch (err: any) {
-    console.error("[refinery] send-refinery-order error:", err);
-    return res.status(500).json({ error: err?.message || "Server error" });
+    console.error("[send-refinery-order] crash:", err);
+    return res
+      .status(500)
+      .json({ ok: false, error: err?.message || "Server error" });
   }
 }
+
