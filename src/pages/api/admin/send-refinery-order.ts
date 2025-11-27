@@ -57,7 +57,7 @@ type ErrorResponse = { ok: false; error: string };
 
 export type SendRefineryOrderResponse = OkResponse | ErrorResponse;
 
-// ----- Supabase (service role) -----
+/* ========= Supabase (service role) ========= */
 
 function sbAdmin() {
   const url =
@@ -83,6 +83,8 @@ function getCommissionPercent(fuel: Fuel | null): number {
   }
   return 0;
 }
+
+/* ========= Handler ========= */
 
 export default async function handler(
   req: NextApiRequest,
@@ -110,10 +112,10 @@ export default async function handler(
 
     const supabase = sbAdmin();
 
-    // --- 1) Check this email is an admin (very simple check to avoid random calls) ---
+    // --- 1) Check this email is an admin ---
     const { data: adminRow, error: adminError } = await supabase
       .from("admins")
-      .select("id")
+      .select("email") // ✅ table only has 'email'
       .eq("email", adminEmail.toLowerCase())
       .maybeSingle();
 
