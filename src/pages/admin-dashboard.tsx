@@ -1740,6 +1740,27 @@ export default function AdminDashboard() {
                       >
                         Add note
                       </button>
+
+                      {/* NEW: Send order to refinery */}
+                      <button
+                        onClick={() => sendOrderToRefinery(o.id)}
+                        disabled={
+                          !canSendRefinery || refinerySendingOrderId === o.id
+                        }
+                        className={cx(
+                          "rounded-lg px-3 py-1.5 text-xs",
+                          canSendRefinery && refinerySendingOrderId !== o.id
+                            ? "bg-white/10 hover:bg-white/15"
+                            : "bg-white/10 text-white/40 cursor-not-allowed"
+                        )}
+                      >
+                        {refinerySendingOrderId === o.id
+                          ? "Sending…"
+                          : refineryStatus === "sent"
+                          ? "Sent to refinery"
+                          : "Send to refinery"}
+                      </button>
+
                       {!isDispatched && !isDelivered && (
                         <button
                           onClick={() => updateOrderStatus(o.id, "dispatched")}
