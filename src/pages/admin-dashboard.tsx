@@ -1871,7 +1871,6 @@ export default function AdminDashboard() {
                         {o.id}
                       </td>
                       <td className="py-2 pr-4">
-                      <td className="py-2 pr-4">
                         <div className="flex justify-end gap-2 flex-wrap">
                           <button
                             onClick={() => openFulfilPanel(o)}
