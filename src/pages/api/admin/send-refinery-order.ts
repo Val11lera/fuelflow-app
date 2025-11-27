@@ -1,20 +1,19 @@
 // src/pages/api/admin/send-refinery-order.ts
 // src/pages/api/admin/send-refinery-order.ts
-// Creates a refinery-friendly "order sheet" (no commission shown),
-// emails it to the refinery (via Resend) WITH a PDF attachment,
-// and marks the order as sent.
+// Creates a refinery-friendly order email + PDF (no commission shown)
+// and marks the order as sent to the refinery.
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
-import { buildRefineryOrderPdf } from "@/lib/refinery-order-pdf";
+import { buildInvoicePdf } from "@/lib/invoice-pdf";
 
 type Fuel = "petrol" | "diesel";
 
 type OrderRow = {
   id: string;
   user_email: string | null;
-  fuel: Fuel | string | null;
+  fuel: Fuel | null;
   litres: number | null;
   unit_price_pence: number | null;
   total_pence: number | null;
@@ -31,14 +30,15 @@ type OrderRow = {
 
 type Body = {
   orderId?: string;
-  adminEmail?: string; // email of the admin clicking the button
+  adminEmail?: string;
 };
 
 type OkResponse = { ok: true };
 type ErrorResponse = { ok: false; error: string };
 export type SendRefineryOrderResponse = OkResponse | ErrorResponse;
 
-/* ---------- Supabase admin client ---------- */
+/* ---------- Supabase (service role) ---------- */
+
 function sbAdmin() {
   const url =
     process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -53,14 +53,15 @@ function sbAdmin() {
   return createClient(url, key);
 }
 
-/* ---------- Commission helpers (to HIDE it) ---------- */
-// Same % env vars you used in create-checkout-session
-function getCommissionPercent(fuel: Fuel | string | null): number {
-  const f = (fuel || "").toString().toLowerCase();
-  if (f === "petrol")
+/* ---------- Helpers ---------- */
+
+function getCommissionPercent(fuel: Fuel | null): number {
+  if (fuel === "petrol") {
     return Number(process.env.PETROL_COMMISSION_PERCENT || "0");
-  if (f === "diesel")
+  }
+  if (fuel === "diesel") {
     return Number(process.env.DIESEL_COMMISSION_PERCENT || "0");
+  }
   return 0;
 }
 
@@ -74,333 +75,241 @@ function fmtMoney(v: number | null | undefined) {
   return gbp.format(v);
 }
 
-/* ---------- Resend client ---------- */
-function getResend() {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    throw new Error("RESEND_API_KEY is not set");
-  }
-  return new Resend(apiKey);
+function fmtDate(dateIso: string | null) {
+  if (!dateIso) return "Not set";
+  const d = new Date(dateIso);
+  if (Number.isNaN(d.getTime())) return "Not set";
+  return d.toLocaleDateString("en-GB");
 }
 
-function getFromEmail() {
-  return (
-    process.env.REFINERY_FROM_EMAIL ||
-    process.env.MAIL_FROM ||
-    "orders@mail.fuelflow.co.uk"
-  );
+/**
+ * Simple refinery PDF "invoice number" – just for reference.
+ * REF-YYYYMMDD-<last 6 of order id>
+ */
+function makeRefineryRef(orderId: string) {
+  const d = new Date();
+  const y = String(d.getFullYear());
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const tail = orderId.replace(/[^A-Za-z0-9]/g, "").slice(-6) || "REF000";
+  return `REF-${y}${m}${day}-${tail}`;
 }
 
-function getRefineryToEmail() {
-  // You can set this to the actual refinery address in production
-  return (
-    process.env.REFINERY_NOTIFICATION_EMAIL ||
-    process.env.SUPPORT_EMAIL ||
-    "support@fuelflow.co.uk"
-  );
-}
-
-/* ---------- HTML renderer (no commission) ---------- */
-function renderRefineryOrderHtml(opts: {
-  orderId: string;
-  fuel: string | null;
+/**
+ * HTML email body – **no total paid by customer shown**;
+ * only "Total payable to refinery".
+ */
+function renderRefineryOrderHtml(props: {
+  product: string | null;
   litres: number | null;
   deliveryDate: string | null;
+  orderId: string;
   customerName: string | null;
   customerEmail: string | null;
-  address: {
-    line1: string | null;
-    line2: string | null;
-    city: string | null;
-    postcode: string | null;
-  };
+  addressLines: string;
   unitPriceGbp: number | null;
-  totalCustomerGbp: number | null;
   totalForRefineryGbp: number | null;
 }) {
   const {
-    orderId,
-    fuel,
+    product,
     litres,
     deliveryDate,
+    orderId,
     customerName,
     customerEmail,
-    address,
+    addressLines,
     unitPriceGbp,
-    totalCustomerGbp,
     totalForRefineryGbp,
-  } = opts;
+  } = props;
 
-  const deliveryDateStr = deliveryDate
-    ? new Date(deliveryDate).toLocaleDateString("en-GB")
-    : "Not set";
+  const deliveryDateStr = fmtDate(deliveryDate);
 
-  const addrLines = [
-    address.line1,
-    address.line2,
-    address.city,
-    address.postcode,
-  ]
-    .filter(Boolean)
-    .join("<br />");
+  const customerLine = `${customerName || "—"}${
+    customerEmail ? ` (${customerEmail})` : ""
+  }`;
 
-  const productLabel = fuel ? fuel[0].toUpperCase() + fuel.slice(1) : "—";
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<title>FuelFlow refinery order ${orderId}</title>
-<style>
-  body {
-    margin: 0;
-    padding: 0;
-    background: #f2f4f8;
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    color: #111827;
-  }
-  .wrapper {
-    max-width: 720px;
-    margin: 0 auto;
-    padding: 24px 12px 40px;
-  }
-  .card {
-    background: #ffffff;
-    border-radius: 12px;
-    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
-    overflow: hidden;
-    border: 1px solid #e5e7eb;
-  }
-  .header {
-    background: #020617;
-    color: #ffffff;
-    padding: 18px 24px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
-  .brand-badge {
-    width: 30px;
-    height: 30px;
-    border-radius: 999px;
-    background: radial-gradient(circle at 30% 10%, #facc15, #f97316);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-  }
-  .brand-badge span {
-    color: #020617;
-  }
-  .header-title {
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: #a5b4fc;
-    font-weight: 500;
-  }
-  .body {
-    padding: 24px 24px 10px;
-  }
-  h1 {
-    font-size: 20px;
-    margin: 0 0 8px;
-  }
-  p {
-    margin: 0 0 8px;
-    font-size: 13px;
-    line-height: 1.6;
-  }
-  .muted {
-    color: #6b7280;
-  }
-  .summary-grid {
-    margin-top: 16px;
-    border-radius: 10px;
-    border: 1px solid #e5e7eb;
-    overflow: hidden;
-  }
-  .summary-row {
-    display: flex;
-    background: #f9fafb;
-  }
-  .summary-cell {
-    flex: 1;
-    padding: 10px 14px;
-    border-right: 1px solid #e5e7eb;
-  }
-  .summary-cell:last-child {
-    border-right: none;
-  }
-  .summary-label {
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: #6b7280;
-    margin-bottom: 4px;
-  }
-  .summary-value {
-    font-size: 14px;
-    font-weight: 600;
-    color: #111827;
-  }
-  .summary-value-emph {
-    font-size: 16px;
-    font-weight: 700;
-    color: #0f172a;
-  }
-  .section {
-    margin-top: 20px;
-    padding-top: 14px;
-    border-top: 1px solid #e5e7eb;
-  }
-  .field-row {
-    margin-bottom: 10px;
-  }
-  .field-label {
-    font-size: 11px;
-    font-weight: 600;
-    color: #6b7280;
-    margin-bottom: 2px;
-  }
-  .field-value {
-    font-size: 13px;
-    color: #111827;
-  }
-  .footer-note {
-    margin-top: 18px;
-    padding: 10px 12px;
-    background: #fef3c7;
-    border-radius: 8px;
-    font-size: 11px;
-    color: #92400e;
-  }
-  .footer-note b {
-    font-weight: 700;
-  }
-  .page-footer {
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid #e5e7eb;
-    font-size: 11px;
-    color: #6b7280;
-    display: flex;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .page-footer a {
-    color: #4b5563;
-    text-decoration: none;
-  }
-</style>
-</head>
-<body>
-  <div class="wrapper">
-    <div class="card">
-      <div class="header">
-        <div class="brand">
-          <div class="brand-badge"><span>⛽️</span></div>
-          <div>FuelFlow</div>
-        </div>
-        <div class="header-title">Refinery order confirmation</div>
-      </div>
-
-      <div class="body">
-        <h1>New FuelFlow order</h1>
-        <p class="muted">
-          Please find the order details below.
-          Commission amounts are excluded – all totals shown are the amounts
-          <b>payable to the refinery</b>.
-        </p>
-
-        <div class="summary-grid">
-          <div class="summary-row">
-            <div class="summary-cell">
-              <div class="summary-label">Product</div>
-              <div class="summary-value">${productLabel}</div>
-            </div>
-            <div class="summary-cell">
-              <div class="summary-label">Litres</div>
-              <div class="summary-value">${litres ?? "—"}</div>
-            </div>
-            <div class="summary-cell">
-              <div class="summary-label">Delivery date</div>
-              <div class="summary-value">${deliveryDateStr}</div>
-            </div>
-            <div class="summary-cell">
-              <div class="summary-label">Total payable to refinery</div>
-              <div class="summary-value-emph">${fmtMoney(
-                totalForRefineryGbp
-              )}</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="section">
-          <div class="field-row">
-            <div class="field-label">Order reference</div>
-            <div class="field-value">${orderId}</div>
+  return `
+  <!doctype html>
+  <html>
+    <head>
+      <meta charset="utf-8" />
+      <title>New FuelFlow order</title>
+      <style>
+        body {
+          margin: 0;
+          padding: 0;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          background-color: #f5f6fb;
+          color: #14151f;
+        }
+        .outer {
+          background-color: #f5f6fb;
+          padding: 24px 0;
+        }
+        .card {
+          max-width: 700px;
+          margin: 0 auto;
+          background-color: #ffffff;
+          border-radius: 8px;
+          overflow: hidden;
+          box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+        }
+        .header {
+          background-color: #050816;
+          color: #ffffff;
+          padding: 16px 24px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .logo {
+          font-size: 18px;
+          font-weight: 600;
+        }
+        .header-right {
+          font-size: 12px;
+          opacity: 0.8;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+        }
+        .content {
+          padding: 24px;
+        }
+        h1 {
+          font-size: 18px;
+          margin: 0 0 8px 0;
+        }
+        p {
+          margin: 0 0 12px 0;
+          font-size: 14px;
+          line-height: 1.5;
+        }
+        .summary-table {
+          width: 100%;
+          border-collapse: collapse;
+          margin: 18px 0 24px 0;
+        }
+        .summary-table th,
+        .summary-table td {
+          padding: 10px 12px;
+          border: 1px solid #e2e4f0;
+          font-size: 13px;
+        }
+        .summary-table th {
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          font-weight: 600;
+          background-color: #f8f9ff;
+          color: #4b5563;
+        }
+        .summary-table td {
+          font-weight: 600;
+        }
+        .field-label {
+          font-size: 12px;
+          font-weight: 600;
+          color: #4b5563;
+          margin-bottom: 2px;
+        }
+        .field-value {
+          font-size: 14px;
+          color: #111827;
+        }
+        .field-row {
+          margin-bottom: 12px;
+        }
+        .footer-note {
+          margin-top: 18px;
+          font-size: 12px;
+          color: #4b5563;
+        }
+        .footer-note strong {
+          font-weight: 600;
+        }
+        .footer-bar {
+          margin-top: 24px;
+          padding: 14px 24px;
+          border-top: 1px solid #e5e7eb;
+          font-size: 11px;
+          color: #6b7280;
+          background-color: #f9fafb;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="outer">
+        <div class="card">
+          <div class="header">
+            <div class="logo">FuelFlow</div>
+            <div class="header-right">Refinery order confirmation</div>
           </div>
 
-          <div class="field-row">
-            <div class="field-label">Customer</div>
-            <div class="field-value">
-              ${customerName || "—"}
-              ${
-                customerEmail
-                  ? `(<a href="mailto:${customerEmail}">${customerEmail}</a>)`
-                  : ""
-              }
+          <div class="content">
+            <h1>New FuelFlow order</h1>
+            <p>
+              Please find the order details below. Commission amounts are excluded –
+              all totals shown are the amounts <strong>payable to the refinery</strong>.
+            </p>
+
+            <table class="summary-table">
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th>Litres</th>
+                  <th>Delivery date</th>
+                  <th>Total payable to refinery</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>${product || "—"}</td>
+                  <td>${litres != null ? litres : "—"}</td>
+                  <td>${deliveryDateStr}</td>
+                  <td>${fmtMoney(totalForRefineryGbp)}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div class="field-row">
+              <div class="field-label">Order reference</div>
+              <div class="field-value">${orderId}</div>
+            </div>
+
+            <div class="field-row">
+              <div class="field-label">Customer</div>
+              <div class="field-value">${customerLine}</div>
+            </div>
+
+            <div class="field-row">
+              <div class="field-label">Delivery address</div>
+              <div class="field-value">${addressLines || "—"}</div>
+            </div>
+
+            <div class="field-row">
+              <div class="field-label">Unit price (customer)</div>
+              <div class="field-value">${fmtMoney(unitPriceGbp)}</div>
+            </div>
+
+            <div class="field-row">
+              <div class="field-label">Total payable to refinery</div>
+              <div class="field-value">${fmtMoney(totalForRefineryGbp)}</div>
+            </div>
+
+            <div class="footer-note">
+              This order has already been <strong>paid in full by the customer via FuelFlow</strong>.
+              Please arrange delivery and invoice FuelFlow for the
+              <strong>"Total payable to refinery"</strong> amount only.
             </div>
           </div>
 
-          <div class="field-row">
-            <div class="field-label">Delivery address</div>
-            <div class="field-value">${addrLines || "—"}</div>
+          <div class="footer-bar">
+            FuelFlow · fuelflow.co.uk · support@fuelflow.co.uk · Ref: ${orderId}
           </div>
-
-          <div class="field-row">
-            <div class="field-label">Unit price (customer)</div>
-            <div class="field-value">${fmtMoney(unitPriceGbp)}</div>
-          </div>
-
-          <div class="field-row">
-            <div class="field-label">Total paid by customer</div>
-            <div class="field-value">${fmtMoney(totalCustomerGbp)}</div>
-          </div>
-
-          <div class="field-row">
-            <div class="field-label">Total payable to refinery</div>
-            <div class="field-value"><b>${fmtMoney(
-              totalForRefineryGbp
-            )}</b></div>
-          </div>
-        </div>
-
-        <div class="footer-note">
-          This order has already been <b>paid in full by the customer via FuelFlow</b>.
-          Please arrange delivery and invoice FuelFlow for the
-          <b>"Total payable to refinery"</b> amount only.
-        </div>
-
-        <div class="page-footer">
-          <span>FuelFlow · <a href="https://fuelflow.co.uk">fuelflow.co.uk</a> · <a href="mailto:support@fuelflow.co.uk">support@fuelflow.co.uk</a></span>
-          <span>Ref: ${orderId}</span>
         </div>
       </div>
-    </div>
-  </div>
-</body>
-</html>`;
+    </body>
+  </html>
+  `;
 }
 
 /* ---------- Handler ---------- */
@@ -429,12 +338,27 @@ export default async function handler(
         .json({ ok: false, error: "Missing adminEmail in request body" });
     }
 
+    if (!process.env.RESEND_API_KEY) {
+      return res
+        .status(500)
+        .json({ ok: false, error: "Missing RESEND_API_KEY env var" });
+    }
+
+    const refineryTo = process.env.REFINERY_NOTIFICATION_EMAIL;
+    if (!refineryTo) {
+      return res.status(500).json({
+        ok: false,
+        error: "Missing REFINERY_NOTIFICATION_EMAIL env var",
+      });
+    }
+
+    const resend = new Resend(process.env.RESEND_API_KEY);
     const supabase = sbAdmin();
 
-    // 1) Check this email is an admin
+    // 1) Verify admin
     const { data: adminRow, error: adminError } = await supabase
       .from("admins")
-      .select("email")
+      .select("id")
       .eq("email", adminEmail.toLowerCase())
       .maybeSingle();
 
@@ -451,7 +375,7 @@ export default async function handler(
         .json({ ok: false, error: "Not authorised (admin only)" });
     }
 
-    // 2) Load the order
+    // 2) Load order
     const { data: order, error: orderError } = await supabase
       .from("orders")
       .select(
@@ -483,12 +407,12 @@ export default async function handler(
     }
 
     if (o.refinery_notification_status === "sent") {
-      return res.status(400).json({
-        ok: false,
-        error: "Order already marked as sent to refinery",
-      });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Order already marked as sent to refinery" });
     }
 
+    // 3) Money calculations (no commission exposed)
     const totalPence = o.total_pence ?? null;
     const unitPence = o.unit_price_pence ?? null;
 
@@ -497,7 +421,6 @@ export default async function handler(
     const unitPriceGbp =
       unitPence != null ? Math.round(unitPence) / 100 : null;
 
-    // 3) Compute amount refinery should see (hide platform commission)
     let totalForRefineryGbp: number | null = null;
     if (totalPence != null) {
       const pct = getCommissionPercent(o.fuel);
@@ -506,67 +429,95 @@ export default async function handler(
       totalForRefineryGbp = refineryPence / 100;
     }
 
-    const refineryOrderForPdf = {
-      orderId: o.id,
-      product: (o.fuel || "") as string,
+    const addressLines = [
+      o.address_line1,
+      o.address_line2,
+      o.city,
+      o.postcode,
+    ]
+      .filter(Boolean)
+      .join(", ");
+
+    // 4) Build HTML email
+    const html = renderRefineryOrderHtml({
+      product: o.fuel,
       litres: o.litres,
       deliveryDate: o.delivery_date,
+      orderId: o.id,
       customerName: o.name,
       customerEmail: o.user_email,
-      address: {
-        line1: o.address_line1,
-        line2: o.address_line2,
-        city: o.city,
-        postcode: o.postcode,
-      },
+      addressLines,
       unitPriceGbp,
-      totalCustomerGbp,
       totalForRefineryGbp,
-    };
+    });
 
-    // 4) Build PDF
-    const { pdfBuffer, filename } = await buildRefineryOrderPdf(
-      refineryOrderForPdf
-    );
+    // 5) Build PDF using existing invoice PDF helper
+    const refineryRef = makeRefineryRef(o.id);
+    const litresQty = o.litres ?? 0;
+    const unitPriceForRefinery =
+      litresQty && totalForRefineryGbp != null
+        ? totalForRefineryGbp / litresQty
+        : unitPriceGbp ?? 0;
 
-    // 5) Build HTML email
-    const html = renderRefineryOrderHtml(refineryOrderForPdf);
-    const subject = `FuelFlow order ${o.id} – ${o.fuel || "fuel"} ${
+    const {
+      pdfBuffer,
+      filename: pdfFilename,
+    } = await buildInvoicePdf({
+      customer: {
+        name: o.name ?? null,
+        email: refineryTo, // refinery receives this PDF
+        address_line1: o.address_line1 ?? null,
+        address_line2: o.address_line2 ?? null,
+        city: o.city ?? null,
+        postcode: o.postcode ?? null,
+      },
+      items: [
+        {
+          description: `${o.fuel || "Fuel"} order`,
+          quantity: litresQty,
+          unitPrice: unitPriceForRefinery,
+        },
+      ],
+      currency: "GBP",
+      meta: {
+        invoiceNumber: refineryRef,
+        orderId: o.id,
+        notes: "Refinery order confirmation (amounts payable to refinery only).",
+        dateISO: o.delivery_date || undefined,
+      },
+    });
+
+    // 6) Send email via Resend with PDF attached
+    const subject = `FuelFlow order ${o.id} – ${o.fuel || "Fuel"} ${
       o.litres ?? ""
     }L`;
 
-    const resend = getResend();
-    const from = getFromEmail();
-    const to = getRefineryToEmail();
-
-    // 6) Send email via Resend with PDF attachment
     const emailResult = await resend.emails.send({
-      from,
-      to,
+      from:
+        process.env.REFINERY_FROM_EMAIL ||
+        `FuelFlow <orders@mail.fuelflow.co.uk>`,
+      to: [refineryTo],
       subject,
       html,
       attachments: [
         {
-          filename,
-          content: pdfBuffer,
+          filename: pdfFilename || `refinery-order-${o.id}.pdf`,
+          content: pdfBuffer.toString("base64"),
         },
       ],
-      headers: {
-        "X-Entity-Ref-ID": o.id,
-      },
     });
 
-    if (emailResult.error) {
+    if ((emailResult as any).error) {
       console.error(
         "[send-refinery-order] Resend error:",
-        emailResult.error
+        (emailResult as any).error
       );
       return res
         .status(500)
         .json({ ok: false, error: "Failed to send refinery email" });
     }
 
-    // 7) Mark the order as "sent" in DB
+    // 7) Mark order as sent
     const { error: updateError } = await supabase
       .from("orders")
       .update({
@@ -580,9 +531,10 @@ export default async function handler(
         "[send-refinery-order] failed to update order status:",
         updateError
       );
+      // Email already sent, but state not updated – still return 500 so you see it.
       return res
         .status(500)
-        .json({ ok: false, error: "Failed to update order status" });
+        .json({ ok: false, error: "Refinery email sent but failed to update order" });
     }
 
     return res.status(200).json({ ok: true });
