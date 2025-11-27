@@ -31,7 +31,11 @@ type OrderRow = {
   status: string | null; // payment status (paid/succeeded/etc)
   fulfilment_status: string | null; // delivery status (pending/dispatched/etc)
   fulfilment_notes?: string | null;
+  // new: refinery sending status (used only for UI)
+  refinery_notification_status?: string | null;
+  refinery_notified_at?: string | null;
 };
+
 
 type PaymentRow = {
   id?: string;
