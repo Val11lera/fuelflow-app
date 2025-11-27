@@ -1810,6 +1810,13 @@ export default function AdminDashboard() {
                     fulfilStatus === "dispatched" ||
                     fulfilStatus === "out_for_delivery";
 
+                  const refineryStatus = (
+                    o.refinery_notification_status || ""
+                  ).toLowerCase();
+                  const canSendRefinery =
+                    (paymentStatus === "succeeded" ||
+                      paymentStatus === "paid") &&
+                    refineryStatus !== "sent";
                   return (
                     <tr key={o.id} className="border-b border-white/5">
                       <td className="py-2 pr-4 whitespace-nowrap">
