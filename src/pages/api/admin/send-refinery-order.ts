@@ -1,17 +1,19 @@
 // src/pages/api/admin/send-refinery-order.ts
 // src/pages/api/admin/send-refinery-order.ts
-// Creates a refinery-friendly "order sheet" (no commission shown)
-// and marks the order as sent to the refinery.
+// Creates a refinery-friendly "order sheet" (no commission shown),
+// emails it to the refinery, and marks the order as sent.
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
+import { Resend } from "resend";
 
 type Fuel = "petrol" | "diesel";
 
 type OrderRow = {
   id: string;
+  created_at: string;
   user_email: string | null;
-  fuel: Fuel | null;
+  fuel: Fuel | string | null;
   litres: number | null;
   unit_price_pence: number | null;
   total_pence: number | null;
@@ -24,6 +26,15 @@ type OrderRow = {
   status: string | null;
   refinery_notification_status: string | null;
   refinery_invoice_storage_path: string | null;
+};
+
+type PaymentRow = {
+  created_at: string | null;
+  amount: number | null;
+  currency: string | null;
+  status: string | null;
+  pi_id: string | null;
+  cs_id: string | null;
 };
 
 type Body = {
@@ -45,10 +56,16 @@ type OkResponse = {
     };
     fuel: string | null;
     litres: number | null;
-    unitPriceGbp: number | null;
-    totalCustomerGbp: number | null;
-    totalForRefineryGbp: number | null;
+    unitPriceRefineryGbp: number | null;
+    totalRefineryGbp: number | null;
     deliveryDate: string | null;
+    payment: {
+      paidAt: string | null;
+      stripePiId: string | null;
+      stripeSessionId: string | null;
+      currency: string | null;
+      grossAmountGbp: number | null;
+    } | null;
     invoiceStoragePath: string | null;
   };
 };
@@ -57,7 +74,7 @@ type ErrorResponse = { ok: false; error: string };
 
 export type SendRefineryOrderResponse = OkResponse | ErrorResponse;
 
-/* ========= Supabase (service role) ========= */
+/* ===== Supabase (service role) ===== */
 
 function sbAdmin() {
   const url =
@@ -73,18 +90,159 @@ function sbAdmin() {
   return createClient(url, key);
 }
 
-// Same % env vars you used in create-checkout-session
-function getCommissionPercent(fuel: Fuel | null): number {
-  if (fuel === "petrol") {
+/* ===== Email (Resend) ===== */
+
+const resendApiKey = process.env.RESEND_API_KEY || "";
+const resend = resendApiKey ? new Resend(resendApiKey) : null;
+
+/* ===== Helpers ===== */
+
+function toGbp(pence: number | null | undefined): number | null {
+  if (pence == null) return null;
+  return Math.round(pence) / 100;
+}
+
+// Same % env vars you used for commission maths (we *don’t* send commission to refinery)
+function getCommissionPercent(fuel: Fuel | string | null): number {
+  const f = (fuel || "").toString().toLowerCase();
+  if (f === "petrol") {
     return Number(process.env.PETROL_COMMISSION_PERCENT || "0");
   }
-  if (fuel === "diesel") {
+  if (f === "diesel") {
     return Number(process.env.DIESEL_COMMISSION_PERCENT || "0");
   }
   return 0;
 }
 
-/* ========= Handler ========= */
+function buildRefineryEmailHtml(args: {
+  refineryOrder: OkResponse["refineryOrder"];
+  refineryName?: string;
+}) {
+  const { refineryOrder } = args;
+  const o = refineryOrder;
+  const fmt = (n: number | null) =>
+    n == null ? "—" : `£${n.toFixed(2)}`;
+
+  const addrLines = [
+    o.address.line1,
+    o.address.line2,
+    o.address.city,
+    o.address.postcode,
+  ]
+    .filter(Boolean)
+    .join("<br />");
+
+  const paidAt = o.payment?.paidAt
+    ? new Date(o.payment.paidAt).toLocaleString("en-GB")
+    : "—";
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charSet="utf-8" />
+    <title>New FuelFlow Order – ${o.orderId}</title>
+    <style>
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0b1220; color:#f9fafb; margin:0; padding:24px; }
+      .card { max-width:640px; margin:0 auto; background:#020617; border-radius:16px; border:1px solid rgba(148,163,184,0.35); padding:24px; }
+      h1 { font-size:20px; margin:0 0 4px 0; }
+      h2 { font-size:16px; margin:16px 0 8px 0; }
+      .muted { color:#9ca3af; font-size:12px; }
+      table { width:100%; border-collapse:collapse; margin-top:8px; }
+      th, td { text-align:left; padding:8px 6px; font-size:13px; }
+      th { background:#020617; border-bottom:1px solid #1f2937; color:#e5e7eb; }
+      tr:nth-child(even) td { background:#020617; }
+      tr:nth-child(odd) td { background:#020617; }
+      .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; background:#047857; color:white; }
+      .footer { margin-top:16px; font-size:11px; color:#6b7280; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>New paid fuel order for delivery</h1>
+      <div class="muted">Order reference: ${o.orderId}</div>
+
+      <h2>Customer</h2>
+      <table>
+        <tbody>
+          <tr>
+            <th scope="row">Name</th>
+            <td>${o.customerName || "—"}</td>
+          </tr>
+          <tr>
+            <th scope="row">Email</th>
+            <td>${o.customerEmail || "—"}</td>
+          </tr>
+          <tr>
+            <th scope="row">Delivery address</th>
+            <td>${addrLines || "—"}</td>
+          </tr>
+          <tr>
+            <th scope="row">Requested delivery date</th>
+            <td>${o.deliveryDate || "—"}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Order details</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Litres</th>
+            <th>Unit price (to refinery)</th>
+            <th>Total payable to refinery</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>${o.fuel || "—"}</td>
+            <td>${o.litres ?? "—"}</td>
+            <td>${fmt(o.unitPriceRefineryGbp)}</td>
+            <td>${fmt(o.totalRefineryGbp)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Payment</h2>
+      <table>
+        <tbody>
+          <tr>
+            <th scope="row">Status</th>
+            <td><span class="pill">Paid</span></td>
+          </tr>
+          <tr>
+            <th scope="row">Paid at</th>
+            <td>${paidAt}</td>
+          </tr>
+          <tr>
+            <th scope="row">Stripe Payment Intent</th>
+            <td>${o.payment?.stripePiId || "—"}</td>
+          </tr>
+          <tr>
+            <th scope="row">Stripe Session</th>
+            <td>${o.payment?.stripeSessionId || "—"}</td>
+          </tr>
+          <tr>
+            <th scope="row">Gross amount (customer)</th>
+            <td>${fmt(o.payment?.grossAmountGbp ?? null)}</td>
+          </tr>
+          <tr>
+            <th scope="row">Currency</th>
+            <td>${(o.payment?.currency || "GBP").toUpperCase()}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="footer">
+        This summary excludes FuelFlow commission and shows only the amount payable to the refinery.
+        If you need a formal invoice PDF, please reply to this email.
+      </div>
+    </div>
+  </body>
+</html>`;
+}
+
+/* ===== Handler ===== */
 
 export default async function handler(
   req: NextApiRequest,
@@ -110,12 +268,28 @@ export default async function handler(
         .json({ ok: false, error: "Missing adminEmail in request body" });
     }
 
+    if (!resend) {
+      return res
+        .status(500)
+        .json({ ok: false, error: "Email service not configured" });
+    }
+
+    const refineryTo = process.env.REFINERY_NOTIFICATION_EMAIL;
+    const fromEmail =
+      process.env.REFINERY_FROM_EMAIL || "FuelFlow <no-reply@fuelflow.co.uk>";
+
+    if (!refineryTo) {
+      return res
+        .status(500)
+        .json({ ok: false, error: "REFINERY_NOTIFICATION_EMAIL not set" });
+    }
+
     const supabase = sbAdmin();
 
     // --- 1) Check this email is an admin ---
     const { data: adminRow, error: adminError } = await supabase
       .from("admins")
-      .select("email") // ✅ table only has 'email'
+      .select("email")
       .eq("email", adminEmail.toLowerCase())
       .maybeSingle();
 
@@ -136,7 +310,7 @@ export default async function handler(
     const { data: order, error: orderError } = await supabase
       .from("orders")
       .select(
-        "id,user_email,fuel,litres,unit_price_pence,total_pence,delivery_date,name,address_line1,address_line2,city,postcode,status,refinery_notification_status,refinery_invoice_storage_path"
+        "id,created_at,user_email,fuel,litres,unit_price_pence,total_pence,delivery_date,name,address_line1,address_line2,city,postcode,status,refinery_notification_status,refinery_invoice_storage_path"
       )
       .eq("id", orderId)
       .maybeSingle();
@@ -171,25 +345,49 @@ export default async function handler(
       });
     }
 
+    // --- 3) Find the successful payment row (for confirmation details) ---
+    const { data: paymentRow, error: paymentError } = await supabase
+      .from("payments")
+      .select(
+        "created_at, amount, currency, status, pi_id, cs_id"
+      )
+      .eq("order_id", o.id)
+      .in("status", ["paid", "succeeded"] as any)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (paymentError) {
+      console.error(
+        "[send-refinery-order] payment query error:",
+        paymentError
+      );
+    }
+
+    const p = (paymentRow || null) as PaymentRow | null;
+
+    // --- 4) Compute the amount refinery should see (hide commission) ---
     const totalPence = o.total_pence ?? null;
     const unitPence = o.unit_price_pence ?? null;
 
-    const totalCustomerGbp =
-      totalPence != null ? Math.round(totalPence) / 100 : null;
-    const unitPriceGbp =
-      unitPence != null ? Math.round(unitPence) / 100 : null;
+    let totalRefineryGbp: number | null = null;
+    let unitRefineryGbp: number | null = null;
 
-    // --- 3) Compute the amount refinery should see (hide platform commission) ---
-    let totalForRefineryGbp: number | null = null;
     if (totalPence != null) {
       const pct = getCommissionPercent(o.fuel);
       const commissionPence = Math.round(totalPence * (pct / 100));
       const refineryPence = totalPence - commissionPence;
-      totalForRefineryGbp = refineryPence / 100;
+      totalRefineryGbp = refineryPence / 100;
     }
 
-    // --- 4) Build refinery-friendly order sheet (no commission visible) ---
-    const refineryOrder = {
+    if (unitPence != null) {
+      const pct = getCommissionPercent(o.fuel);
+      const commissionPerLitre = Math.round(unitPence * (pct / 100));
+      const refineryUnitPence = unitPence - commissionPerLitre;
+      unitRefineryGbp = refineryUnitPence / 100;
+    }
+
+    const refineryOrder: OkResponse["refineryOrder"] = {
       orderId: o.id,
       customerName: o.name,
       customerEmail: o.user_email,
@@ -199,16 +397,45 @@ export default async function handler(
         city: o.city,
         postcode: o.postcode,
       },
-      fuel: o.fuel,
+      fuel: (o.fuel || "") as string | null,
       litres: o.litres,
-      unitPriceGbp,
-      totalCustomerGbp,
-      totalForRefineryGbp,
+      unitPriceRefineryGbp: unitRefineryGbp,
+      totalRefineryGbp,
       deliveryDate: o.delivery_date,
+      payment: p
+        ? {
+            paidAt: p.created_at,
+            stripePiId: p.pi_id,
+            stripeSessionId: p.cs_id,
+            currency: p.currency || "GBP",
+            grossAmountGbp: toGbp(p.amount),
+          }
+        : null,
       invoiceStoragePath: o.refinery_invoice_storage_path,
     };
 
-    // --- 5) Mark the order as "sent" (so we don't send twice) ---
+    // --- 5) Build the HTML email (similar structure to your invoices) ---
+    const html = buildRefineryEmailHtml({ refineryOrder });
+
+    const subject = `New paid fuel order – ${refineryOrder.fuel || "Fuel"} – ${
+      refineryOrder.litres ?? ""
+    }L – ${refineryOrder.orderId}`;
+
+    const { error: emailError } = await resend.emails.send({
+      from: fromEmail,
+      to: refineryTo,
+      subject,
+      html,
+    });
+
+    if (emailError) {
+      console.error("[send-refinery-order] email send error:", emailError);
+      return res
+        .status(500)
+        .json({ ok: false, error: "Failed to send refinery email" });
+    }
+
+    // --- 6) Mark the order as "sent" (so we don't send twice) ---
     const { error: updateError } = await supabase
       .from("orders")
       .update({
@@ -227,10 +454,6 @@ export default async function handler(
         .json({ ok: false, error: "Failed to update order status" });
     }
 
-    // NOTE: At this point you have a clean `refineryOrder` object.
-    // You can plug in your email sending here if you want to fully automate it.
-    // For now we just return it to the admin dashboard to display / copy.
-
     return res.status(200).json({
       ok: true,
       refineryOrder,
@@ -242,4 +465,5 @@ export default async function handler(
       .json({ ok: false, error: err?.message || "Server error" });
   }
 }
+
 
