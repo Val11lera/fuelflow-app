@@ -512,47 +512,56 @@ export default function AdminDashboard() {
   /* =========================
      Send order to refinery (manual trigger)
      ========================= */
-  async function sendOrderToRefinery(orderId: string) {
-    try {
-      if (!orderId) return;
-      if (!me) {
-        alert("Cannot send to refinery: missing admin email.");
-        return;
-      }
-
-      setRefinerySendingOrderId(orderId);
-
-      const res = await fetch("/api/admin/send-refinery-order", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          orderId,
-          adminEmail: me,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok || !data?.ok) {
-        const msg =
-          data?.error ||
-          (typeof data === "string" ? data : "Failed to send order to refinery");
-        console.error("sendOrderToRefinery error:", msg);
-        alert(msg);
-        return;
-      }
-
-      // For now just confirm to the admin; later we can show the payload nicely
-      alert("Order marked as sent to refinery.");
-    } catch (err: any) {
-      console.error("sendOrderToRefinery crash:", err);
-      alert(err?.message || "Unexpected error sending order to refinery");
-    } finally {
-      setRefinerySendingOrderId(null);
+async function sendOrderToRefinery(orderId: string) {
+  try {
+    if (!orderId) return;
+    if (!me) {
+      alert("Cannot send to refinery: missing admin email.");
+      return;
     }
+
+    // 🔐 get Supabase access token so API can verify admin
+    const { data: sessionRes } = await supabase.auth.getSession();
+    const token = sessionRes.session?.access_token;
+    if (!token) {
+      alert("Failed to verify admin session. Please sign in again.");
+      return;
+    }
+
+    setRefinerySendingOrderId(orderId);
+
+    const res = await fetch("/api/admin/send-refinery-order", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`, // 👈 IMPORTANT
+      },
+      body: JSON.stringify({
+        orderId,
+        adminEmail: me, // still useful for logging
+      }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || !data?.ok) {
+      const msg =
+        data?.error ||
+        (typeof data === "string" ? data : "Failed to send order to refinery");
+      console.error("sendOrderToRefinery error:", msg);
+      alert(msg);
+      return;
+    }
+
+    alert("Order marked as sent to refinery.");
+  } catch (err: any) {
+    console.error("sendOrderToRefinery crash:", err);
+    alert(err?.message || "Unexpected error sending order to refinery");
+  } finally {
+    setRefinerySendingOrderId(null);
   }
+}
+
 
   /* =========================
      Customer dropdown options
