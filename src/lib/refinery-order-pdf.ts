@@ -1,4 +1,5 @@
 // src/lib/refinery-order-pdf.ts
+// src/lib/refinery-order-pdf.ts
 // Builds a simple one-page PDF for refinery order confirmations.
 // No commission information is included – only the amounts payable to the refinery.
 
@@ -18,7 +19,7 @@ export type RefineryOrderForPdf = {
     postcode: string | null;
   };
   unitPriceGbp: number | null;
-  totalCustomerGbp: number | null;
+  totalCustomerGbp: number | null; // still available but not shown
   totalForRefineryGbp: number | null;
 };
 
@@ -39,7 +40,7 @@ function fmtLitres(v: number | null | undefined) {
 
 export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([595.28, 841.89]); // A4 portrait (roughly)
+  const page = pdfDoc.addPage([595.28, 841.89]); // A4 portrait
   const { width, height } = page.getSize();
 
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -188,7 +189,8 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   );
   drawLabelValue("Delivery address", addressLines || "—");
   drawLabelValue("Unit price (customer)", fmtMoney(order.unitPriceGbp));
-  drawLabelValue("Total paid by customer", fmtMoney(order.totalCustomerGbp));
+  // ❌ REMOVED: "Total paid by customer"
+  // drawLabelValue("Total paid by customer", fmtMoney(order.totalCustomerGbp));
   drawLabelValue(
     "Total payable to refinery",
     fmtMoney(order.totalForRefineryGbp)
@@ -218,7 +220,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
     }
   );
 
-  // Tiny footer line with URL + ref
+  // Footer line
   const footerText = `FuelFlow · fuelflow.co.uk · support@fuelflow.co.uk    Ref: ${order.orderId}`;
   page.drawText(footerText, {
     x: margin,
