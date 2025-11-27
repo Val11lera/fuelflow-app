@@ -520,38 +520,59 @@ async function sendOrderToRefinery(orderId: string) {
       return;
     }
 
-    // 🔐 get Supabase access token so API can verify admin
+    setRefinerySendingOrderId(orderId);
+
+    // 🔐 get the Supabase access token for the logged-in user
     const { data: sessionRes } = await supabase.auth.getSession();
     const token = sessionRes.session?.access_token;
     if (!token) {
-      alert("Failed to verify admin session. Please sign in again.");
+      alert("Failed to verify admin (no session). Please log in again.");
       return;
     }
-
-    setRefinerySendingOrderId(orderId);
 
     const res = await fetch("/api/admin/send-refinery-order", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`, // 👈 IMPORTANT
+        // 🔐 send token to API so it can verify you are an admin
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
         orderId,
-        adminEmail: me, // still useful for logging
+        adminEmail: me,
       }),
     });
 
-    const data = await res.json();
+    let data: any = null;
+    try {
+      data = await res.json();
+    } catch {
+      // ignore JSON parse errors
+    }
 
     if (!res.ok || !data?.ok) {
       const msg =
         data?.error ||
-        (typeof data === "string" ? data : "Failed to send order to refinery");
+        (typeof data === "string"
+          ? data
+          : "Failed to send order to refinery");
       console.error("sendOrderToRefinery error:", msg);
       alert(msg);
       return;
     }
+
+    // Optional: update local state so the button shows “Sent to refinery”
+    setOrders((prev) =>
+      prev.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              refinery_notification_status: "sent",
+              refinery_notified_at: new Date().toISOString(),
+            }
+          : o
+      )
+    );
 
     alert("Order marked as sent to refinery.");
   } catch (err: any) {
