@@ -1646,6 +1646,14 @@ export default function AdminDashboard() {
                   fulfilStatus === "dispatched" ||
                   fulfilStatus === "out_for_delivery";
 
+                const refineryStatus = (
+                  o.refinery_notification_status || ""
+                ).toLowerCase();
+                const canSendRefinery =
+                  (paymentStatus === "succeeded" ||
+                    paymentStatus === "paid") &&
+                  refineryStatus !== "sent";
+
                 return (
                   <div
                     key={o.id}
