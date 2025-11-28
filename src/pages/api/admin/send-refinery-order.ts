@@ -239,11 +239,15 @@ function renderRefineryOrderHtml(props: {
     <body>
       <div class="outer">
         <div class="card">
-          <div class="header">
-            <div class="logo">FuelFlow</div>
-            <div class="header-right">Refinery order confirmation</div>
-          </div>
-
+<div class="header">
+  <div class="logo">
+    <img
+      src="https://dashboard.fuelflow.co.uk/logo-email.png"
+      alt="FuelFlow"
+    />
+  </div>
+  <div class="header-right">Refinery order confirmation</div>
+</div>
           <div class="content">
             <h1>New FuelFlow order</h1>
             <p>
