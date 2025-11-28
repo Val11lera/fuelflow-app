@@ -162,10 +162,16 @@ function renderRefineryOrderHtml(props: {
           align-items: center;
           justify-content: space-between;
         }
-        .logo {
-          font-size: 18px;
-          font-weight: 600;
-        }
+.logo {
+  display: flex;
+  align-items: center;
+}
+
+.logo img {
+  height: 28px;
+  display: block;
+}
+
         .header-right {
           font-size: 12px;
           opacity: 0.8;
