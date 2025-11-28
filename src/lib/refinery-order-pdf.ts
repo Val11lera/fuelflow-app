@@ -191,6 +191,7 @@ const infoCols: { label: string; value: string }[] = [
     y: tableTop - headerHeight - rowHeight,
     width: tableWidth,
     height: headerHeight + rowHeight,
+    borderWidth: 0.5,
     borderColor: rgb(226 / 255, 228 / 255, 240 / 255),
   });
 
