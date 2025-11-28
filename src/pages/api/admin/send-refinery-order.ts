@@ -454,7 +454,6 @@ const { pdfBuffer, filename: pdfFilename } = await buildRefineryOrderPdf({
   litres: o.litres ?? 0,
   unitPriceCustomerGbp: unitPriceGbp ?? 0, // internal only
   totalForRefineryGbp: totalForRefineryGbp ?? 0,
-  logoUrl: "https://dashboard.fuelflow.co.uk/logo-email.png",
 });
 
 
