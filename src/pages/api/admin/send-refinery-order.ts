@@ -355,10 +355,10 @@ export default async function handler(
     const resend = new Resend(process.env.RESEND_API_KEY);
     const supabase = sbAdmin();
 
-    // 1) Verify admin
+    // 1) Verify admin  **FIXED HERE**
     const { data: adminRow, error: adminError } = await supabase
       .from("admins")
-      .select("id")
+      .select("email") // your table only has "email", not "id"
       .eq("email", adminEmail.toLowerCase())
       .maybeSingle();
 
@@ -532,9 +532,10 @@ export default async function handler(
         updateError
       );
       // Email already sent, but state not updated – still return 500 so you see it.
-      return res
-        .status(500)
-        .json({ ok: false, error: "Refinery email sent but failed to update order" });
+      return res.status(500).json({
+        ok: false,
+        error: "Refinery email sent but failed to update order",
+      });
     }
 
     return res.status(200).json({ ok: true });
