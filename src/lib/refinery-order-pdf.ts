@@ -176,6 +176,7 @@ const infoCols: { label: string; value: string }[] = [
   const tableLeft = marginX;
 
   // Header background
+   // Header background
   page.drawRectangle({
     x: tableLeft,
     y: tableTop - headerHeight,
@@ -184,8 +185,7 @@ const infoCols: { label: string; value: string }[] = [
     color: rgb(248 / 255, 249 / 255, 255 / 255),
   });
 
-  page.setLineWidth(0.5);
-  page.setDashPattern([], 0);
+  // Table outer border (no setLineWidth / setDashPattern needed)
   page.drawRectangle({
     x: tableLeft,
     y: tableTop - headerHeight - rowHeight,
@@ -194,6 +194,7 @@ const infoCols: { label: string; value: string }[] = [
     borderWidth: 0.5,
     borderColor: rgb(226 / 255, 228 / 255, 240 / 255),
   });
+
 
   // Column verticals
   const colXProduct = tableLeft;
