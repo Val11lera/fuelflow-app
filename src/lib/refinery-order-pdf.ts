@@ -88,11 +88,11 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   const colCount = 3;
   const colWidth = (pageWidth - marginX * 2) / colCount;
 
-  const infoCols: { label: string; value: string }[] = [
-    { label: "Order ref", label: "Order ref", value: order.orderId },
-    { label: "Refinery ref", value: order.refineryRef },
-    { label: "Delivery date", value: fmtDate(order.deliveryDate) || "Not set" },
-  ];
+const infoCols: { label: string; value: string }[] = [
+  { label: "Order ref", value: order.orderId },
+  { label: "Refinery ref", value: order.refineryRef },
+  { label: "Delivery date", value: fmtDate(order.deliveryDate) || "Not set" },
+];
 
   infoCols.forEach((col, index) => {
     const x = marginX + colWidth * index;
