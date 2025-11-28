@@ -59,22 +59,21 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
     color: rgb(5 / 255, 8 / 255, 22 / 255),
   });
 
-  // Try to draw the logo image. If it fails, fall back to text-only.
+  // Try to draw the logo image. If it fails, we just show text title on the right.
   const logoUrl =
     process.env.REFINERY_PDF_LOGO_URL ||
     "https://dashboard.fuelflow.co.uk/logo-email.png";
 
-  let logoRightEdge = marginX; // used to position the "FuelFlow" text
-
   try {
-    const logoBytes = await (await fetch(logoUrl)).arrayBuffer();
+    const resp = await fetch(logoUrl);
+    const logoBytes = await resp.arrayBuffer();
     const logoImage = await pdfDoc.embedPng(logoBytes);
-    const targetHeight = 28;
+    const targetHeight = 30;
     const scale = targetHeight / logoImage.height;
     const logoWidth = logoImage.width * scale;
 
     const logoX = marginX;
-    const logoY = pageHeight - 68;
+    const logoY = pageHeight - 72;
 
     page.drawImage(logoImage, {
       x: logoX,
@@ -82,20 +81,10 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
       width: logoWidth,
       height: targetHeight,
     });
-
-    logoRightEdge = logoX + logoWidth + 8; // padding after logo
   } catch (e) {
     console.error("Failed to load refinery PDF logo:", e);
+    // If logo fails we still don’t want duplicate wordmarks, so we do nothing extra here.
   }
-
-  // Wordmark next to the logo
-  page.drawText("FuelFlow", {
-    x: logoRightEdge,
-    y: pageHeight - 58,
-    size: 18,
-    font: fontBold,
-    color: rgb(1, 1, 1),
-  });
 
   const headerTitle = "REFINERY ORDER CONFIRMATION";
   const headerTitleWidth = fontBold.widthOfTextAtSize(headerTitle, 12);
@@ -151,7 +140,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   const tableWidth = pageWidth - marginX * 2;
   const tableLeft = marginX;
 
-  const colProductW = tableWidth * 0.30;
+  const colProductW = tableWidth * 0.3;
   const colLitresW = tableWidth * 0.15;
   const colDateW = tableWidth * 0.25;
   const colTotalW = tableWidth - colProductW - colLitresW - colDateW;
@@ -286,21 +275,31 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
     });
     cursorY -= 12;
 
-    const wrapped = wrapText(
-      value || "—",
-      pageWidth - marginX * 2,
-      fontRegular,
-      fieldValueSize
-    );
-    wrapped.forEach((line) => {
-      page.drawText(line, {
-        x: marginX,
-        y: cursorY,
-        size: fieldValueSize,
-        font: fontRegular,
-        color: rgb(0.09, 0.1, 0.12),
+    const raw = value || "—";
+    const paragraphs = raw.split(/\n+/);
+
+    paragraphs.forEach((para, idx) => {
+      const wrapped = wrapText(
+        para,
+        pageWidth - marginX * 2,
+        fontRegular,
+        fieldValueSize
+      );
+      wrapped.forEach((line) => {
+        page.drawText(line, {
+          x: marginX,
+          y: cursorY,
+          size: fieldValueSize,
+          font: fontRegular,
+          color: rgb(0.09, 0.1, 0.12),
+        });
+        cursorY -= 13;
       });
-      cursorY -= 13;
+
+      // Extra gap between address lines groups
+      if (idx < paragraphs.length - 1) {
+        cursorY -= 2;
+      }
     });
 
     cursorY -= 6;
@@ -310,10 +309,12 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
     (order.customerName || "—") +
     (order.customerEmail ? ` (${order.customerEmail})` : "");
 
+  const formattedAddress = formatAddress(order.deliveryAddress);
+
   drawField("Order reference", order.orderId);
   drawField("Refinery reference", order.refineryRef);
   drawField("Customer", customerLine);
-  drawField("Delivery address", order.deliveryAddress || "—");
+  drawField("Delivery address", formattedAddress);
 
   /* -----------------------------
      Total + note
@@ -362,6 +363,24 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   const filename = `refinery-order-${order.orderId}.pdf`;
 
   return { pdfBuffer, filename };
+}
+
+/**
+ * Format address into neat lines:
+ *  - split on commas
+ *  - uppercase the last part (postcode line)
+ *  - join with newlines
+ */
+function formatAddress(raw: string | null): string {
+  if (!raw) return "—";
+  const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) return "—";
+
+  const lastIndex = parts.length - 1;
+  parts[lastIndex] = parts[lastIndex].toUpperCase(); // postcode line
+
+  // Join with newlines so drawField shows one line per part
+  return parts.join("\n");
 }
 
 /**
