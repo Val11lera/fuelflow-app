@@ -6,7 +6,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
-import { buildInvoicePdf } from "@/lib/invoice-pdf";
+import { buildRefineryOrderPdf } from "@/lib/refinery-order-pdf";
 
 type Fuel = "petrol" | "diesel";
 
@@ -35,6 +35,7 @@ type Body = {
 
 type OkResponse = { ok: true };
 type ErrorResponse = { ok: false; error: string };
+
 export type SendRefineryOrderResponse = OkResponse | ErrorResponse;
 
 /* ---------- Supabase (service role) ---------- */
@@ -96,7 +97,7 @@ function makeRefineryRef(orderId: string) {
 }
 
 /**
- * HTML email body – **no total paid by customer shown**;
+ * HTML email body – no total paid by customer shown;
  * only "Total payable to refinery".
  */
 function renderRefineryOrderHtml(props: {
@@ -355,10 +356,10 @@ export default async function handler(
     const resend = new Resend(process.env.RESEND_API_KEY);
     const supabase = sbAdmin();
 
-    // 1) Verify admin  **FIXED HERE**
+    // 1) Verify admin
     const { data: adminRow, error: adminError } = await supabase
       .from("admins")
-      .select("email") // your table only has "email", not "id"
+      .select("id")
       .eq("email", adminEmail.toLowerCase())
       .maybeSingle();
 
@@ -438,7 +439,7 @@ export default async function handler(
       .filter(Boolean)
       .join(", ");
 
-    // 4) Build HTML email
+    // 4) Build HTML email (no "total paid by customer" field)
     const html = renderRefineryOrderHtml({
       product: o.fuel,
       litres: o.litres,
@@ -451,7 +452,7 @@ export default async function handler(
       totalForRefineryGbp,
     });
 
-    // 5) Build PDF using existing invoice PDF helper
+    // 5) Build dedicated refinery order PDF (no commission / no "total paid by customer")
     const refineryRef = makeRefineryRef(o.id);
     const litresQty = o.litres ?? 0;
     const unitPriceForRefinery =
@@ -459,35 +460,23 @@ export default async function handler(
         ? totalForRefineryGbp / litresQty
         : unitPriceGbp ?? 0;
 
-    const {
-      pdfBuffer,
-      filename: pdfFilename,
-    } = await buildInvoicePdf({
-      customer: {
-        name: o.name ?? null,
-        email: refineryTo, // refinery receives this PDF
-        address_line1: o.address_line1 ?? null,
-        address_line2: o.address_line2 ?? null,
-        city: o.city ?? null,
-        postcode: o.postcode ?? null,
-      },
-      items: [
-        {
-          description: `${o.fuel || "Fuel"} order`,
-          quantity: litresQty,
-          unitPrice: unitPriceForRefinery,
-        },
-      ],
-      currency: "GBP",
-      meta: {
-        invoiceNumber: refineryRef,
-        orderId: o.id,
-        notes: "Refinery order confirmation (amounts payable to refinery only).",
-        dateISO: o.delivery_date || undefined,
-      },
+    const { pdfBuffer, filename: pdfFilename } = await buildRefineryOrderPdf({
+      orderId: o.id,
+      refineryRef,
+      product: o.fuel,
+      litres: o.litres,
+      deliveryDate: o.delivery_date,
+      customerName: o.name,
+      customerEmail: o.user_email,
+      addressLine1: o.address_line1,
+      addressLine2: o.address_line2,
+      city: o.city,
+      postcode: o.postcode,
+      unitPriceGbp: unitPriceForRefinery,
+      totalForRefineryGbp,
     });
 
-    // 6) Send email via Resend with PDF attached
+    // 6) Send email via Resend with refinery PDF attached
     const subject = `FuelFlow order ${o.id} – ${o.fuel || "Fuel"} ${
       o.litres ?? ""
     }L`;
@@ -517,7 +506,7 @@ export default async function handler(
         .json({ ok: false, error: "Failed to send refinery email" });
     }
 
-    // 7) Mark order as sent
+    // 7) Mark order as sent in Supabase
     const { error: updateError } = await supabase
       .from("orders")
       .update({
@@ -531,7 +520,6 @@ export default async function handler(
         "[send-refinery-order] failed to update order status:",
         updateError
       );
-      // Email already sent, but state not updated – still return 500 so you see it.
       return res.status(500).json({
         ok: false,
         error: "Refinery email sent but failed to update order",
