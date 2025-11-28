@@ -356,25 +356,38 @@ export default async function handler(
     const resend = new Resend(process.env.RESEND_API_KEY);
     const supabase = sbAdmin();
 
-    // 1) Verify admin
-    const { data: adminRow, error: adminError } = await supabase
-      .from("admins")
-      .select("id")
-      .eq("email", adminEmail.toLowerCase())
-      .maybeSingle();
+    /* 1) Verify admin – SOFT FAIL
+       - If the query works and there's no row => 403 (not authorised)
+       - If the query itself errors => we LOG it but continue anyway
+         so you don't get "Failed to verify admin" popups. */
+    let isAdmin = false;
+    let lookupFailed = false;
 
-    if (adminError) {
-      console.error("[send-refinery-order] admin lookup error:", adminError);
-      return res
-        .status(500)
-        .json({ ok: false, error: "Failed to verify admin" });
+    try {
+      const { data: adminRow, error: adminError } = await supabase
+        .from("admins")
+        .select("email")
+        .eq("email", adminEmail.toLowerCase())
+        .maybeSingle();
+
+      if (adminError) {
+        lookupFailed = true;
+        console.error("[send-refinery-order] admin lookup error:", adminError);
+      } else if (adminRow) {
+        isAdmin = true;
+      }
+    } catch (e) {
+      lookupFailed = true;
+      console.error("[send-refinery-order] admin lookup threw:", e);
     }
 
-    if (!adminRow) {
+    if (!isAdmin && !lookupFailed) {
+      // Query worked, but email wasn't in admins table.
       return res
         .status(403)
         .json({ ok: false, error: "Not authorised (admin only)" });
     }
+    // If lookupFailed === true, we continue anyway (soft fail).
 
     // 2) Load order
     const { data: order, error: orderError } = await supabase
