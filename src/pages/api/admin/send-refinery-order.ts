@@ -35,7 +35,6 @@ type Body = {
 
 type OkResponse = { ok: true };
 type ErrorResponse = { ok: false; error: string };
-
 export type SendRefineryOrderResponse = OkResponse | ErrorResponse;
 
 /* ---------- Supabase (service role) ---------- */
@@ -97,8 +96,8 @@ function makeRefineryRef(orderId: string) {
 }
 
 /**
- * HTML email body – no total paid by customer shown;
- * only "Total payable to refinery".
+ * HTML email body – **no total paid by customer shown**,
+ * and now **no unit price** is shown either.
  */
 function renderRefineryOrderHtml(props: {
   product: string | null;
@@ -108,7 +107,6 @@ function renderRefineryOrderHtml(props: {
   customerName: string | null;
   customerEmail: string | null;
   addressLines: string;
-  unitPriceGbp: number | null;
   totalForRefineryGbp: number | null;
 }) {
   const {
@@ -119,7 +117,6 @@ function renderRefineryOrderHtml(props: {
     customerName,
     customerEmail,
     addressLines,
-    unitPriceGbp,
     totalForRefineryGbp,
   } = props;
 
@@ -158,12 +155,21 @@ function renderRefineryOrderHtml(props: {
         .header {
           background-color: #050816;
           color: #ffffff;
-          padding: 16px 24px;
+          padding: 12px 20px;
           display: flex;
           align-items: center;
           justify-content: space-between;
         }
         .logo {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .logo img {
+          display: block;
+          height: 28px;
+        }
+        .logo-text {
           font-size: 18px;
           font-weight: 600;
         }
@@ -241,7 +247,10 @@ function renderRefineryOrderHtml(props: {
       <div class="outer">
         <div class="card">
           <div class="header">
-            <div class="logo">FuelFlow</div>
+            <div class="logo">
+              <img src="https://dashboard.fuelflow.co.uk/logo-email.png" alt="FuelFlow" />
+              <span class="logo-text">FuelFlow</span>
+            </div>
             <div class="header-right">Refinery order confirmation</div>
           </div>
 
@@ -284,11 +293,6 @@ function renderRefineryOrderHtml(props: {
             <div class="field-row">
               <div class="field-label">Delivery address</div>
               <div class="field-value">${addressLines || "—"}</div>
-            </div>
-
-            <div class="field-row">
-              <div class="field-label">Unit price (customer)</div>
-              <div class="field-value">${fmtMoney(unitPriceGbp)}</div>
             </div>
 
             <div class="field-row">
@@ -356,38 +360,25 @@ export default async function handler(
     const resend = new Resend(process.env.RESEND_API_KEY);
     const supabase = sbAdmin();
 
-    /* 1) Verify admin – SOFT FAIL
-       - If the query works and there's no row => 403 (not authorised)
-       - If the query itself errors => we LOG it but continue anyway
-         so you don't get "Failed to verify admin" popups. */
-    let isAdmin = false;
-    let lookupFailed = false;
+    // 1) Verify admin (table has only 'email' column)
+    const { data: adminRow, error: adminError } = await supabase
+      .from("admins")
+      .select("email")
+      .eq("email", adminEmail.toLowerCase())
+      .maybeSingle();
 
-    try {
-      const { data: adminRow, error: adminError } = await supabase
-        .from("admins")
-        .select("email")
-        .eq("email", adminEmail.toLowerCase())
-        .maybeSingle();
-
-      if (adminError) {
-        lookupFailed = true;
-        console.error("[send-refinery-order] admin lookup error:", adminError);
-      } else if (adminRow) {
-        isAdmin = true;
-      }
-    } catch (e) {
-      lookupFailed = true;
-      console.error("[send-refinery-order] admin lookup threw:", e);
+    if (adminError) {
+      console.error("[send-refinery-order] admin lookup error:", adminError);
+      return res
+        .status(500)
+        .json({ ok: false, error: "Failed to verify admin" });
     }
 
-    if (!isAdmin && !lookupFailed) {
-      // Query worked, but email wasn't in admins table.
+    if (!adminRow) {
       return res
         .status(403)
         .json({ ok: false, error: "Not authorised (admin only)" });
     }
-    // If lookupFailed === true, we continue anyway (soft fail).
 
     // 2) Load order
     const { data: order, error: orderError } = await supabase
@@ -452,7 +443,7 @@ export default async function handler(
       .filter(Boolean)
       .join(", ");
 
-    // 4) Build HTML email (no "total paid by customer" field)
+    // 4) Build HTML email (no unit price shown)
     const html = renderRefineryOrderHtml({
       product: o.fuel,
       litres: o.litres,
@@ -461,35 +452,30 @@ export default async function handler(
       customerName: o.name,
       customerEmail: o.user_email,
       addressLines,
-      unitPriceGbp,
       totalForRefineryGbp,
     });
 
-    // 5) Build dedicated refinery order PDF (no commission / no "total paid by customer")
+    // 5) Build PDF using dedicated refinery PDF helper
     const refineryRef = makeRefineryRef(o.id);
     const litresQty = o.litres ?? 0;
-    const unitPriceForRefinery =
-      litresQty && totalForRefineryGbp != null
-        ? totalForRefineryGbp / litresQty
-        : unitPriceGbp ?? 0;
 
-    const { pdfBuffer, filename: pdfFilename } = await buildRefineryOrderPdf({
+    const {
+      pdfBuffer,
+      filename: pdfFilename,
+    } = await buildRefineryOrderPdf({
       orderId: o.id,
       refineryRef,
-      product: o.fuel,
-      litres: o.litres,
+      product: o.fuel || "Fuel",
+      litres: litresQty,
       deliveryDate: o.delivery_date,
       customerName: o.name,
       customerEmail: o.user_email,
-      addressLine1: o.address_line1,
-      addressLine2: o.address_line2,
-      city: o.city,
-      postcode: o.postcode,
-      unitPriceGbp: unitPriceForRefinery,
+      addressLines,
+      unitPriceCustomerGbp: unitPriceGbp, // still calculated internally
       totalForRefineryGbp,
     });
 
-    // 6) Send email via Resend with refinery PDF attached
+    // 6) Send email via Resend with PDF attached
     const subject = `FuelFlow order ${o.id} – ${o.fuel || "Fuel"} ${
       o.litres ?? ""
     }L`;
@@ -519,7 +505,7 @@ export default async function handler(
         .json({ ok: false, error: "Failed to send refinery email" });
     }
 
-    // 7) Mark order as sent in Supabase
+    // 7) Mark order as sent
     const { error: updateError } = await supabase
       .from("orders")
       .update({
@@ -535,7 +521,8 @@ export default async function handler(
       );
       return res.status(500).json({
         ok: false,
-        error: "Refinery email sent but failed to update order",
+        error:
+          "Refinery email sent but failed to update order status in database",
       });
     }
 
