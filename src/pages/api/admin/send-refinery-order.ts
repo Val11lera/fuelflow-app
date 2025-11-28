@@ -460,18 +460,19 @@ export default async function handler(
         ? totalCustomerGbp / litresQty
         : unitPriceGbp ?? 0;
 
-    const refineryPdfInput: RefineryOrderForPdf = {
-      orderId: o.id,
-      refineryRef,
-      customerName: o.name,
-      customerEmail: o.user_email,
-      deliveryAddress: addressLines,
-      deliveryDate: o.delivery_date,
-      product: o.fuel || "Fuel",
-      litres: litresQty,
-      unitPriceCustomerGbp: unitPriceForCustomer ?? 0, // internal only; template decides what to show
-      totalForRefineryGbp: totalForRefineryGbp ?? 0,
-    };
+const refineryPdfInput: RefineryOrderForPdf = {
+  orderId: o.id,
+  refineryRef,
+  customerName: o.name,
+  customerEmail: o.user_email,
+  addressLines: addressLines,      // ✅ use the correct key from RefineryOrderForPdf
+  deliveryDate: o.delivery_date,
+  product: o.fuel || "Fuel",
+  litres: litresQty,
+  unitPriceCustomerGbp: unitPriceForCustomer ?? 0,
+  totalForRefineryGbp: totalForRefineryGbp ?? 0,
+};
+
 
     const { pdfBuffer, filename: pdfFilename } =
       await buildRefineryOrderPdf(refineryPdfInput);
