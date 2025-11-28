@@ -37,16 +37,21 @@ type OkResponse = { ok: true };
 type ErrorResponse = { ok: false; error: string };
 export type SendRefineryOrderResponse = OkResponse | ErrorResponse;
 
-/* ---------- Supabase (service role) ---------- */
-
+/* ---------- Supabase (SERVICE ROLE) ---------- */
+/**
+ * IMPORTANT:
+ * This API route runs ONLY on the server, so using the service-role key
+ * here is safe and it bypasses RLS, which fixes the "Failed to verify admin"
+ * error you were seeing with the anon key.
+ */
 function sbAdmin() {
-  // Use the same config as the rest of the app (anon key).
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const url =
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !key) {
     throw new Error(
-      "Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY"
+      "Missing SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"
     );
   }
 
@@ -82,7 +87,7 @@ function fmtDate(dateIso: string | null) {
   return d.toLocaleDateString("en-GB");
 }
 
-/** Simple refinery PDF "invoice number" / ref: REF-YYYYMMDD-<last 6 of order id> */
+/** Simple refinery reference: REF-YYYYMMDD-<last 6 of order id> */
 function makeRefineryRef(orderId: string) {
   const d = new Date();
   const y = String(d.getFullYear());
@@ -93,8 +98,8 @@ function makeRefineryRef(orderId: string) {
 }
 
 /**
- * HTML email body – **no unit price, no total paid by customer**;
- * only "Total payable to refinery".
+ * HTML email body – there is **no total paid by customer** and
+ * **no unit price** shown. Only "Total payable to refinery".
  */
 function renderRefineryOrderHtml(props: {
   product: string | null;
@@ -345,10 +350,10 @@ export default async function handler(
     const resend = new Resend(process.env.RESEND_API_KEY);
     const supabase = sbAdmin();
 
-    // 1) Verify admin
+    // 1) Verify admin (using service-role Supabase client, no RLS issues)
     const { data: adminRow, error: adminError } = await supabase
       .from("admins")
-      .select("id")
+      .select("email")
       .eq("email", adminEmail.toLowerCase())
       .maybeSingle();
 
@@ -397,17 +402,16 @@ export default async function handler(
     }
 
     if (o.refinery_notification_status === "sent") {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Order already marked as sent to refinery" });
+      return res.status(400).json({
+        ok: false,
+        error: "Order already marked as sent to refinery",
+      });
     }
 
-    // 3) Money calculations (no commission exposed)
+    // 3) Money calculations (no commission exposed to refinery)
     const totalPence = o.total_pence ?? null;
     const unitPence = o.unit_price_pence ?? null;
 
-    const totalCustomerGbp =
-      totalPence != null ? Math.round(totalPence) / 100 : null;
     const unitPriceGbp =
       unitPence != null ? Math.round(unitPence) / 100 : null;
 
@@ -428,7 +432,7 @@ export default async function handler(
       .filter(Boolean)
       .join(", ");
 
-    // 4) Build HTML email (no unit price, no total paid by customer)
+    // 4) Build HTML email (no unit price line)
     const html = renderRefineryOrderHtml({
       product: o.fuel,
       litres: o.litres,
@@ -440,26 +444,25 @@ export default async function handler(
       totalForRefineryGbp,
     });
 
-    // 5) Build refinery-order PDF using dedicated helper
+    // 5) Build dedicated refinery PDF (with logo, no unit price column)
     const refineryRef = makeRefineryRef(o.id);
 
-    const pdfInput = {
+    const {
+      pdfBuffer,
+      filename: pdfFilename,
+    } = await buildRefineryOrderPdf({
       orderId: o.id,
       refineryRef,
-      product: o.fuel || "Fuel",
-      litres: o.litres ?? 0,
-      deliveryDate: o.delivery_date,
       customerName: o.name,
       customerEmail: o.user_email,
-      // some versions of RefineryOrderForPdf may or may not include this;
-      // we still pass it, but cast to any to avoid build errors.
-      addressLines,
-      unitPriceCustomerGbp: totalCustomerGbp, // internal only
-      totalForRefineryGbp,
-    } as any;
-
-    const { pdfBuffer, filename: pdfFilename } =
-      await buildRefineryOrderPdf(pdfInput);
+      deliveryAddressLines: addressLines,
+      product: o.fuel || "Fuel",
+      litres: o.litres ?? 0,
+      unitPriceCustomerGbp: unitPriceGbp ?? 0, // still calculated internally
+      totalForRefineryGbp: totalForRefineryGbp ?? 0,
+      logoUrl:
+        "https://dashboard.fuelflow.co.uk/logo-email.png",
+    });
 
     // 6) Send email via Resend with PDF attached
     const subject = `FuelFlow order ${o.id} – ${o.fuel || "Fuel"} ${
@@ -505,7 +508,6 @@ export default async function handler(
         "[send-refinery-order] failed to update order status:",
         updateError
       );
-      // Email already sent, but state not updated – return 500 so you see it.
       return res.status(500).json({
         ok: false,
         error: "Refinery email sent but failed to update order",
