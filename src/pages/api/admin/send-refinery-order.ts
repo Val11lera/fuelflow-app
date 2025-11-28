@@ -1,12 +1,12 @@
 // src/pages/api/admin/send-refinery-order.ts
 // src/pages/api/admin/send-refinery-order.ts
-// Creates a refinery-friendly order email + PDF (no commission shown)
+// Creates a refinery-friendly order email + PDF (no commission or customer totals shown)
 // and marks the order as sent to the refinery.
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
-import { buildRefineryOrderPdf } from "@/lib/refinery-order-pdf";
+import { buildRefineryOrderPdf, RefineryOrderForPdf } from "@/lib/refinery-order-pdf";
 
 type Fuel = "petrol" | "diesel";
 
@@ -37,11 +37,8 @@ type OkResponse = { ok: true };
 type ErrorResponse = { ok: false; error: string };
 export type SendRefineryOrderResponse = OkResponse | ErrorResponse;
 
-/* ---------- Supabase (SERVICE ROLE) ---------- */
-/**
- * This route runs on the server only, so using the service-role key is safe
- * and bypasses RLS – this avoids "Failed to verify admin" issues.
- */
+/* ---------- Supabase (service role) ---------- */
+
 function sbAdmin() {
   const url =
     process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -85,7 +82,10 @@ function fmtDate(dateIso: string | null) {
   return d.toLocaleDateString("en-GB");
 }
 
-/** Simple refinery reference: REF-YYYYMMDD-<last 6 of order id> */
+/**
+ * Simple refinery reference – just for their paperwork.
+ * REF-YYYYMMDD-<last 6 of order id>
+ */
 function makeRefineryRef(orderId: string) {
   const d = new Date();
   const y = String(d.getFullYear());
@@ -96,14 +96,15 @@ function makeRefineryRef(orderId: string) {
 }
 
 /**
- * HTML email body – **no total paid by customer** and **no unit price** shown.
- * Only "Total payable to refinery".
+ * HTML email body – **no unit price and no total paid by customer**;
+ * only "Total payable to refinery".
  */
 function renderRefineryOrderHtml(props: {
   product: string | null;
   litres: number | null;
   deliveryDate: string | null;
   orderId: string;
+  refineryRef: string;
   customerName: string | null;
   customerEmail: string | null;
   addressLines: string;
@@ -114,6 +115,7 @@ function renderRefineryOrderHtml(props: {
     litres,
     deliveryDate,
     orderId,
+    refineryRef,
     customerName,
     customerEmail,
     addressLines,
@@ -274,6 +276,11 @@ function renderRefineryOrderHtml(props: {
             </div>
 
             <div class="field-row">
+              <div class="field-label">Refinery reference</div>
+              <div class="field-value">${refineryRef}</div>
+            </div>
+
+            <div class="field-row">
               <div class="field-label">Customer</div>
               <div class="field-value">${customerLine}</div>
             </div>
@@ -400,15 +407,17 @@ export default async function handler(
     }
 
     if (o.refinery_notification_status === "sent") {
-      return res.status(400).json({
-        ok: false,
-        error: "Order already marked as sent to refinery",
-      });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Order already marked as sent to refinery" });
     }
 
-    // 3) Money calculations (no commission exposed to refinery)
+    // 3) Money calculations (no commission exposed)
     const totalPence = o.total_pence ?? null;
     const unitPence = o.unit_price_pence ?? null;
+
+    const totalCustomerGbp =
+      totalPence != null ? Math.round(totalPence) / 100 : null;
     const unitPriceGbp =
       unitPence != null ? Math.round(unitPence) / 100 : null;
 
@@ -429,33 +438,43 @@ export default async function handler(
       .filter(Boolean)
       .join(", ");
 
-    // 4) Build HTML email
+    // 4) Build HTML email (no unit price, no customer-total)
+    const refineryRef = makeRefineryRef(o.id);
+
     const html = renderRefineryOrderHtml({
       product: o.fuel,
       litres: o.litres,
       deliveryDate: o.delivery_date,
       orderId: o.id,
+      refineryRef,
       customerName: o.name,
       customerEmail: o.user_email,
       addressLines,
       totalForRefineryGbp,
     });
 
-    // 5) Build dedicated refinery PDF (logo, no unit price column shown to refinery)
-    const refineryRef = makeRefineryRef(o.id);
+    // 5) Build refinery PDF using dedicated helper
+    const litresQty = o.litres ?? 0;
+    const unitPriceForCustomer =
+      litresQty && totalCustomerGbp != null
+        ? totalCustomerGbp / litresQty
+        : unitPriceGbp ?? 0;
 
-const { pdfBuffer, filename: pdfFilename } = await buildRefineryOrderPdf({
-  orderId: o.id,
-  refineryRef,
-  customerName: o.name,
-  customerEmail: o.user_email,
-  addressLines,                     // ✅ matches RefineryOrderForPdf
-  product: o.fuel || "Fuel",
-  litres: o.litres ?? 0,
-  unitPriceCustomerGbp: unitPriceGbp ?? 0, // internal only
-  totalForRefineryGbp: totalForRefineryGbp ?? 0,
-});
+    const refineryPdfInput: RefineryOrderForPdf = {
+      orderId: o.id,
+      refineryRef,
+      customerName: o.name,
+      customerEmail: o.user_email,
+      deliveryAddress: addressLines,
+      deliveryDate: o.delivery_date,
+      product: o.fuel || "Fuel",
+      litres: litresQty,
+      unitPriceCustomerGbp: unitPriceForCustomer ?? 0, // internal only; template decides what to show
+      totalForRefineryGbp: totalForRefineryGbp ?? 0,
+    };
 
+    const { pdfBuffer, filename: pdfFilename } =
+      await buildRefineryOrderPdf(refineryPdfInput);
 
     // 6) Send email via Resend with PDF attached
     const subject = `FuelFlow order ${o.id} – ${o.fuel || "Fuel"} ${
@@ -503,7 +522,8 @@ const { pdfBuffer, filename: pdfFilename } = await buildRefineryOrderPdf({
       );
       return res.status(500).json({
         ok: false,
-        error: "Refinery email sent but failed to update order",
+        error:
+          "Refinery email sent but failed to update order status in database",
       });
     }
 
