@@ -444,22 +444,19 @@ export default async function handler(
     // 5) Build dedicated refinery PDF (logo, no unit price column shown to refinery)
     const refineryRef = makeRefineryRef(o.id);
 
-    const {
-      pdfBuffer,
-      filename: pdfFilename,
-    } = await buildRefineryOrderPdf({
-      orderId: o.id,
-      refineryRef,
-      customerName: o.name,
-      customerEmail: o.user_email,
-      // ✅ match the type in refinery-order-pdf.ts
-      addressLines,
-      product: o.fuel || "Fuel",
-      litres: o.litres ?? 0,
-      unitPriceCustomerGbp: unitPriceGbp ?? 0, // internal only
-      totalForRefineryGbp: totalForRefineryGbp ?? 0,
-      logoUrl: "https://dashboard.fuelflow.co.uk/logo-email.png",
-    });
+const { pdfBuffer, filename: pdfFilename } = await buildRefineryOrderPdf({
+  orderId: o.id,
+  refineryRef,
+  customerName: o.name,
+  customerEmail: o.user_email,
+  addressLines,                     // ✅ matches RefineryOrderForPdf
+  product: o.fuel || "Fuel",
+  litres: o.litres ?? 0,
+  unitPriceCustomerGbp: unitPriceGbp ?? 0, // internal only
+  totalForRefineryGbp: totalForRefineryGbp ?? 0,
+  logoUrl: "https://dashboard.fuelflow.co.uk/logo-email.png",
+});
+
 
     // 6) Send email via Resend with PDF attached
     const subject = `FuelFlow order ${o.id} – ${o.fuel || "Fuel"} ${
