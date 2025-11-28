@@ -465,7 +465,7 @@ const refineryPdfInput: RefineryOrderForPdf = {
   refineryRef,
   customerName: o.name,
   customerEmail: o.user_email,
-  addressLines: addressLines,      // ✅ use the correct key from RefineryOrderForPdf
+    deliveryAddress: addressLines,      // ✅ use the correct key from RefineryOrderForPdf
   deliveryDate: o.delivery_date,
   product: o.fuel || "Fuel",
   litres: litresQty,
