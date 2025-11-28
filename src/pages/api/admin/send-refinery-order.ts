@@ -82,10 +82,7 @@ function fmtDate(dateIso: string | null) {
   return d.toLocaleDateString("en-GB");
 }
 
-/**
- * Simple refinery PDF "invoice number" – just for reference.
- * REF-YYYYMMDD-<last 6 of order id>
- */
+/** Simple refinery PDF "invoice number" / ref: REF-YYYYMMDD-<last 6 of order id> */
 function makeRefineryRef(orderId: string) {
   const d = new Date();
   const y = String(d.getFullYear());
@@ -96,8 +93,8 @@ function makeRefineryRef(orderId: string) {
 }
 
 /**
- * HTML email body – **no total paid by customer shown**,
- * and now **no unit price** is shown either.
+ * HTML email body – **no unit price, no total paid by customer**;
+ * only "Total payable to refinery".
  */
 function renderRefineryOrderHtml(props: {
   product: string | null;
@@ -155,21 +152,12 @@ function renderRefineryOrderHtml(props: {
         .header {
           background-color: #050816;
           color: #ffffff;
-          padding: 12px 20px;
+          padding: 16px 24px;
           display: flex;
           align-items: center;
           justify-content: space-between;
         }
         .logo {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .logo img {
-          display: block;
-          height: 28px;
-        }
-        .logo-text {
           font-size: 18px;
           font-weight: 600;
         }
@@ -247,10 +235,7 @@ function renderRefineryOrderHtml(props: {
       <div class="outer">
         <div class="card">
           <div class="header">
-            <div class="logo">
-              <img src="https://dashboard.fuelflow.co.uk/logo-email.png" alt="FuelFlow" />
-              <span class="logo-text">FuelFlow</span>
-            </div>
+            <div class="logo">FuelFlow</div>
             <div class="header-right">Refinery order confirmation</div>
           </div>
 
@@ -360,10 +345,10 @@ export default async function handler(
     const resend = new Resend(process.env.RESEND_API_KEY);
     const supabase = sbAdmin();
 
-    // 1) Verify admin (table has only 'email' column)
+    // 1) Verify admin
     const { data: adminRow, error: adminError } = await supabase
       .from("admins")
-      .select("email")
+      .select("id")
       .eq("email", adminEmail.toLowerCase())
       .maybeSingle();
 
@@ -443,7 +428,7 @@ export default async function handler(
       .filter(Boolean)
       .join(", ");
 
-    // 4) Build HTML email (no unit price shown)
+    // 4) Build HTML email (no unit price, no total paid by customer)
     const html = renderRefineryOrderHtml({
       product: o.fuel,
       litres: o.litres,
@@ -455,25 +440,26 @@ export default async function handler(
       totalForRefineryGbp,
     });
 
-    // 5) Build PDF using dedicated refinery PDF helper
+    // 5) Build refinery-order PDF using dedicated helper
     const refineryRef = makeRefineryRef(o.id);
-    const litresQty = o.litres ?? 0;
 
-    const {
-      pdfBuffer,
-      filename: pdfFilename,
-    } = await buildRefineryOrderPdf({
+    const pdfInput = {
       orderId: o.id,
       refineryRef,
       product: o.fuel || "Fuel",
-      litres: litresQty,
+      litres: o.litres ?? 0,
       deliveryDate: o.delivery_date,
       customerName: o.name,
       customerEmail: o.user_email,
+      // some versions of RefineryOrderForPdf may or may not include this;
+      // we still pass it, but cast to any to avoid build errors.
       addressLines,
-      unitPriceCustomerGbp: unitPriceGbp, // still calculated internally
+      unitPriceCustomerGbp: totalCustomerGbp, // internal only
       totalForRefineryGbp,
-    });
+    } as any;
+
+    const { pdfBuffer, filename: pdfFilename } =
+      await buildRefineryOrderPdf(pdfInput);
 
     // 6) Send email via Resend with PDF attached
     const subject = `FuelFlow order ${o.id} – ${o.fuel || "Fuel"} ${
@@ -519,10 +505,10 @@ export default async function handler(
         "[send-refinery-order] failed to update order status:",
         updateError
       );
+      // Email already sent, but state not updated – return 500 so you see it.
       return res.status(500).json({
         ok: false,
-        error:
-          "Refinery email sent but failed to update order status in database",
+        error: "Refinery email sent but failed to update order",
       });
     }
 
