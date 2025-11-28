@@ -1,343 +1,347 @@
 // src/lib/refinery-order-pdf.ts
 // src/lib/refinery-order-pdf.ts
-// Build a simple refinery order confirmation PDF
-// with NO commission / unit price shown.
+// Nicely formatted refinery order confirmation PDF – no commission info shown.
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+
+export type RefineryOrderForPdf = {
+  orderId: string;
+  refineryRef: string;
+  customerName: string | null;
+  customerEmail: string | null;
+  deliveryAddress: string;
+  deliveryDate: string | null;
+  product: string;
+  litres: number;
+  // internal only – we don't show this in the PDF
+  unitPriceCustomerGbp: number;
+  totalForRefineryGbp: number;
+};
 
 const gbp = new Intl.NumberFormat("en-GB", {
   style: "currency",
   currency: "GBP",
 });
 
-function fmtMoney(v: number | null | undefined) {
-  if (v == null || Number.isNaN(v)) return "—";
+function fmtMoney(v: number) {
   return gbp.format(v);
 }
 
-function fmtDate(dateIso: string | null | undefined) {
-  if (!dateIso) return "Not set";
+function fmtDate(dateIso: string | null) {
+  if (!dateIso) return "";
   const d = new Date(dateIso);
-  if (Number.isNaN(d.getTime())) return "Not set";
+  if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleDateString("en-GB");
 }
 
-export type RefineryOrderForPdf = {
-  orderId: string;
-  refineryRef: string;
-  product: string;
-  litres: number;
-  deliveryDate: string | null;
-  customerName: string | null;
-  customerEmail: string | null;
-  addressLines: string;
-  // customer unit price is passed in but NOT rendered – kept only
-  // in case you want it later for internal use.
-  unitPriceCustomerGbp: number | null;
-  totalForRefineryGbp: number | null;
-};
-
-export async function buildRefineryOrderPdf(
-  props: RefineryOrderForPdf
-): Promise<{ pdfBuffer: Buffer; filename: string }> {
-  const {
-    orderId,
-    refineryRef,
-    product,
-    litres,
-    deliveryDate,
-    customerName,
-    customerEmail,
-    addressLines,
-    totalForRefineryGbp,
-  } = props;
-
+export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage();
-  const { width, height } = page.getSize();
 
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  // A4
+  const pageWidth = 595.28;
+  const pageHeight = 841.89;
+  const page = pdfDoc.addPage([pageWidth, pageHeight]);
+
+  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  // ---------- Header with dark bar & logo ----------
-  const headerHeight = 70;
+  const marginX = 48;
+  let cursorY = pageHeight - 72;
+
+  /* -----------------------------
+     Header bar
+     ----------------------------- */
   page.drawRectangle({
     x: 0,
-    y: height - headerHeight,
-    width,
-    height: headerHeight,
+    y: pageHeight - 80,
+    width: pageWidth,
+    height: 80,
     color: rgb(5 / 255, 8 / 255, 22 / 255),
   });
 
-  let logoWidth = 0;
+  page.drawText("FuelFlow", {
+    x: marginX,
+    y: pageHeight - 52,
+    size: 20,
+    font: fontBold,
+    color: rgb(1, 1, 1),
+  });
 
-  try {
-    const logoUrl =
-      process.env.PDF_LOGO_URL ||
-      "https://dashboard.fuelflow.co.uk/logo-email.png";
+  const headerTitle = "REFINERY ORDER CONFIRMATION";
+  const headerTitleWidth = fontBold.widthOfTextAtSize(headerTitle, 12);
+  page.drawText(headerTitle, {
+    x: pageWidth - marginX - headerTitleWidth,
+    y: pageHeight - 50,
+    size: 12,
+    font: fontBold,
+    color: rgb(1, 1, 1),
+  });
 
-    const res = await fetch(logoUrl);
-    if (res.ok) {
-      const arr = await res.arrayBuffer();
-      const logoImage = await pdfDoc.embedPng(arr);
-      const scaled = logoImage.scale(0.3);
-      logoWidth = scaled.width;
+  /* -----------------------------
+     Top summary row (3 columns)
+     ----------------------------- */
 
-      page.drawImage(logoImage, {
-        x: 40,
-        y: height - headerHeight / 2 - scaled.height / 2,
-        width: scaled.width,
-        height: scaled.height,
-      });
-    }
-  } catch (e) {
-    // fall back to text logo
-    const text = "FuelFlow";
-    page.drawText(text, {
-      x: 40,
-      y: height - 45,
-      size: 20,
+  cursorY = pageHeight - 120;
+
+  const infoLabelSize = 9;
+  const infoValueSize = 11;
+  const colCount = 3;
+  const colWidth = (pageWidth - marginX * 2) / colCount;
+
+  const infoCols: { label: string; value: string }[] = [
+    { label: "Order ref", label: "Order ref", value: order.orderId },
+    { label: "Refinery ref", value: order.refineryRef },
+    { label: "Delivery date", value: fmtDate(order.deliveryDate) || "Not set" },
+  ];
+
+  infoCols.forEach((col, index) => {
+    const x = marginX + colWidth * index;
+    const labelY = cursorY;
+    const valueY = cursorY - 13;
+
+    page.drawText(col.label, {
+      x,
+      y: labelY,
+      size: infoLabelSize,
       font: fontBold,
-      color: rgb(1, 1, 1),
+      color: rgb(0.32, 0.37, 0.45),
     });
-    logoWidth = fontBold.widthOfTextAtSize("FuelFlow", 20);
+
+    page.drawText(col.value, {
+      x,
+      y: valueY,
+      size: infoValueSize,
+      font: fontRegular,
+      color: rgb(0.09, 0.1, 0.12),
+    });
+  });
+
+  /* -----------------------------
+     Customer + address
+     ----------------------------- */
+
+  cursorY -= 40;
+
+  const fieldLabelSize = 9;
+  const fieldValueSize = 11;
+  const lineGap = 15;
+
+  function drawField(label: string, value: string) {
+    page.drawText(label, {
+      x: marginX,
+      y: cursorY,
+      size: fieldLabelSize,
+      font: fontBold,
+      color: rgb(0.32, 0.37, 0.45),
+    });
+    cursorY -= 12;
+
+    const wrapped = wrapText(value || "—", pageWidth - marginX * 2, fontRegular, fieldValueSize);
+    wrapped.forEach((line) => {
+      page.drawText(line, {
+        x: marginX,
+        y: cursorY,
+        size: fieldValueSize,
+        font: fontRegular,
+        color: rgb(0.09, 0.1, 0.12),
+      });
+      cursorY -= 12;
+    });
+
+    cursorY -= 8;
   }
 
-  // Header title on the right
-  const headerTitle = "REFINERY ORDER CONFIRMATION";
-  const headerSize = 12;
-  const headerWidth = fontBold.widthOfTextAtSize(headerTitle, headerSize);
-  page.drawText(headerTitle, {
-    x: width - headerWidth - 40,
-    y: height - 42,
-    size: headerSize,
-    font: fontBold,
-    color: rgb(1, 1, 1),
-  });
+  const customerLine =
+    (order.customerName || "—") +
+    (order.customerEmail ? ` (${order.customerEmail})` : "");
 
-  // ---------- Body ----------
-  let cursorY = height - headerHeight - 40;
-  const leftMargin = 50;
+  drawField("Customer", customerLine);
+  drawField("Delivery address", order.deliveryAddress);
 
-  const drawLabelValue = (
-    label: string,
-    value: string,
-    x: number,
-    y: number
-  ) => {
-    const labelSize = 9;
-    const valueSize = 11;
+  /* -----------------------------
+     Product table (centered)
+     ----------------------------- */
 
-    page.drawText(label, {
-      x,
-      y,
-      size: labelSize,
-      font: fontBold,
-      color: rgb(0.27, 0.30, 0.38),
-    });
+  cursorY -= 6;
 
-    page.drawText(value, {
-      x,
-      y: y - 13,
-      size: valueSize,
-      font,
-      color: rgb(0.08, 0.09, 0.12),
-    });
-  };
-
-  // Top row: Order ref / Refinery ref / Delivery date
-  const colWidth = (width - leftMargin * 2) / 3;
-
-  drawLabelValue(
-    "Order ref",
-    orderId,
-    leftMargin,
-    cursorY
-  );
-  drawLabelValue(
-    "Refinery ref",
-    refineryRef,
-    leftMargin + colWidth,
-    cursorY
-  );
-  drawLabelValue(
-    "Delivery date",
-    fmtDate(deliveryDate),
-    leftMargin + colWidth * 2,
-    cursorY
-  );
-
-  cursorY -= 40;
-
-  // Customer
-  const customerLine = `${customerName || "—"}${
-    customerEmail ? ` (${customerEmail})` : ""
-  }`;
-  drawLabelValue("Customer", customerLine, leftMargin, cursorY);
-  cursorY -= 40;
-
-  // Delivery address
-  drawLabelValue("Delivery address", addressLines || "—", leftMargin, cursorY);
-  cursorY -= 50;
-
-  // ---------- Table (Product, Litres, Total payable) ----------
-  const tableX = leftMargin;
-  const tableY = cursorY;
-  const tableWidth = width - leftMargin * 2;
-  const headerBg = rgb(0.97, 0.98, 1);
-  const borderColor = rgb(0.89, 0.90, 0.94);
-
-  const colProductWidth = tableWidth * 0.4;
-  const colLitresWidth = tableWidth * 0.2;
-  const colTotalWidth = tableWidth * 0.4;
-
+  const tableTop = cursorY;
   const rowHeight = 22;
+  const headerHeight = 24;
+  const tableWidth = pageWidth - marginX * 2;
 
-  // table header background
+  const colProductW = tableWidth * 0.5;
+  const colLitresW = tableWidth * 0.15;
+  const colTotalW = tableWidth - colProductW - colLitresW;
+
+  const tableLeft = marginX;
+
+  // Header background
   page.drawRectangle({
-    x: tableX,
-    y: tableY - rowHeight,
+    x: tableLeft,
+    y: tableTop - headerHeight,
     width: tableWidth,
-    height: rowHeight,
-    color: headerBg,
+    height: headerHeight,
+    color: rgb(248 / 255, 249 / 255, 255 / 255),
   });
 
-  // header borders
+  page.setLineWidth(0.5);
+  page.setDashPattern([], 0);
   page.drawRectangle({
-    x: tableX,
-    y: tableY - rowHeight,
+    x: tableLeft,
+    y: tableTop - headerHeight - rowHeight,
     width: tableWidth,
-    height: rowHeight,
-    borderColor,
-    borderWidth: 0.5,
-    color: headerBg,
+    height: headerHeight + rowHeight,
+    borderColor: rgb(226 / 255, 228 / 255, 240 / 255),
   });
 
-  // header text
-  const headerTextY = tableY - rowHeight + 6;
+  // Column verticals
+  const colXProduct = tableLeft;
+  const colXLitres = tableLeft + colProductW;
+  const colXTotal = tableLeft + colProductW + colLitresW;
+
+  page.drawLine({
+    start: { x: colXLitres, y: tableTop - headerHeight - rowHeight },
+    end: { x: colXLitres, y: tableTop },
+    color: rgb(226 / 255, 228 / 255, 240 / 255),
+  });
+  page.drawLine({
+    start: { x: colXTotal, y: tableTop - headerHeight - rowHeight },
+    end: { x: colXTotal, y: tableTop },
+    color: rgb(226 / 255, 228 / 255, 240 / 255),
+  });
+
+  const headerTextY = tableTop - 8;
+  const cellLabelSize = 9;
+  const cellValueSize = 11;
+
+  // Header texts
   page.drawText("Product", {
-    x: tableX + 6,
+    x: colXProduct + 8,
     y: headerTextY,
-    size: 9,
+    size: cellLabelSize,
     font: fontBold,
-    color: rgb(0.29, 0.34, 0.43),
+    color: rgb(0.29, 0.34, 0.4),
   });
+
   page.drawText("Litres", {
-    x: tableX + colProductWidth + 6,
+    x: colXLitres + 8,
     y: headerTextY,
-    size: 9,
+    size: cellLabelSize,
     font: fontBold,
-    color: rgb(0.29, 0.34, 0.43),
+    color: rgb(0.29, 0.34, 0.4),
   });
-  page.drawText("Total payable to refinery", {
-    x: tableX + colProductWidth + colLitresWidth + 6,
+
+  const totalHeader = "Total payable to refinery";
+  const totalHeaderWidth = fontBold.widthOfTextAtSize(totalHeader, cellLabelSize);
+  page.drawText(totalHeader, {
+    x: colXTotal + colTotalW - 8 - totalHeaderWidth,
     y: headerTextY,
-    size: 9,
+    size: cellLabelSize,
     font: fontBold,
-    color: rgb(0.29, 0.34, 0.43),
+    color: rgb(0.29, 0.34, 0.4),
   });
 
-  // data row border
-  const rowY = tableY - rowHeight * 2;
-  page.drawRectangle({
-    x: tableX,
-    y: rowY,
-    width: tableWidth,
-    height: rowHeight,
-    borderColor,
-    borderWidth: 0.5,
-    color: rgb(1, 1, 1),
+  // Data row
+  const dataY = tableTop - headerHeight - rowHeight + 7;
+
+  page.drawText(order.product || "Fuel", {
+    x: colXProduct + 8,
+    y: dataY,
+    size: cellValueSize,
+    font: fontRegular,
+    color: rgb(0.09, 0.1, 0.12),
   });
 
-  const valueY = rowY + 6;
-
-  page.drawText(product || "Fuel", {
-    x: tableX + 6,
-    y: valueY,
-    size: 10,
-    font,
-    color: rgb(0.08, 0.09, 0.12),
+  page.drawText(String(order.litres ?? 0), {
+    x: colXLitres + 8,
+    y: dataY,
+    size: cellValueSize,
+    font: fontRegular,
+    color: rgb(0.09, 0.1, 0.12),
   });
 
-  page.drawText(String(litres ?? 0), {
-    x: tableX + colProductWidth + 6,
-    y: valueY,
-    size: 10,
-    font,
-    color: rgb(0.08, 0.09, 0.12),
+  const totalText = fmtMoney(order.totalForRefineryGbp);
+  const totalWidth = fontRegular.widthOfTextAtSize(totalText, cellValueSize);
+  page.drawText(totalText, {
+    x: colXTotal + colTotalW - 8 - totalWidth,
+    y: dataY,
+    size: cellValueSize,
+    font: fontRegular,
+    color: rgb(0.09, 0.1, 0.12),
   });
 
-  page.drawText(fmtMoney(totalForRefineryGbp), {
-    x: tableX + colProductWidth + colLitresWidth + 6,
-    y: valueY,
-    size: 10,
-    font,
-    color: rgb(0.08, 0.09, 0.12),
-  });
+  /* -----------------------------
+     Total + note
+     ----------------------------- */
 
-  cursorY = rowY - 40;
+  cursorY = tableTop - headerHeight - rowHeight - 40;
 
-  // Total payable summary
   page.drawText("Total payable to refinery", {
-    x: leftMargin,
+    x: marginX,
     y: cursorY,
     size: 10,
     font: fontBold,
-    color: rgb(0.08, 0.09, 0.12),
+    color: rgb(0.09, 0.1, 0.12),
   });
-  page.drawText(fmtMoney(totalForRefineryGbp), {
-    x: leftMargin,
-    y: cursorY - 16,
-    size: 11,
+
+  const sumText = fmtMoney(order.totalForRefineryGbp);
+  const sumWidth = fontBold.widthOfTextAtSize(sumText, 10);
+  page.drawText(sumText, {
+    x: marginX + 200 - sumWidth,
+    y: cursorY,
+    size: 10,
     font: fontBold,
-    color: rgb(0.08, 0.09, 0.12),
+    color: rgb(0.09, 0.1, 0.12),
   });
 
-  cursorY -= 46;
+  cursorY -= 26;
 
-  // Note text
-  const noteText =
-    'This order has already been paid in full by the customer via FuelFlow. ' +
+  const note =
+    "This order has already been paid in full by the customer via FuelFlow. " +
     'Please arrange delivery and invoice FuelFlow for the "Total payable to refinery" amount only.';
 
-  const noteSize = 9;
-  const maxNoteWidth = width - leftMargin * 2;
-  const words = noteText.split(" ");
-  let line = "";
-  let noteY = cursorY;
-
-  for (const word of words) {
-    const testLine = line ? `${line} ${word}` : word;
-    const testWidth = font.widthOfTextAtSize(testLine, noteSize);
-    if (testWidth > maxNoteWidth) {
-      page.drawText(line, {
-        x: leftMargin,
-        y: noteY,
-        size: noteSize,
-        font,
-        color: rgb(0.27, 0.30, 0.38),
-      });
-      noteY -= 12;
-      line = word;
-    } else {
-      line = testLine;
-    }
-  }
-  if (line) {
+  const noteLines = wrapText(note, pageWidth - marginX * 2, fontRegular, 9);
+  noteLines.forEach((line) => {
     page.drawText(line, {
-      x: leftMargin,
-      y: noteY,
-      size: noteSize,
-      font,
-      color: rgb(0.27, 0.30, 0.38),
+      x: marginX,
+      y: cursorY,
+      size: 9,
+      font: fontRegular,
+      color: rgb(0.25, 0.27, 0.33),
     });
-  }
+    cursorY -= 11;
+  });
 
   const pdfBytes = await pdfDoc.save();
-  const filename = `refinery-order-${orderId}.pdf`;
+  const pdfBuffer = Buffer.from(pdfBytes);
+  const filename = `refinery-order-${order.orderId}.pdf`;
 
-  return {
-    pdfBuffer: Buffer.from(pdfBytes),
-    filename,
-  };
+  return { pdfBuffer, filename };
+}
+
+/**
+ * Very small word-wrap helper for the PDF.
+ */
+function wrapText(
+  text: string,
+  maxWidth: number,
+  font: any,
+  size: number
+): string[] {
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    const testLine = current ? `${current} ${word}` : word;
+    const width = font.widthOfTextAtSize(testLine, size);
+    if (width > maxWidth && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = testLine;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
 }
