@@ -49,7 +49,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   let cursorY = pageHeight - 72;
 
   /* -----------------------------
-     Header bar
+     Header bar + logo
      ----------------------------- */
   page.drawRectangle({
     x: 0,
@@ -59,11 +59,40 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
     color: rgb(5 / 255, 8 / 255, 22 / 255),
   });
 
-  // "Logo" wordmark – if you later embed an image, you can replace this
+  // Try to draw the logo image. If it fails, fall back to text-only.
+  const logoUrl =
+    process.env.REFINERY_PDF_LOGO_URL ||
+    "https://dashboard.fuelflow.co.uk/logo-email.png";
+
+  let logoRightEdge = marginX; // used to position the "FuelFlow" text
+
+  try {
+    const logoBytes = await (await fetch(logoUrl)).arrayBuffer();
+    const logoImage = await pdfDoc.embedPng(logoBytes);
+    const targetHeight = 28;
+    const scale = targetHeight / logoImage.height;
+    const logoWidth = logoImage.width * scale;
+
+    const logoX = marginX;
+    const logoY = pageHeight - 68;
+
+    page.drawImage(logoImage, {
+      x: logoX,
+      y: logoY,
+      width: logoWidth,
+      height: targetHeight,
+    });
+
+    logoRightEdge = logoX + logoWidth + 8; // padding after logo
+  } catch (e) {
+    console.error("Failed to load refinery PDF logo:", e);
+  }
+
+  // Wordmark next to the logo
   page.drawText("FuelFlow", {
-    x: marginX,
-    y: pageHeight - 52,
-    size: 20,
+    x: logoRightEdge,
+    y: pageHeight - 58,
+    size: 18,
     font: fontBold,
     color: rgb(1, 1, 1),
   });
@@ -72,7 +101,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   const headerTitleWidth = fontBold.widthOfTextAtSize(headerTitle, 12);
   page.drawText(headerTitle, {
     x: pageWidth - marginX - headerTitleWidth,
-    y: pageHeight - 50,
+    y: pageHeight - 52,
     size: 12,
     font: fontBold,
     color: rgb(1, 1, 1),
@@ -87,26 +116,26 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   page.drawText("New FuelFlow order", {
     x: marginX,
     y: cursorY,
-    size: 16,
+    size: 18,
     font: fontBold,
     color: rgb(0.09, 0.1, 0.12),
   });
 
-  cursorY -= 22;
+  cursorY -= 24;
 
   const intro =
     "Please find the order details below. Commission amounts are excluded – " +
     "all totals shown are the amounts payable to the refinery.";
-  const introLines = wrapText(intro, pageWidth - marginX * 2, fontRegular, 10);
+  const introLines = wrapText(intro, pageWidth - marginX * 2, fontRegular, 11);
   introLines.forEach((line) => {
     page.drawText(line, {
       x: marginX,
       y: cursorY,
-      size: 10,
+      size: 11,
       font: fontRegular,
-      color: rgb(0.16, 0.17, 0.20),
+      color: rgb(0.16, 0.17, 0.2),
     });
-    cursorY -= 13;
+    cursorY -= 14;
   });
 
   cursorY -= 18;
@@ -117,12 +146,11 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
      ----------------------------- */
 
   const tableTop = cursorY;
-  const headerHeight = 24;
-  const rowHeight = 24;
+  const headerHeight = 26;
+  const rowHeight = 26;
   const tableWidth = pageWidth - marginX * 2;
   const tableLeft = marginX;
 
-  // Column widths roughly matching email layout
   const colProductW = tableWidth * 0.30;
   const colLitresW = tableWidth * 0.15;
   const colDateW = tableWidth * 0.25;
@@ -165,11 +193,11 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
 
   const cellLabelSize = 9;
   const cellValueSize = 11;
-  const headerTextY = tableTop - 8;
+  const headerTextY = tableTop - 9;
 
   // Header labels
   page.drawText("PRODUCT", {
-    x: colXProduct + 8,
+    x: colXProduct + 10,
     y: headerTextY,
     size: cellLabelSize,
     font: fontBold,
@@ -177,7 +205,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   });
 
   page.drawText("LITRES", {
-    x: colXLitres + 8,
+    x: colXLitres + 10,
     y: headerTextY,
     size: cellLabelSize,
     font: fontBold,
@@ -185,7 +213,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   });
 
   page.drawText("DELIVERY DATE", {
-    x: colXDate + 8,
+    x: colXDate + 10,
     y: headerTextY,
     size: cellLabelSize,
     font: fontBold,
@@ -195,7 +223,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   const totalHeader = "TOTAL PAYABLE TO REFINERY";
   const totalHeaderWidth = fontBold.widthOfTextAtSize(totalHeader, cellLabelSize);
   page.drawText(totalHeader, {
-    x: colXTotal + colTotalW - 8 - totalHeaderWidth,
+    x: colXTotal + colTotalW - 10 - totalHeaderWidth,
     y: headerTextY,
     size: cellLabelSize,
     font: fontBold,
@@ -203,10 +231,10 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   });
 
   // Data row
-  const dataY = tableTop - headerHeight - rowHeight + 7;
+  const dataY = tableTop - headerHeight - rowHeight + 9;
 
   page.drawText(order.product || "Fuel", {
-    x: colXProduct + 8,
+    x: colXProduct + 10,
     y: dataY,
     size: cellValueSize,
     font: fontRegular,
@@ -214,7 +242,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   });
 
   page.drawText(String(order.litres ?? 0), {
-    x: colXLitres + 8,
+    x: colXLitres + 10,
     y: dataY,
     size: cellValueSize,
     font: fontRegular,
@@ -222,7 +250,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   });
 
   page.drawText(fmtDate(order.deliveryDate), {
-    x: colXDate + 8,
+    x: colXDate + 10,
     y: dataY,
     size: cellValueSize,
     font: fontRegular,
@@ -232,7 +260,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   const totalText = fmtMoney(order.totalForRefineryGbp);
   const totalWidth = fontRegular.widthOfTextAtSize(totalText, cellValueSize);
   page.drawText(totalText, {
-    x: colXTotal + colTotalW - 8 - totalWidth,
+    x: colXTotal + colTotalW - 10 - totalWidth,
     y: dataY,
     size: cellValueSize,
     font: fontRegular,
@@ -272,10 +300,10 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
         font: fontRegular,
         color: rgb(0.09, 0.1, 0.12),
       });
-      cursorY -= 12;
+      cursorY -= 13;
     });
 
-    cursorY -= 8;
+    cursorY -= 6;
   }
 
   const customerLine =
@@ -291,22 +319,22 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
      Total + note
      ----------------------------- */
 
-  cursorY -= 6;
+  cursorY -= 8;
 
   page.drawText("Total payable to refinery", {
     x: marginX,
     y: cursorY,
-    size: 10,
+    size: 11,
     font: fontBold,
     color: rgb(0.09, 0.1, 0.12),
   });
 
   const sumText = fmtMoney(order.totalForRefineryGbp);
-  const sumWidth = fontBold.widthOfTextAtSize(sumText, 10);
+  const sumWidth = fontBold.widthOfTextAtSize(sumText, 11);
   page.drawText(sumText, {
-    x: marginX + 200 - sumWidth,
+    x: marginX + 210 - sumWidth,
     y: cursorY,
-    size: 10,
+    size: 11,
     font: fontBold,
     color: rgb(0.09, 0.1, 0.12),
   });
