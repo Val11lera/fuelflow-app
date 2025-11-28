@@ -453,7 +453,7 @@ export default async function handler(
       customerName: o.name,
       customerEmail: o.user_email,
       // ✅ match the type in refinery-order-pdf.ts
-      deliveryAddress: addressLines,
+      addressLines,
       product: o.fuel || "Fuel",
       litres: o.litres ?? 0,
       unitPriceCustomerGbp: unitPriceGbp ?? 0, // internal only
