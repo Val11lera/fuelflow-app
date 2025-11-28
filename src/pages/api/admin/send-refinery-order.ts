@@ -39,10 +39,8 @@ export type SendRefineryOrderResponse = OkResponse | ErrorResponse;
 
 /* ---------- Supabase (SERVICE ROLE) ---------- */
 /**
- * IMPORTANT:
- * This API route runs ONLY on the server, so using the service-role key
- * here is safe and it bypasses RLS, which fixes the "Failed to verify admin"
- * error you were seeing with the anon key.
+ * This route runs on the server only, so using the service-role key is safe
+ * and bypasses RLS – this avoids "Failed to verify admin" issues.
  */
 function sbAdmin() {
   const url =
@@ -98,8 +96,8 @@ function makeRefineryRef(orderId: string) {
 }
 
 /**
- * HTML email body – there is **no total paid by customer** and
- * **no unit price** shown. Only "Total payable to refinery".
+ * HTML email body – **no total paid by customer** and **no unit price** shown.
+ * Only "Total payable to refinery".
  */
 function renderRefineryOrderHtml(props: {
   product: string | null;
@@ -350,7 +348,7 @@ export default async function handler(
     const resend = new Resend(process.env.RESEND_API_KEY);
     const supabase = sbAdmin();
 
-    // 1) Verify admin (using service-role Supabase client, no RLS issues)
+    // 1) Verify admin
     const { data: adminRow, error: adminError } = await supabase
       .from("admins")
       .select("email")
@@ -411,7 +409,6 @@ export default async function handler(
     // 3) Money calculations (no commission exposed to refinery)
     const totalPence = o.total_pence ?? null;
     const unitPence = o.unit_price_pence ?? null;
-
     const unitPriceGbp =
       unitPence != null ? Math.round(unitPence) / 100 : null;
 
@@ -432,7 +429,7 @@ export default async function handler(
       .filter(Boolean)
       .join(", ");
 
-    // 4) Build HTML email (no unit price line)
+    // 4) Build HTML email
     const html = renderRefineryOrderHtml({
       product: o.fuel,
       litres: o.litres,
@@ -444,7 +441,7 @@ export default async function handler(
       totalForRefineryGbp,
     });
 
-    // 5) Build dedicated refinery PDF (with logo, no unit price column)
+    // 5) Build dedicated refinery PDF (logo, no unit price column shown to refinery)
     const refineryRef = makeRefineryRef(o.id);
 
     const {
@@ -455,13 +452,13 @@ export default async function handler(
       refineryRef,
       customerName: o.name,
       customerEmail: o.user_email,
-      deliveryAddressLines: addressLines,
+      // ✅ match the type in refinery-order-pdf.ts
+      deliveryAddress: addressLines,
       product: o.fuel || "Fuel",
       litres: o.litres ?? 0,
-      unitPriceCustomerGbp: unitPriceGbp ?? 0, // still calculated internally
+      unitPriceCustomerGbp: unitPriceGbp ?? 0, // internal only
       totalForRefineryGbp: totalForRefineryGbp ?? 0,
-      logoUrl:
-        "https://dashboard.fuelflow.co.uk/logo-email.png",
+      logoUrl: "https://dashboard.fuelflow.co.uk/logo-email.png",
     });
 
     // 6) Send email via Resend with PDF attached
