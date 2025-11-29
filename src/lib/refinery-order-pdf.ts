@@ -54,11 +54,11 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
     /* -----------------------------
      Header bar + logo
      ----------------------------- */
-  const headerHeight = 80;
+  const headerBarHeight = 80;
 
   page.drawRectangle({
     x: 0,
-    y: pageHeight - headerHeight,
+    y: pageHeight - headerBarHeight,
     width: pageWidth,
     height: headerHeight,
     color: rgb(5 / 255, 8 / 255, 22 / 255),
@@ -80,7 +80,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
     const logoWidth = logoImage.width * scale;
 
     // Centre vertically inside the header bar
-    const headerCenterY = pageHeight - headerHeight / 2;
+    const headerCenterY = pageHeight - headerBarHeight / 2;
     const logoY = headerCenterY - targetHeight / 2;
     const logoX = marginX;
 
