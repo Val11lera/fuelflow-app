@@ -54,15 +54,20 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
     /* -----------------------------
      Header bar + logo
      ----------------------------- */
-  const headerBarHeight = 80;
+  /* -----------------------------
+   Header bar + logo
+   ----------------------------- */
 
-  page.drawRectangle({
-    x: 0,
-    y: pageHeight - headerBarHeight,
-    width: pageWidth,
-    height: headerHeight,
-    color: rgb(5 / 255, 8 / 255, 22 / 255),
-  });
+const headerBarHeight = 80;
+
+page.drawRectangle({
+  x: 0,
+  y: pageHeight - headerBarHeight,
+  width: pageWidth,
+  height: headerBarHeight,
+  color: rgb(5 / 255, 8 / 255, 22 / 255),
+});
+
 
   // Try to draw the logo image. If it fails, we just show the title on the right.
   const logoUrl =
