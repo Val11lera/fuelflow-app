@@ -99,7 +99,7 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
 
   page.drawText(headerTitle, {
     x: pageWidth - marginX - headerTitleWidth,
-    y: pageHeight - headerHeight / 2 - 6, // vertically centred-ish
+    y: pageHeight - headerBarHeight / 2 - 6, // vertically centred-ish
     size: 12,
     font: fontBold,
     color: rgb(1, 1, 1),
