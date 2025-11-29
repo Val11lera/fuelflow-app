@@ -51,15 +51,20 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
   /* -----------------------------
      Header bar + logo
      ----------------------------- */
+    /* -----------------------------
+     Header bar + logo
+     ----------------------------- */
+  const headerHeight = 80;
+
   page.drawRectangle({
     x: 0,
-    y: pageHeight - 80,
+    y: pageHeight - headerHeight,
     width: pageWidth,
-    height: 80,
+    height: headerHeight,
     color: rgb(5 / 255, 8 / 255, 22 / 255),
   });
 
-  // Try to draw the logo image. If it fails, we just show text title on the right.
+  // Try to draw the logo image. If it fails, we just show the title on the right.
   const logoUrl =
     process.env.REFINERY_PDF_LOGO_URL ||
     "https://dashboard.fuelflow.co.uk/logo-email.png";
@@ -68,12 +73,16 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
     const resp = await fetch(logoUrl);
     const logoBytes = await resp.arrayBuffer();
     const logoImage = await pdfDoc.embedPng(logoBytes);
-    const targetHeight = 30;
+
+    // Bigger logo
+    const targetHeight = 45; // <– increase this if you want it even larger
     const scale = targetHeight / logoImage.height;
     const logoWidth = logoImage.width * scale;
 
+    // Centre vertically inside the header bar
+    const headerCenterY = pageHeight - headerHeight / 2;
+    const logoY = headerCenterY - targetHeight / 2;
     const logoX = marginX;
-    const logoY = pageHeight - 72;
 
     page.drawImage(logoImage, {
       x: logoX,
@@ -83,14 +92,14 @@ export async function buildRefineryOrderPdf(order: RefineryOrderForPdf) {
     });
   } catch (e) {
     console.error("Failed to load refinery PDF logo:", e);
-    // If logo fails we still don’t want duplicate wordmarks, so we do nothing extra here.
   }
 
   const headerTitle = "REFINERY ORDER CONFIRMATION";
   const headerTitleWidth = fontBold.widthOfTextAtSize(headerTitle, 12);
+
   page.drawText(headerTitle, {
     x: pageWidth - marginX - headerTitleWidth,
-    y: pageHeight - 52,
+    y: pageHeight - headerHeight / 2 - 6, // vertically centred-ish
     size: 12,
     font: fontBold,
     color: rgb(1, 1, 1),
