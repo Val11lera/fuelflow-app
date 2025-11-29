@@ -1,5 +1,6 @@
 // src/pages/documents.tsx
 // src/pages/documents.tsx
+// src/pages/documents.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -65,6 +66,13 @@ type ContractRow = {
   approved_pdf_path?: string | null;
 
   terms_acceptance_id?: string | null; // link to terms
+
+  // governance / audit extras
+  signer_title?: string | null;
+  has_authority?: boolean | null;
+  signed_ip?: string | null;
+  signed_user_agent?: string | null;
+  approved_by?: string | null;
 };
 
 type PriceRow = { fuel: string; total_price: number; price_date?: string | null };
@@ -111,7 +119,7 @@ export default function DocumentsPage() {
   // status guide as OVERLAY (bottom sheet)
   const [showGuide, setShowGuide] = useState(false);
 
-  // capture TA id from query
+  // capture TA id from query (still used for UX, server also checks)
   const [taFromQuery, setTaFromQuery] = useState<string | null>(null);
 
   // ---------- load ----------
@@ -218,7 +226,11 @@ export default function DocumentsPage() {
       return { label: "Start Buy Contract", href: undefined, onClick: () => setShowBuy(true) };
     }
     if ((buyLatest?.status as any) !== "approved" && (rentLatest?.status as any) !== "approved") {
-      return { label: "Complete Contract", href: undefined, onClick: () => (rentLatest ? setShowRent(true) : setShowBuy(true)) };
+      return {
+        label: "Complete Contract",
+        href: undefined,
+        onClick: () => (rentLatest ? setShowRent(true) : setShowBuy(true)),
+      };
     }
     return null;
   }, [docsComplete, termsAccepted, userEmail, buyLatest, rentLatest]);
@@ -235,10 +247,14 @@ export default function DocumentsPage() {
       {/* Header */}
       <header className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 mb-6">
         <div className="flex items-center gap-3">
-          <a href="/client-dashboard" className="rounded-lg bg-white/10 p-2 hover:bg-white/15 md:hidden" aria-label="Back">
+          <a
+            href="/client-dashboard"
+            className="rounded-lg bg-white/10 p-2 hover:bg-white/15 md:hidden"
+            aria-label="Back"
+          >
             <BackIcon className="h-5 w-5" />
           </a>
-        <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto hidden md:block" />
+          <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto hidden md:block" />
           <h1 className="text-xl font-bold sm:text-2xl">Documents</h1>
         </div>
 
@@ -249,7 +265,10 @@ export default function DocumentsPage() {
           >
             Status guide
           </button>
-          <a href="/client-dashboard" className="hidden rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15 md:inline-block">
+          <a
+            href="/client-dashboard"
+            className="hidden rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15 md:inline-block"
+          >
             Back to Dashboard
           </a>
         </div>
@@ -286,7 +305,12 @@ export default function DocumentsPage() {
         <section className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           <Tile
             title="Terms & Conditions"
-            statusBadge={<StatusBadge status={termsAccepted ? "approved" : undefined} onClick={() => setShowGuide(true)} />}
+            statusBadge={
+              <StatusBadge
+                status={termsAccepted ? "approved" : undefined}
+                onClick={() => setShowGuide(true)}
+              />
+            }
             body="You must accept the latest Terms before ordering."
             primary={{
               label: "Read & accept",
@@ -468,7 +492,11 @@ function InvoicesExplorer({ email }: { email: string }) {
           for (const m of months) {
             const filesRes = await supabase.storage
               .from(INVOICES_BUCKET)
-              .list(`${root}/${y}/${m}`, { limit: 1000, offset: 0, sortBy: { column: "name", order: "desc" } });
+              .list(`${root}/${y}/${m}`, {
+                limit: 1000,
+                offset: 0,
+                sortBy: { column: "name", order: "desc" },
+              });
             if (filesRes.error) throw filesRes.error;
 
             const filesData = (filesRes.data || []) as StorageListItem[];
@@ -562,7 +590,10 @@ function InvoicesExplorer({ email }: { email: string }) {
                       <button
                         className="flex w-full items-center justify-between px-3 py-2 hover:bg-white/5"
                         onClick={() =>
-                          setOpenMonths((s) => ({ ...s, [y]: { ...(s[y] || {}), [m]: !(s[y]?.[m]) } }))
+                          setOpenMonths((s) => ({
+                            ...s,
+                            [y]: { ...(s[y] || {}), [m]: !(s[y]?.[m]) },
+                          }))
                         }
                         aria-expanded={!!openMonths[y]?.[m]}
                       >
@@ -585,7 +616,9 @@ function InvoicesExplorer({ email }: { email: string }) {
                                     <div className="truncate text-sm font-medium">{f.name}</div>
                                     <div className="text-xs text-white/60">
                                       {f.created_at ? new Date(f.created_at).toLocaleString("en-GB") : "—"}
-                                      {typeof f.size === "number" ? ` • ${(f.size / 1024).toFixed(0)} KB` : ""}
+                                      {typeof f.size === "number"
+                                        ? ` • ${(f.size / 1024).toFixed(0)} KB`
+                                        : ""}
                                     </div>
                                   </div>
                                   <button
@@ -625,12 +658,36 @@ function StatusBadge({
 }) {
   const config =
     status === "approved"
-      ? { label: "Active", ring: "ring-emerald-400/30", bg: "from-emerald-600/25 to-emerald-400/15", text: "text-emerald-200", Icon: CheckIcon }
+      ? {
+          label: "Active",
+          ring: "ring-emerald-400/30",
+          bg: "from-emerald-600/25 to-emerald-400/15",
+          text: "text-emerald-200",
+          Icon: CheckIcon,
+        }
       : status === "signed"
-      ? { label: "Awaiting approval", ring: "ring-amber-400/30", bg: "from-amber-600/25 to-amber-400/15", text: "text-amber-200", Icon: HourglassIcon }
+      ? {
+          label: "Awaiting approval",
+          ring: "ring-amber-400/30",
+          bg: "from-amber-600/25 to-amber-400/15",
+          text: "text-amber-200",
+          Icon: HourglassIcon,
+        }
       : status === "cancelled"
-      ? { label: "Cancelled", ring: "ring-rose-400/30", bg: "from-rose-600/25 to-rose-400/15", text: "text-rose-200", Icon: XCircleIcon }
-      : { label: "Not signed", ring: "ring-slate-400/20", bg: "from-slate-600/25 to-slate-500/10", text: "text-slate-200", Icon: MinusIcon };
+      ? {
+          label: "Cancelled",
+          ring: "ring-rose-400/30",
+          bg: "from-rose-600/25 to-rose-400/15",
+          text: "text-rose-200",
+          Icon: XCircleIcon,
+        }
+      : {
+          label: "Not signed",
+          ring: "ring-slate-400/20",
+          bg: "from-slate-600/25 to-slate-500/10",
+          text: "text-slate-200",
+          Icon: MinusIcon,
+        };
 
   const { label, ring, bg, text, Icon } = config;
 
@@ -699,10 +756,30 @@ function StatusGuideSheet({ open, onClose }: { open: boolean; onClose: () => voi
 
         <div className="max-h-[80vh] overflow-y-auto p-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <GuideCard title="Active" description="Your contract is approved and ready to use. You can place orders immediately." tone="emerald" Icon={CheckIcon} />
-            <GuideCard title="Awaiting approval" description="You’ve signed the contract. Our team must perform a quick compliance check before it goes live." tone="amber" Icon={HourglassIcon} />
-            <GuideCard title="Cancelled" description="This contract is no longer active. Start a new one to continue." tone="rose" Icon={XCircleIcon} />
-            <GuideCard title="Not signed" description="No contract on file. Start and sign to proceed." tone="slate" Icon={MinusIcon} />
+            <GuideCard
+              title="Active"
+              description="Your contract is approved and ready to use. You can place orders immediately."
+              tone="emerald"
+              Icon={CheckIcon}
+            />
+            <GuideCard
+              title="Awaiting approval"
+              description="You’ve signed the contract. Our team must perform a quick compliance check before it goes live."
+              tone="amber"
+              Icon={HourglassIcon}
+            />
+            <GuideCard
+              title="Cancelled"
+              description="This contract is no longer active. Start a new one to continue."
+              tone="rose"
+              Icon={XCircleIcon}
+            />
+            <GuideCard
+              title="Not signed"
+              description="No contract on file. Start and sign to proceed."
+              tone="slate"
+              Icon={MinusIcon}
+            />
           </div>
         </div>
       </div>
@@ -722,10 +799,26 @@ function GuideCard({
   Icon: React.ComponentType<{ className?: string }>;
 }) {
   const map = {
-    emerald: { ring: "ring-emerald-400/30", text: "text-emerald-200", bg: "from-emerald-600/20 to-emerald-400/10" },
-    amber: { ring: "ring-amber-400/30", text: "text-amber-200", bg: "from-amber-600/20 to-amber-400/10" },
-    rose: { ring: "ring-rose-400/30", text: "text-rose-200", bg: "from-rose-600/20 to-rose-400/10" },
-    slate: { ring: "ring-slate-400/20", text: "text-slate-200", bg: "from-slate-600/20 to-slate-500/10" },
+    emerald: {
+      ring: "ring-emerald-400/30",
+      text: "text-emerald-200",
+      bg: "from-emerald-600/20 to-emerald-400/10",
+    },
+    amber: {
+      ring: "ring-amber-400/30",
+      text: "text-amber-200",
+      bg: "from-amber-600/20 to-amber-400/10",
+    },
+    rose: {
+      ring: "ring-rose-400/30",
+      text: "text-rose-200",
+      bg: "from-rose-600/20 to-rose-400/10",
+    },
+    slate: {
+      ring: "ring-slate-400/20",
+      text: "text-slate-200",
+      bg: "from-slate-600/20 to-slate-500/10",
+    },
   }[tone];
 
   return (
@@ -768,17 +861,26 @@ function Tile(props: {
       <div className="mt-4 flex flex-wrap gap-2">
         {props.secondary &&
           (props.secondary.href ? (
-            <a className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15" href={props.secondary.href}>
+            <a
+              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
+              href={props.secondary.href}
+            >
               {props.secondary.label}
             </a>
           ) : (
-            <button className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15" onClick={props.secondary.onClick}>
+            <button
+              className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
+              onClick={props.secondary.onClick}
+            >
               {props.secondary.label}
             </button>
           ))}
         {props.primary &&
           (props.primary.href ? (
-            <a className="rounded-lg bg-yellow-500 px-3 py-2 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400" href={props.primary.href}>
+            <a
+              className="rounded-lg bg-yellow-500 px-3 py-2 text-sm font-semibold text-[#041F3E] hover:bg-yellow-400"
+              href={props.primary.href}
+            >
               {props.primary.label}
             </a>
           ) : (
@@ -800,7 +902,7 @@ function ContractModal({
   title,
   option,
   userEmail,
-  taId,
+  taId, // still accepted for compatibility, server also verifies terms
   defaults,
   existing,
   onClose,
@@ -860,6 +962,8 @@ function ContractModal({
 
   // signatory
   const [signature, setSignature] = useState(existing?.signature_name ?? "");
+  const [signerTitle, setSignerTitle] = useState(existing?.signer_title ?? "");
+  const [hasAuthority, setHasAuthority] = useState<boolean>(false);
 
   const monthlySaving = useMemo(() => {
     if (!marketPrice || !ffPrice || !monthlyLitres) return 0;
@@ -910,58 +1014,74 @@ function ContractModal({
         throw new Error("Please type your full legal name as signature.");
       }
 
-      const now = new Date().toISOString();
-
-      const terms_acceptance_id = taId || (await getLatestAcceptanceId());
-      if (!terms_acceptance_id) {
+      // client-side confirmation of latest terms; server also re-checks
+      const ta = taId || (await getLatestAcceptanceId());
+      if (!ta) {
         throw new Error("Please accept the latest Terms before signing the contract.");
       }
 
-      const derivedCustomerName =
-        (company_name || "").trim() || (contact_name || "").trim() || (signature || "").trim();
+      if (!hasAuthority) {
+        throw new Error("Please confirm you are authorised to sign this contract.");
+      }
 
-      const payload: Partial<ContractRow> = {
-        email: userEmail,
-        tank_option: option,
-        status: option === "buy" ? "approved" : "signed", // BUY auto-active
-        signed_at: now,
-        approved_at: option === "buy" ? now : null,
+      const confirmed = window.confirm(
+        "Please confirm you want to sign this contract. This will be legally binding."
+      );
+      if (!confirmed) {
+        setSubmitting(false);
+        return;
+      }
 
-        customer_name: derivedCustomerName,
+      // Get Supabase session so we can send access token to API
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !sessionData?.session?.access_token) {
+        throw new Error("Unable to verify your session. Please log in again.");
+      }
 
+      const accessToken = sessionData.session.access_token;
+
+      const payload = {
+        option,
         company_name,
         company_number,
         vat_number,
-
         contact_name,
         contact_email,
         contact_phone,
-
         reg_address_line1: reg1,
         reg_address_line2: reg2,
         reg_city: regCity,
         reg_postcode: regPost,
         reg_country: regCountry,
-
         site_address_line1: site1,
         site_address_line2: site2,
         site_city: siteCity,
         site_postcode: sitePost,
         site_country: siteCountry,
-
         tank_size_l: numOrNull(tankSize),
         monthly_consumption_l: numOrNull(monthlyLitres),
         market_price_gbp_l: numOrNull(marketPrice),
         fuelflow_price_gbp_l: numOrNull(ffPrice),
         capex_gbp: numOrNull(capex),
-
         signature_name: signature,
+        signer_title: signerTitle,
+        has_authority: hasAuthority,
+      };
 
-        terms_acceptance_id,
-      } as any;
+      const res = await fetch("/api/contracts/secure-sign", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(payload),
+      });
 
-      const { error } = await supabase.from("contracts").insert([payload]);
-      if (error) throw error;
+      const json = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(json?.error || "Failed to save contract.");
+      }
 
       await afterSave();
     } catch (e: any) {
@@ -979,7 +1099,10 @@ function ContractModal({
       <div className="relative z-10 w-full max-w-3xl rounded-2xl border border-white/10 bg-[#0f172a] shadow-2xl">
         <div className="flex items-center justify-between p-4 border-b border-white/10">
           <h3 className="text-lg font-semibold">{title}</h3>
-          <button onClick={onClose} className="rounded-md bg-white/10 px-2 py-1 text-sm hover:bg-white/15">
+          <button
+            onClick={onClose}
+            className="rounded-md bg-white/10 px-2 py-1 text-sm hover:bg-white/15"
+          >
             ✕
           </button>
         </div>
@@ -1001,7 +1124,12 @@ function ContractModal({
           <Section title="Primary contact">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Field label="Name" value={contact_name} onChange={setContactName} />
-              <Field label="Email" value={contact_email} onChange={setContactEmail} type="email" />
+              <Field
+                label="Email"
+                value={contact_email}
+                onChange={setContactEmail}
+                type="email"
+              />
               <Field label="Phone" value={contact_phone} onChange={setContactPhone} />
             </div>
           </Section>
@@ -1035,18 +1163,46 @@ function ContractModal({
           {/* ROI */}
           <Section title="Tank & ROI">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <Field label="Tank size (L)" value={tankSize} onChange={(v) => setTankSize(toNum(v))} type="number" />
-              <Field label="Monthly consumption (L)" value={monthlyLitres} onChange={(v) => setMonthlyLitres(toNum(v))} type="number" />
+              <Field
+                label="Tank size (L)"
+                value={tankSize}
+                onChange={(v) => setTankSize(toNum(v))}
+                type="number"
+              />
+              <Field
+                label="Monthly consumption (L)"
+                value={monthlyLitres}
+                onChange={(v) => setMonthlyLitres(toNum(v))}
+                type="number"
+              />
               <span />
-              <Field label="Market price (£/L)" value={marketPrice} onChange={(v) => setMarketPrice(toNum(v))} type="number" />
-              <Field label="FuelFlow price (£/L)" value={ffPrice} onChange={(v) => setFfPrice(toNum(v))} type="number" />
-              <Field label="Capex (£)" value={capex} onChange={(v) => setCapex(toNum(v))} type="number" />
+              <Field
+                label="Market price (£/L)"
+                value={marketPrice}
+                onChange={(v) => setMarketPrice(toNum(v))}
+                type="number"
+              />
+              <Field
+                label="FuelFlow price (£/L)"
+                value={ffPrice}
+                onChange={(v) => setFfPrice(toNum(v))}
+                type="number"
+              />
+              <Field
+                label="Capex (£)"
+                value={capex}
+                onChange={(v) => setCapex(toNum(v))}
+                type="number"
+              />
             </div>
 
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
               <SummaryCard label="FuelFlow price" value={fmtMoney(ffPrice)} />
               <SummaryCard label="Est. monthly savings" value={fmtMoney(monthlySaving)} />
-              <SummaryCard label="Est. payback" value={paybackMonths ? `${paybackMonths} mo` : "—"} />
+              <SummaryCard
+                label="Est. payback"
+                value={paybackMonths ? `${paybackMonths} mo` : "—"}
+              />
             </div>
           </Section>
 
@@ -1058,18 +1214,46 @@ function ContractModal({
               onChange={setSignature}
               placeholder="Jane Smith"
             />
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field
+                label="Your job title (for records)"
+                value={signerTitle}
+                onChange={setSignerTitle}
+                placeholder="Director / Owner / Manager"
+              />
+            </div>
+            <label className="mt-3 flex items-start gap-2 text-xs text-white/70">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 rounded border-white/30 bg-transparent"
+                checked={hasAuthority}
+                onChange={(e) => setHasAuthority(e.target.checked)}
+              />
+              <span>
+                I confirm that I am authorised to sign this contract on behalf of the company and that
+                the information above is accurate to the best of my knowledge.
+              </span>
+            </label>
             <p className="mt-2 text-xs text-white/60">
-              By signing you agree to the Terms and the figures above are estimates. Buy contracts become active
-              immediately; Rent contracts require admin approval.
+              By signing you agree to the Terms and understand that the ROI figures above are
+              estimates. Buy contracts become active immediately; Rent contracts require admin
+              approval.
             </p>
           </Section>
 
-          {error && <div className="rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">{error}</div>}
+          {error && (
+            <div className="rounded-lg border border-red-400/40 bg-red-500/10 p-2 text-sm text-red-200">
+              {error}
+            </div>
+          )}
         </div>
 
         {/* sticky footer */}
         <div className="flex items-center justify-end gap-2 p-4 border-t border-white/10">
-          <button className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15" onClick={onClose}>
+          <button
+            className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
+            onClick={onClose}
+          >
             Cancel
           </button>
           <button
@@ -1099,9 +1283,15 @@ function RoiCalculatorModal({
   onClose: () => void;
 }) {
   const [tankSize, setTankSize] = useState<number | undefined>(defaults?.tank_size_l ?? undefined);
-  const [monthlyLitres, setMonthlyLitres] = useState<number | undefined>(defaults?.monthly_consumption_l ?? undefined);
-  const [marketPrice, setMarketPrice] = useState<number | undefined>(defaults?.market_price_gbp_l ?? undefined);
-  const [ffPrice, setFfPrice] = useState<number | undefined>(defaults?.fuelflow_price_gbp_l ?? undefined);
+  const [monthlyLitres, setMonthlyLitres] = useState<number | undefined>(
+    defaults?.monthly_consumption_l ?? undefined
+  );
+  const [marketPrice, setMarketPrice] = useState<number | undefined>(
+    defaults?.market_price_gbp_l ?? undefined
+  );
+  const [ffPrice, setFfPrice] = useState<number | undefined>(
+    defaults?.fuelflow_price_gbp_l ?? undefined
+  );
   const [capex, setCapex] = useState<number | undefined>(defaults?.capex_gbp ?? undefined);
 
   const monthlySaving = useMemo(() => {
@@ -1135,18 +1325,48 @@ function RoiCalculatorModal({
           <h3 className="text-lg font-semibold">
             {title} <span className="text-white/60">({option === "buy" ? "Buy" : "Rent"})</span>
           </h3>
-          <button onClick={onClose} className="rounded-md bg-white/10 px-2 py-1 text-sm hover:bg-white/15">✕</button>
+          <button
+            onClick={onClose}
+            className="rounded-md bg-white/10 px-2 py-1 text-sm hover:bg-white/15"
+          >
+            ✕
+          </button>
         </div>
 
         <div className="max-h-[75vh] overflow-y-auto p-4 space-y-5">
           <Section title="Inputs">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <Field label="Tank size (L)" value={tankSize} onChange={(v) => setTankSize(toNum(v))} type="number" />
-              <Field label="Monthly consumption (L)" value={monthlyLitres} onChange={(v) => setMonthlyLitres(toNum(v))} type="number" />
+              <Field
+                label="Tank size (L)"
+                value={tankSize}
+                onChange={(v) => setTankSize(toNum(v))}
+                type="number"
+              />
+              <Field
+                label="Monthly consumption (L)"
+                value={monthlyLitres}
+                onChange={(v) => setMonthlyLitres(toNum(v))}
+                type="number"
+              />
               <span />
-              <Field label="Market price (£/L)" value={marketPrice} onChange={(v) => setMarketPrice(toNum(v))} type="number" />
-              <Field label="FuelFlow price (£/L)" value={ffPrice} onChange={(v) => setFfPrice(toNum(v))} type="number" />
-              <Field label="Capex (£)" value={capex} onChange={(v) => setCapex(toNum(v))} type="number" />
+              <Field
+                label="Market price (£/L)"
+                value={marketPrice}
+                onChange={(v) => setMarketPrice(toNum(v))}
+                type="number"
+              />
+              <Field
+                label="FuelFlow price (£/L)"
+                value={ffPrice}
+                onChange={(v) => setFfPrice(toNum(v))}
+                type="number"
+              />
+              <Field
+                label="Capex (£)"
+                value={capex}
+                onChange={(v) => setCapex(toNum(v))}
+                type="number"
+              />
             </div>
           </Section>
 
@@ -1154,13 +1374,19 @@ function RoiCalculatorModal({
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
               <SummaryCard label="FuelFlow price" value={fmtMoney(ffPrice)} />
               <SummaryCard label="Est. monthly savings" value={fmtMoney(monthlySaving)} />
-              <SummaryCard label="Est. payback" value={paybackMonths ? `${paybackMonths} mo` : "—"} />
+              <SummaryCard
+                label="Est. payback"
+                value={paybackMonths ? `${paybackMonths} mo` : "—"}
+              />
             </div>
           </Section>
         </div>
 
         <div className="flex items-center justify-end gap-2 p-4 border-t border-white/10">
-          <button className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15" onClick={onClose}>
+          <button
+            className="rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
+            onClick={onClose}
+          >
             Close
           </button>
         </div>
