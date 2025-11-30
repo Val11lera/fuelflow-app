@@ -214,6 +214,13 @@ export default function AdminDashboard() {
   const [openTickets, setOpenTickets] = useState(true);
   const [openOrderConversations, setOpenOrderConversations] = useState(true);
 
+     const [openContracts, setOpenContracts] = useState(true);
+
+  // Contracts (rent / buy)
+  const [contracts, setContracts] = useState<ContractAdminRow[]>([]);
+  const [contractsLoading, setContractsLoading] = useState(false);
+  const [contractsError, setContractsError] = useState<string | null>(null);
+
   // Pagination (orders)
   const ORDERS_STEP = 20;
   const [ordersShown, setOrdersShown] = useState<number>(ORDERS_STEP);
