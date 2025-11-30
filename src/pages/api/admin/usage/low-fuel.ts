@@ -1,4 +1,5 @@
 // src/pages/api/admin/usage/low-fuel.ts
+// src/pages/api/admin/usage/low-fuel.ts
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import supabaseAdmin from "@/lib/supabaseAdmin";
@@ -30,9 +31,7 @@ export default async function handler(
   }
 
   try {
-    /* -----------------------------
-       1) Auth – admin only
-       ----------------------------- */
+    // 1) Auth – admin only
     const auth = req.headers.authorization;
     if (!auth?.startsWith("Bearer ")) {
       return res.status(401).json({
@@ -51,7 +50,7 @@ export default async function handler(
 
     const emailLower = (userRes.user.email || "").toLowerCase();
 
-    // Double-check that this user is in the `admins` table
+    // Only allow admins (admins table)
     const { data: adminRow } = await supabaseAdmin
       .from("admins")
       .select("email")
@@ -62,9 +61,7 @@ export default async function handler(
       return res.status(403).json({ ok: false, reason: "Not an admin" });
     }
 
-    /* -----------------------------
-       2) Load approved contracts
-       ----------------------------- */
+    // 2) Load approved contracts (rent + buy)
     const { data: contracts, error: contractsErr } = await supabaseAdmin
       .from("contracts")
       .select(
@@ -82,20 +79,16 @@ export default async function handler(
       return res.status(200).json({ ok: true, rows: [] });
     }
 
-    /* -----------------------------
-       3) Helper for each contract
-       ----------------------------- */
     async function analyseContract(c: any): Promise<LowFuelAlertRow | null> {
       const tankSizeL = Number(c.tank_size_l) || 0;
       const monthlyUseL = Number(c.monthly_consumption_l) || 0;
-
       if (!tankSizeL || !monthlyUseL) return null;
 
       const dailyUseL = monthlyUseL / 30;
       const email = (c.email || "").toLowerCase();
       if (!email) return null;
 
-      // Last order for this email (either email or user_email)
+      // Last order for this customer
       const { data: lastOrder, error: orderErr } = await supabaseAdmin
         .from("orders")
         .select("id, email, user_email, litres, delivery_date, created_at")
@@ -121,7 +114,7 @@ export default async function handler(
 
       const rawDelivered = Number((lastOrder as any).litres) || 0;
 
-      // 3a) Ignore tiny "test" deliveries
+      // Ignore tiny "test" orders
       const minValidDelivery = Math.min(
         tankSizeL,
         Math.max(tankSizeL * 0.1, 500)
@@ -132,7 +125,7 @@ export default async function handler(
 
       const deliveredLitres = Math.min(rawDelivered, tankSizeL);
 
-      // 3b) Estimate level
+      // Estimate tank level
       const estimatedUsed = Math.max(dailyUseL * daysSince, 0);
       const estimatedLeft = Math.max(deliveredLitres - estimatedUsed, 0);
 
@@ -140,7 +133,7 @@ export default async function handler(
         ? Math.max(Math.min(estimatedLeft / tankSizeL, 1), 0)
         : 0;
 
-      const threshold = 0.3; // 30% full
+      const threshold = 0.3; // 30%
       const showReminder = percentFull <= threshold;
       if (!showReminder) return null;
 
@@ -164,9 +157,6 @@ export default async function handler(
       };
     }
 
-    /* -----------------------------
-       4) Run analysis for contracts
-       ----------------------------- */
     const analysed = await Promise.all(
       contracts
         .filter((c) => !!c.tank_size_l && !!c.monthly_consumption_l)
@@ -186,3 +176,4 @@ export default async function handler(
     });
   }
 }
+
