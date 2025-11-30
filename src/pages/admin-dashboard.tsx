@@ -2,6 +2,7 @@
 // src/pages/admin-dashboard.tsx
 // src/pages/admin-dashboard.tsx
 // src/pages/admin-dashboard.tsx
+// src/pages/admin-dashboard.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -1884,18 +1885,17 @@ async function sendOrderToRefinery(orderId: string) {
                         <td className="py-2 px-3">
                           <div className="flex justify-end gap-2 flex-wrap">
                             <button
-                              <button
-                                   onClick={() => onApproveContract(c.id)}
-                                    disabled={isApproved || isCancelled}
-                                      className={cx(
-    "rounded-lg px-3 py-1.5 text-xs font-semibold",
-    isApproved || isCancelled
-      ? "bg-white/10 text-white/40 cursor-not-allowed"
-      : "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
-  )}
->
-  {isApproved ? "Approved" : "Approve"}
-</button>
+                              onClick={() => onApproveContract(c.id)}
+                              disabled={isApproved || isCancelled}
+                              className={cx(
+                                "rounded-lg px-3 py-1.5 text-xs font-semibold",
+                                isApproved || isCancelled
+                                  ? "bg-white/10 text-white/40 cursor-not-allowed"
+                                  : "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
+                              )}
+                            >
+                              {isApproved ? "Approved" : "Approve"}
+                            </button>
                             <button
                               onClick={() => onCancelContract(c.id)}
                               disabled={isCancelled}
@@ -3373,6 +3373,7 @@ function ConversationBubble({ msg }: { msg: OrderConversationMessage }) {
     </div>
   );
 }
+
 
 
 
