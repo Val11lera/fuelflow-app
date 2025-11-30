@@ -454,7 +454,95 @@ export default function AdminDashboard() {
   function onUnblock(email: string) {
     callApprovalAction(email, "unblock");
   }
+  /* =========================
+     Contracts (load + actions)
+     ========================= */
+  async function loadContracts() {
+    if (isAdmin !== true) return;
+    setContractsLoading(true);
+    setContractsError(null);
+    try {
+      const { data, error } = await supabase
+        .from("contracts")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(500);
 
+      if (error) throw error;
+      setContracts((data || []) as ContractAdminRow[]);
+    } catch (e: any) {
+      setContractsError(e?.message || "Failed to load contracts");
+    } finally {
+      setContractsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAdmin === true) {
+      loadContracts();
+    }
+  }, [isAdmin]);
+
+  async function callContractAction(
+    id: string,
+    action: "approve" | "cancel"
+  ) {
+    try {
+      setContractsError(null);
+
+      const { data: sessionRes } = await supabase.auth.getSession();
+      const token = sessionRes.session?.access_token;
+      if (!token) throw new Error("Missing session token");
+
+      const path =
+        action === "approve"
+          ? "/api/contracts/approve"
+          : "/api/contracts/cancel";
+
+      const res = await fetch(`${path}?id=${encodeURIComponent(id)}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      let body: any = null;
+      try {
+        body = await res.json();
+      } catch {
+        // ignore json parse
+      }
+
+      if (!res.ok) {
+        const msg =
+          body?.error ||
+          (typeof body === "string" ? body : `Failed (${res.status})`);
+        throw new Error(msg);
+      }
+
+      await loadContracts();
+    } catch (e: any) {
+      setContractsError(e?.message || "Failed to update contract");
+    }
+  }
+
+  function onApproveContract(id: string) {
+    if (!window.confirm("Approve this rent contract?")) return;
+    callContractAction(id, "approve");
+  }
+
+  function onCancelContract(id: string) {
+    if (
+      !window.confirm(
+        "Cancel this contract? The customer will need a new one to proceed."
+      )
+    )
+      return;
+    callContractAction(id, "cancel");
+  }
+
+
+   
   /* =========================
      FULFILMENT ACTIONS
      ========================= */
