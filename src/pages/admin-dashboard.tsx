@@ -87,6 +87,21 @@ type ContractAdminRow = {
   terms_acceptance_id?: string | null;
 };
 
+type LowFuelAlertRow = {
+  contractId: string;
+  email: string | null;
+  displayName: string | null;
+  tankSizeL: number | null;
+  monthlyConsumptionL: number | null;
+  percentFull: number;
+  estimatedLitresLeft: number;
+  daysSinceLastDelivery: number;
+  lastDeliveryDate: string | null;
+  lastDeliveredLitres: number;
+  message: string;
+};
+
+
 
 /** Tickets */
 type TicketListRow = {
