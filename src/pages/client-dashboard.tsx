@@ -634,6 +634,100 @@ export default function ClientDashboard() {
           </div>
         </section>
 
+              {/* Smart usage reminder card */}
+        {reminder && (
+          <section className="rounded-xl border border-yellow-400/40 bg-yellow-500/10 p-4 md:p-5">
+            <div className="flex items-start gap-3">
+              {/* Icon bubble */}
+              <div className="mt-0.5 h-7 w-7 rounded-full bg-yellow-400 flex items-center justify-center text-[#041F3E] text-sm font-bold">
+                !
+              </div>
+
+              <div className="flex-1">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm md:text-base font-semibold text-yellow-100">
+                      Smart usage reminder
+                    </h2>
+                    <p className="mt-1 text-xs md:text-sm text-yellow-50/90">
+                      We monitor your tank size and typical usage. When we think
+                      you may be getting low, we&apos;ll gently suggest
+                      scheduling a top-up — no pressure, just a helpful nudge.
+                    </p>
+                  </div>
+                  {/* Close only hides this session – shows again next login */}
+                  <button
+                    onClick={() => setReminder(null)}
+                    className="ml-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-yellow-400/90 text-[#041F3E] text-sm font-semibold hover:bg-yellow-300"
+                    aria-label="Hide reminder"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {reminder.message && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => setReminderExpanded((s) => !s)}
+                      className="inline-flex items-center rounded-lg bg-yellow-400/90 px-3 py-1.5 text-xs md:text-sm font-semibold text-[#041F3E] hover:bg-yellow-300"
+                    >
+                      {reminderExpanded
+                        ? "Hide our latest estimate"
+                        : "View our latest estimate"}
+                    </button>
+
+                    {typeof reminder.percentFull === "number" && (
+                      <span className="text-[11px] md:text-xs text-yellow-100/90">
+                        Estimated tank level:{" "}
+                        <strong>
+                          {Math.round(reminder.percentFull * 100)}%
+                        </strong>
+                      </span>
+                    )}
+
+                    {typeof reminder.daysSinceLastDelivery === "number" && (
+                      <span className="text-[11px] md:text-xs text-yellow-100/90">
+                        Last delivery: ~
+                        <strong>{reminder.daysSinceLastDelivery}</strong> days
+                        ago
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {reminder.message && reminderExpanded && (
+              <div className="mt-3 rounded-lg border border-yellow-400/50 bg-[#0b1220]/70 p-3 text-xs md:text-sm text-yellow-50/95">
+                <p>{reminder.message}</p>
+
+                {typeof reminder.estimatedLitresLeft === "number" &&
+                  reminder.contractTankSize && (
+                    <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 text-[11px] md:text-xs">
+                      <div>
+                        <div className="text-yellow-100/80">
+                          Estimated litres remaining
+                        </div>
+                        <div className="font-semibold">
+                          {reminder.estimatedLitresLeft.toLocaleString()} L
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-yellow-100/80">
+                          Contract tank size
+                        </div>
+                        <div className="font-semibold">
+                          {reminder.contractTankSize.toLocaleString()} L
+                        </div>
+                      </div>
+                    </div>
+                  )}
+              </div>
+            )}
+          </section>
+        )}
+
+         
         {/* Usage & Spend */}
         <section className="bg-gray-800/40 rounded-xl p-4 md:p-6">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
