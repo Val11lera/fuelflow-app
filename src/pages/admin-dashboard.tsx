@@ -61,6 +61,31 @@ type AdminCustomerRow = {
   first_order_at: string | null;
   last_order_at: string | null;
 };
+type ContractAdminRow = {
+  id: string;
+  created_at: string;
+  email: string | null;
+  customer_name?: string | null;
+  tank_option: string | null;
+  status: string | null;
+  signed_at: string | null;
+  approved_at: string | null;
+
+  company_name?: string | null;
+  contact_name?: string | null;
+  contact_email?: string | null;
+  contact_phone?: string | null;
+
+  tank_size_l?: number | null;
+  monthly_consumption_l?: number | null;
+  market_price_gbp_l?: number | null;
+  fuelflow_price_gbp_l?: number | null;
+  capex_gbp?: number | null;
+
+  signature_name?: string | null;
+  terms_acceptance_id?: string | null;
+};
+
 
 /** Tickets */
 type TicketListRow = {
