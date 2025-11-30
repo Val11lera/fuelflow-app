@@ -238,6 +238,13 @@ export default function AdminDashboard() {
   const [contractsLoading, setContractsLoading] = useState(false);
   const [contractsError, setContractsError] = useState<string | null>(null);
 
+   // Low-fuel alerts (rent + buy)
+  const [lowFuelAlerts, setLowFuelAlerts] = useState<LowFuelAlertRow[]>(
+    []
+  );
+  const [lowFuelLoading, setLowFuelLoading] = useState(false);
+  const [lowFuelError, setLowFuelError] = useState<string | null>(null);
+
   // Pagination (orders)
   const ORDERS_STEP = 20;
   const [ordersShown, setOrdersShown] = useState<number>(ORDERS_STEP);
