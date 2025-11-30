@@ -1954,18 +1954,7 @@ async function sendOrderToRefinery(orderId: string) {
         </Accordion>
 
         {/* ===== Rent contracts ===== */}
-        <Accordion
-          title="Rent contracts"
-          subtitle={`${contracts.filter((c) => c.tank_option === "rent").length} row(s)`}
-          open={openContracts}
-          onToggle={() => setOpenContracts((s) => !s)}
-          loading={contractsLoading}
-          error={contractsError}
-        >
-          {/* ...your existing rent contracts table stays exactly the same... */}
-        </Accordion>
-
-         
+      
 
         {/* ===== Rent contracts ===== */}
         <Accordion
