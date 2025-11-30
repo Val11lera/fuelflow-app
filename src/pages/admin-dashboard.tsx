@@ -501,11 +501,48 @@ export default function AdminDashboard() {
     }
   }
 
+  // NEW: load low-fuel alerts from /api/admin/usage/low-fuel
+  async function loadLowFuelAlerts() {
+    if (isAdmin !== true) return;
+    setLowFuelLoading(true);
+    setLowFuelError(null);
+    try {
+      const { data: sessionRes } = await supabase.auth.getSession();
+      const token = sessionRes.session?.access_token;
+      if (!token) throw new Error("Missing session token");
+
+      const res = await fetch("/api/admin/usage/low-fuel", {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Failed (${res.status})`);
+      }
+
+      const body = await res.json();
+      if (!body?.ok) {
+        throw new Error(body?.reason || "Failed to load low fuel alerts");
+      }
+
+      setLowFuelAlerts(body.rows || []);
+    } catch (e: any) {
+      setLowFuelError(e?.message || "Failed to load low fuel alerts");
+    } finally {
+      setLowFuelLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (isAdmin === true) {
       loadContracts();
+      loadLowFuelAlerts();
     }
   }, [isAdmin]);
+
 
   async function callContractAction(
     id: string,
