@@ -1825,6 +1825,148 @@ async function sendOrderToRefinery(orderId: string) {
           </div>
         </section>
 
+        </section>
+
+        {/* ===== Low fuel alerts ===== */}
+        <Accordion
+          title="Low fuel alerts"
+          subtitle={
+            lowFuelAlerts.length
+              ? `${lowFuelAlerts.length} customer(s)`
+              : "No customers look low right now"
+          }
+          open={openLowFuel}
+          onToggle={() => setOpenLowFuel((s) => !s)}
+          loading={lowFuelLoading}
+          error={lowFuelError}
+          right={
+            <button
+              onClick={loadLowFuelAlerts}
+              className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+            >
+              Refresh
+            </button>
+          }
+        >
+          {lowFuelAlerts.length === 0 ? (
+            <div className="text-sm text-white/70 px-1 py-2">
+              No customers currently look low based on their contract tank
+              size, monthly usage and last normal delivery.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm min-w-[900px]">
+                <thead className="text-white/70">
+                  <tr className="border-b border-white/10">
+                    <th className="py-2 px-3">Customer</th>
+                    <th className="py-2 px-3">Tank</th>
+                    <th className="py-2 px-3">Last delivery</th>
+                    <th className="py-2 px-3">Estimate</th>
+                    <th className="py-2 px-3">
+                      Suggested reminder text
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lowFuelAlerts.map((r) => (
+                    <tr
+                      key={r.contractId}
+                      className="border-b border-white/5 align-top"
+                    >
+                      <td className="py-2 px-3 text-xs">
+                        <div className="font-semibold">
+                          {r.displayName || r.email || "—"}
+                        </div>
+                        <div className="text-white/70 break-all">
+                          {r.email || "—"}
+                        </div>
+                      </td>
+                      <td className="py-2 px-3 text-xs">
+                        <div>
+                          Size:{" "}
+                          <span className="text-white/80">
+                            {r.tankSizeL
+                              ? `${r.tankSizeL.toLocaleString()} L`
+                              : "—"}
+                          </span>
+                        </div>
+                        <div>
+                          Monthly use:{" "}
+                          <span className="text-white/80">
+                            {r.monthlyConsumptionL
+                              ? `${r.monthlyConsumptionL.toLocaleString()} L`
+                              : "—"}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-2 px-3 text-xs">
+                        {r.lastDeliveryDate ? (
+                          <>
+                            <div>
+                              {new Date(
+                                r.lastDeliveryDate
+                              ).toLocaleString()}
+                            </div>
+                            <div className="text-white/70 text-[11px]">
+                              {Math.round(
+                                r.daysSinceLastDelivery
+                              )}{" "}
+                              days ago •{" "}
+                              {r.lastDeliveredLitres.toLocaleString()} L
+                              delivered
+                            </div>
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-xs">
+                        <div>
+                          Level:{" "}
+                          <span className="text-white/80">
+                            {Math.round(r.percentFull * 100)}% full
+                          </span>
+                        </div>
+                        <div>
+                          Approx left:{" "}
+                          <span className="text-white/80">
+                            {Math.round(
+                              r.estimatedLitresLeft
+                            ).toLocaleString()}{" "}
+                            L
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-2 px-3 text-xs max-w-xs">
+                        <div className="text-white/80 whitespace-pre-wrap">
+                          {r.message}
+                        </div>
+                        <div className="mt-1 text-[11px] text-white/50">
+                          Copy this text into your AI agent or email to
+                          send a friendly reminder.
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Accordion>
+
+        {/* ===== Rent contracts ===== */}
+        <Accordion
+          title="Rent contracts"
+          subtitle={`${contracts.filter((c) => c.tank_option === "rent").length} row(s)`}
+          open={openContracts}
+          onToggle={() => setOpenContracts((s) => !s)}
+          loading={contractsLoading}
+          error={contractsError}
+        >
+          {/* ...your existing rent contracts table stays exactly the same... */}
+        </Accordion>
+
+         
 
         {/* ===== Rent contracts ===== */}
         <Accordion
