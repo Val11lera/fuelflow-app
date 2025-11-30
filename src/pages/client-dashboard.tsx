@@ -106,6 +106,11 @@ export default function ClientDashboard() {
   const [petrolPrice, setPetrolPrice] = useState<number | null>(null);
   const [dieselPrice, setDieselPrice] = useState<number | null>(null);
 
+  // smart usage reminder
+  const [reminder, setReminder] = useState<UsageReminder | null>(null);
+  const [reminderExpanded, setReminderExpanded] = useState(false);
+
+   
   // orders (all fetched, then sliced for table)
   const [orders, setOrders] = useState<OrderWithExtras[]>([]);
   const [visibleCount, setVisibleCount] = useState<number>(20);
