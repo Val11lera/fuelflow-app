@@ -362,6 +362,37 @@ export default function ClientDashboard() {
     } catch {}
   }
 
+     // ---------- Usage reminder (AI-style hint) ----------
+  async function loadUsageReminder(emailLower: string) {
+    try {
+      const { data: sessionRes } = await supabase.auth.getSession();
+      const token = sessionRes?.session?.access_token;
+      if (!token) return;
+
+      const resp = await fetch("/api/usage/reminder", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!resp.ok) return;
+
+      const json = await resp.json();
+      if (!json || !json.ok) return;
+
+      // If backend says nothing to show, keep it hidden
+      if (!json.showReminder && !json.message) {
+        setReminder(null);
+        return;
+      }
+
+      setReminder(json);
+    } catch {
+      // fail silently – this is only a hint, never block dashboard
+    }
+  }
+
+   
   // ---------- simple UI helpers ----------
   function refresh() {
     loadAll();
