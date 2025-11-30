@@ -55,6 +55,15 @@ type OrderWithExtras = OrderRow & {
   amount_gbp: number;
   payment_status?: string | null;
 };
+type UsageReminder = {
+  showReminder: boolean;
+  message?: string;
+  percentFull?: number;
+  daysSinceLastDelivery?: number;
+  estimatedLitresLeft?: number;
+  contractTankSize?: number | null;
+  contractMonthlyConsumption?: number | null;
+};
 
 /* =========================
    Helpers
