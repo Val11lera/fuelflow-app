@@ -1764,6 +1764,173 @@ async function sendOrderToRefinery(orderId: string) {
           </div>
         </section>
 
+
+        {/* ===== Rent contracts ===== */}
+        <Accordion
+          title="Rent contracts"
+          subtitle={`${contracts.filter((c) => c.tank_option === "rent").length} row(s)`}
+          open={openContracts}
+          onToggle={() => setOpenContracts((s) => !s)}
+          loading={contractsLoading}
+          error={contractsError}
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm min-w-[820px]">
+              <thead className="text-white/70">
+                <tr className="border-b border-white/10">
+                  <th className="py-2 px-3">Created</th>
+                  <th className="py-2 px-3">Customer / company</th>
+                  <th className="py-2 px-3">Tank option</th>
+                  <th className="py-2 px-3">Tank size / usage</th>
+                  <th className="py-2 px-3">Prices</th>
+                  <th className="py-2 px-3">Status</th>
+                  <th className="py-2 px-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {contracts
+                  .filter((c) => (c.tank_option || "").toLowerCase() === "rent")
+                  .map((c) => {
+                    const status = (c.status || "").toLowerCase();
+                    const isApproved = status === "approved";
+                    const isCancelled = status === "cancelled";
+
+                    return (
+                      <tr key={c.id} className="border-b border-white/5">
+                        <td className="py-2 px-3 whitespace-nowrap">
+                          {c.created_at
+                            ? new Date(c.created_at).toLocaleString()
+                            : "—"}
+                          {c.signed_at && (
+                            <div className="text-[11px] text-white/60">
+                              Signed {new Date(c.signed_at).toLocaleString()}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 text-xs">
+                          <div className="font-semibold">
+                            {c.customer_name || c.company_name || "—"}
+                          </div>
+                          <div className="text-white/70 break-all">
+                            {c.contact_email || c.email || "—"}
+                          </div>
+                          {c.contact_phone && (
+                            <div className="text-white/60 text-[11px]">
+                              {c.contact_phone}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 text-xs capitalize">
+                          {c.tank_option || "—"}
+                        </td>
+                        <td className="py-2 px-3 text-xs">
+                          <div>
+                            Tank size:{" "}
+                            <span className="text-white/80">
+                              {c.tank_size_l
+                                ? `${c.tank_size_l.toLocaleString()} L`
+                                : "—"}
+                            </span>
+                          </div>
+                          <div>
+                            Monthly usage:{" "}
+                            <span className="text-white/80">
+                              {c.monthly_consumption_l
+                                ? `${c.monthly_consumption_l.toLocaleString()} L`
+                                : "—"}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-2 px-3 text-xs">
+                          <div>
+                            Market:{" "}
+                            <span className="text-white/80">
+                              {c.market_price_gbp_l != null
+                                ? `£${c.market_price_gbp_l.toFixed(2)}/L`
+                                : "—"}
+                            </span>
+                          </div>
+                          <div>
+                            FuelFlow:{" "}
+                            <span className="text-white/80">
+                              {c.fuelflow_price_gbp_l != null
+                                ? `£${c.fuelflow_price_gbp_l.toFixed(2)}/L`
+                                : "—"}
+                            </span>
+                          </div>
+                          <div>
+                            Capex:{" "}
+                            <span className="text-white/80">
+                              {c.capex_gbp != null
+                                ? `£${c.capex_gbp.toLocaleString()}`
+                                : "—"}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-2 px-3">
+                          <span
+                            className={cx(
+                              "inline-flex items-center rounded px-2 py-0.5 text-xs capitalize",
+                              isApproved && "bg-green-600/70",
+                              isCancelled && "bg-rose-600/70",
+                              !isApproved &&
+                                !isCancelled &&
+                                "bg-gray-600/70"
+                            )}
+                          >
+                            {status || "pending"}
+                          </span>
+                        </td>
+                        <td className="py-2 px-3">
+                          <div className="flex justify-end gap-2 flex-wrap">
+                            <button
+                              onClick={() => onApproveContract(c.id)}
+                              disabled={isApproved || isCancelled}
+                              className={cx(
+                                "rounded-lg px-3 py-1.5 text-xs font-semibold",
+                                isApproved || isCancelled
+                                  ? "bg-white/10 text-white/40 cursor-not-allowed"
+                                  : "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
+                              )}
+                            >
+                              {isApproved ? "Approved" : "Approve"}
+                            </button>
+                            <button
+                              onClick={() => onCancelContract(c.id)}
+                              disabled={isCancelled}
+                              className={cx(
+                                "rounded-lg px-3 py-1.5 text-xs",
+                                isCancelled
+                                  ? "bg-white/10 text-white/40 cursor-not-allowed"
+                                  : "bg-white/10 hover:bg-white/15"
+                              )}
+                            >
+                              {isCancelled ? "Cancelled" : "Cancel"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                {contracts.filter(
+                  (c) => (c.tank_option || "").toLowerCase() === "rent"
+                ).length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      className="py-3 px-3 text-sm text-white/60"
+                    >
+                      No rent contracts yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Accordion>
+
+         
         {/* Orders */}
         <Accordion
           title="Orders"
