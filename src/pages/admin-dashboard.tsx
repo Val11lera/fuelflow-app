@@ -231,6 +231,7 @@ export default function AdminDashboard() {
   const [openOrderConversations, setOpenOrderConversations] = useState(true);
 
      const [openContracts, setOpenContracts] = useState(true);
+   const [openLowFuel, setOpenLowFuel] = useState(true);
 
   // Contracts (rent / buy)
   const [contracts, setContracts] = useState<ContractAdminRow[]>([]);
