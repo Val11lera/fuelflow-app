@@ -1825,7 +1825,6 @@ async function sendOrderToRefinery(orderId: string) {
           </div>
         </section>
 
-        </section>
 
         {/* ===== Low fuel alerts ===== */}
         <Accordion
