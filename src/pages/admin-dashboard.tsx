@@ -1896,7 +1896,6 @@ async function sendOrderToRefinery(orderId: string) {
 >
   {isApproved ? "Approved" : "Approve"}
 </button>
-
                             <button
                               onClick={() => onCancelContract(c.id)}
                               disabled={isCancelled}
