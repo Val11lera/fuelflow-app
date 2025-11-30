@@ -223,7 +223,12 @@ export default function ClientDashboard() {
       const lower = (emailLower || auth.user.email || "").toLowerCase();
       setUserEmail(lower);
 
-      await Promise.all([loadLatestPrices(), loadOrders(lower)]);
+            await Promise.all([
+        loadLatestPrices(),
+        loadOrders(lower),
+        loadUsageReminder(lower),
+      ]);
+
 
       setHasRefreshed(true);
       setRefreshedAt(new Date());
