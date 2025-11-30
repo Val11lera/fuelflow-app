@@ -1,4 +1,5 @@
 // src/pages/api/usage/reminder.ts
+// src/pages/api/usage/reminder.ts
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import supabaseAdmin from "@/lib/supabaseAdmin";
@@ -46,6 +47,24 @@ export default async function handler(
 
     const user = userRes.user;
     const emailLower = (user.email || "").toLowerCase();
+
+    /* ---------------------------------------------------
+       1b) OPTIONAL: force a demo reminder for your test account
+           (remove this block when you go fully live)
+       --------------------------------------------------- */
+    if (emailLower === "fuelflow.queries@gmail.com") {
+      return res.status(200).json({
+        ok: true,
+        showReminder: true,
+        message:
+          "Demo: Based on your test data we think you might want to schedule a top-up soon. This is only a preview of the reminder card.",
+        percentFull: 0.35, // 35% full (example)
+        daysSinceLastDelivery: 25,
+        estimatedLitresLeft: 1750,
+        contractTankSize: 5000,
+        contractMonthlyConsumption: 2000,
+      });
+    }
 
     /* ---------------------------------------------------
        2) Active contract (we only care about approved)
@@ -142,8 +161,8 @@ export default async function handler(
        4) COMMON-SENSE SANITY CHECKS
        --------------------------------------------------- */
 
-    // 4a) Work out the minimum delivery size that "makes sense" to use
-    //     for reminders (to ignore tiny 1L test orders, etc.)
+    // 4a) Minimum delivery size that "makes sense" to use for reminders
+    //     (ignore tiny 1L test orders, etc.)
     //
     // Rules:
     //  - at least 10% of tank OR 500L, whichever is bigger
@@ -211,3 +230,4 @@ export default async function handler(
     });
   }
 }
+
