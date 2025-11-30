@@ -1886,16 +1886,17 @@ async function sendOrderToRefinery(orderId: string) {
                             <button
 <button
   onClick={() => onApproveContract(c.id)}
-  disabled={isApproved}
+  disabled={isApproved || isCancelled}
   className={cx(
     "rounded-lg px-3 py-1.5 text-xs font-semibold",
-    isApproved
+    isApproved || isCancelled
       ? "bg-white/10 text-white/40 cursor-not-allowed"
       : "bg-yellow-500 text-[#041F3E] hover:bg-yellow-400"
   )}
 >
   {isApproved ? "Approved" : "Approve"}
 </button>
+
                             <button
                               onClick={() => onCancelContract(c.id)}
                               disabled={isCancelled}
