@@ -373,14 +373,14 @@ export default function AdminDashboard() {
 
         // Orders (with fulfilment_status + notes)
         // Orders (with fulfilment_status + notes + refinery status)
-        let oq = supabase
-          .from("orders")
-          .select(
-            "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status, fulfilment_status, fulfilment_notes, refinery_notification_status, refinery_notified_at"
-          )
-
-          .order("created_at", { ascending: false })
-          .limit(1000);
+// Orders (with fulfilment_status + notes – no refinery columns yet)
+let oq = supabase
+  .from("orders")
+  .select(
+    "id, created_at, user_email, fuel, litres, unit_price_pence, total_pence, status, fulfilment_status, fulfilment_notes"
+  )
+  .order("created_at", { ascending: false })
+  .limit(1000);
 
         if (from) oq = oq.gte("created_at", from.toISOString());
         if (to) oq = oq.lte("created_at", to.toISOString());
