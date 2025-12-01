@@ -502,39 +502,138 @@ let oq = supabase
   }
 
   // NEW: load low-fuel alerts from /api/admin/usage/low-fuel
+  // Load low-fuel alerts directly from Supabase (no API route)
   async function loadLowFuelAlerts() {
     if (isAdmin !== true) return;
     setLowFuelLoading(true);
     setLowFuelError(null);
+
     try {
-      const { data: sessionRes } = await supabase.auth.getSession();
-      const token = sessionRes.session?.access_token;
-      if (!token) throw new Error("Missing session token");
+      // 1) Get contracts we can monitor
+      const { data: contractsData, error: contractsError } = await supabase
+        .from("contracts")
+        .select(
+          "id, email, customer_name, company_name, contact_name, contact_email, tank_size_l, monthly_consumption_l, status, signed_at"
+        )
+        .in("status", ["signed", "approved"])
+        .not("signed_at", "is", null)
+        .gt("tank_size_l", 0)
+        .gt("monthly_consumption_l", 0)
+        .limit(500);
 
-      const res = await fetch("/api/admin/usage/low-fuel", {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      if (contractsError) throw contractsError;
 
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Failed (${res.status})`);
+      const contracts = (contractsData || []) as any[];
+
+      if (contracts.length === 0) {
+        setLowFuelAlerts([]);
+        return;
       }
 
-      const body = await res.json();
-      if (!body?.ok) {
-        throw new Error(body?.reason || "Failed to load low fuel alerts");
+      // 2) Collect all emails from those contracts
+      const emails = Array.from(
+        new Set(
+          contracts
+            .map(
+              (c) =>
+                c.contact_email ||
+                c.email
+            )
+            .filter(Boolean)
+        )
+      ) as string[];
+
+      if (emails.length === 0) {
+        setLowFuelAlerts([]);
+        return;
       }
 
-      setLowFuelAlerts(body.rows || []);
+      // 3) Fetch delivered orders for those emails
+      const { data: ordersData, error: ordersError } = await supabase
+        .from("orders")
+        .select(
+          "id, user_email, litres, delivered_at, created_at, fulfilment_status, status"
+        )
+        .eq("fulfilment_status", "delivered")
+        .in("user_email", emails)
+        .not("delivered_at", "is", null)
+        .order("delivered_at", { ascending: false })
+        .limit(5000);
+
+      if (ordersError) throw ordersError;
+
+      const orders = (ordersData || []) as any[];
+
+      const rows: LowFuelAlertRow[] = [];
+      const now = new Date();
+      const msPerDay = 1000 * 60 * 60 * 24;
+
+      // 4) Build alert rows
+      for (const c of contracts) {
+        const email: string | null = c.contact_email || c.email;
+        if (!email) continue;
+
+        const tankSize: number | null = c.tank_size_l;
+        const monthly: number | null = c.monthly_consumption_l;
+        if (!tankSize || !monthly) continue;
+
+        // Latest delivered order for this email
+        const lastOrder = orders.find((o) => o.user_email === email);
+        if (!lastOrder) continue;
+
+        const lastDeliveryDate = new Date(
+          (lastOrder.delivered_at as string) ||
+            (lastOrder.created_at as string)
+        );
+        const daysSince =
+          (now.getTime() - lastDeliveryDate.getTime()) / msPerDay;
+
+        const dailyUsage = monthly / 30; // rough estimate
+        const litresUsed = dailyUsage * daysSince;
+        const litresLeft = tankSize - litresUsed;
+
+        // percentFull should be 0–1 (UI multiplies by 100)
+        const percentFull = Math.max(
+          0,
+          Math.min(1, litresLeft / tankSize)
+        );
+
+        // Only alert if we think they are below ~30% full
+        if (percentFull > 0.3) continue;
+
+        const displayName: string =
+          c.customer_name ||
+          c.company_name ||
+          c.contact_name ||
+          email;
+
+        const message = `Based on your contract tank size of ${tankSize.toLocaleString()}L and estimated usage of ${monthly.toLocaleString()}L/month, it looks like your tank may be around ${Math.round(
+          percentFull * 100
+        )}% full. Would you like us to arrange a top-up delivery?`;
+
+        rows.push({
+          contractId: c.id,
+          email,
+          displayName,
+          tankSizeL: tankSize,
+          monthlyConsumptionL: monthly,
+          percentFull,
+          estimatedLitresLeft: litresLeft,
+          daysSinceLastDelivery: Math.round(daysSince),
+          lastDeliveryDate: lastDeliveryDate.toISOString(),
+          lastDeliveredLitres: Number(lastOrder.litres) || 0,
+          message,
+        });
+      }
+
+      setLowFuelAlerts(rows);
     } catch (e: any) {
       setLowFuelError(e?.message || "Failed to load low fuel alerts");
     } finally {
       setLowFuelLoading(false);
     }
   }
+
 
   useEffect(() => {
     if (isAdmin === true) {
