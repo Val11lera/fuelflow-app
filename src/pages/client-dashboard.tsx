@@ -368,34 +368,122 @@ export default function ClientDashboard() {
   }
 
      // ---------- Usage reminder (AI-style hint) ----------
+  // ---------- Usage reminder (AI-style hint, calculated here) ----------
   async function loadUsageReminder(emailLower: string) {
     try {
-      const { data: sessionRes } = await supabase.auth.getSession();
-      const token = sessionRes?.session?.access_token;
-      if (!token) return;
+      // 1) Find relevant contracts for this email
+      const { data: contractsData, error: contractsError } = await supabase
+        .from("contracts")
+        .select(
+          "id, email, customer_name, company_name, contact_name, tank_size_l, monthly_consumption_l, status, signed_at"
+        )
+        .in("status", ["signed", "approved"])
+        .not("signed_at", "is", null)
+        .eq("email", emailLower)
+        .gt("tank_size_l", 0)
+        .gt("monthly_consumption_l", 0)
+        .limit(10);
 
-      const resp = await fetch("/api/usage/reminder", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      if (contractsError) throw contractsError;
 
-      if (!resp.ok) return;
+      const contracts = (contractsData || []) as any[];
 
-      const json = await resp.json();
-      if (!json || !json.ok) return;
-
-      // If backend says nothing to show, keep it hidden
-      if (!json.showReminder && !json.message) {
+      if (!contracts.length) {
         setReminder(null);
         return;
       }
 
-      setReminder(json);
+      // Pick the newest contract (by signed_at)
+      const contract = [...contracts].sort((a, b) => {
+        const da = a.signed_at ? new Date(a.signed_at).getTime() : 0;
+        const db = b.signed_at ? new Date(b.signed_at).getTime() : 0;
+        return db - da;
+      })[0];
+
+      const tankSize: number | null = contract.tank_size_l;
+      const monthly: number | null = contract.monthly_consumption_l;
+
+      if (!tankSize || !monthly) {
+        setReminder(null);
+        return;
+      }
+
+      // 2) Latest delivered order for this email
+      const { data: ordersData, error: ordersError } = await supabase
+        .from("orders")
+        .select(
+          "id, created_at, delivered_at, litres, fulfilment_status, status"
+        )
+        .eq("user_email", emailLower)
+        .eq("fulfilment_status", "delivered")
+        .not("delivered_at", "is", null)
+        .order("delivered_at", { ascending: false })
+        .limit(1);
+
+      if (ordersError) throw ordersError;
+
+      const last = (ordersData || [])[0] as any | undefined;
+
+      if (!last) {
+        setReminder(null);
+        return;
+      }
+
+      // 3) Estimate current level
+      const lastDeliveryDate = new Date(
+        last.delivered_at || last.created_at
+      );
+      if (isNaN(lastDeliveryDate.getTime())) {
+        setReminder(null);
+        return;
+      }
+
+      const now = new Date();
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const daysSince =
+        (now.getTime() - lastDeliveryDate.getTime()) / msPerDay;
+
+      const dailyUsage = monthly / 30; // rough approximation
+      const litresUsed = dailyUsage * daysSince;
+      const litresLeft = tankSize - litresUsed;
+
+      // percentFull is 0–1 (the UI multiplies by 100)
+      const percentFull = Math.max(
+        0,
+        Math.min(1, litresLeft / tankSize)
+      );
+
+      // Only show reminder if we think they are below ~30% full
+      if (percentFull > 0.3) {
+        setReminder(null);
+        return;
+      }
+
+      const displayName: string =
+        contract.customer_name ||
+        contract.company_name ||
+        contract.contact_name ||
+        emailLower;
+
+      const message = `Based on your contract tank size of ${tankSize.toLocaleString()}L and estimated usage of ${monthly.toLocaleString()}L/month, it looks like your tank may be around ${Math.round(
+        percentFull * 100
+      )}% full. If you’d like us to arrange a top-up delivery, you can place an order or contact our team.`;
+
+      setReminder({
+        showReminder: true,
+        message,
+        percentFull,
+        daysSinceLastDelivery: Math.round(daysSince),
+        estimatedLitresLeft: litresLeft,
+        contractTankSize: tankSize,
+        contractMonthlyConsumption: monthly,
+      });
     } catch {
-      // fail silently – this is only a hint, never block dashboard
+      // fail silently – this is just a hint, never block dashboard
+      setReminder(null);
     }
   }
+
 
    
   // ---------- simple UI helpers ----------
