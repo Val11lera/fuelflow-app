@@ -534,8 +534,8 @@ export default function ClientDashboard() {
       const d = new Date(o.created_at);
       if (d.getFullYear() !== selectedYear) return;
       const m = d.getMonth();
-      base[m].litres += o.litres ?? 0;
-      base[m].spend += o.amount_gbp ?? 0;
+      base[m].litres += o.litres != null ? Number(o.litres) : 0;
+base[m].spend  += o.amount_gbp ?? 0;  
     });
     return base;
   }, [orders, selectedYear]);
