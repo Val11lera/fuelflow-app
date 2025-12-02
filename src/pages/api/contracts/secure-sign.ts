@@ -120,7 +120,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .eq("status", "approved");
 
     // 7) Insert the new contract row
-    const payload = {
+       // 7) Insert the new contract row
+    const basePayload = {
       email: emailLower,
       tank_option: body.option,
       status,
@@ -163,7 +164,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       signed_user_agent,
     };
 
-    const { error: insertError } = await supabaseAdmin.from("contracts").insert([payload]);
+    // NEW: point every new contract at the generic PDF in Storage
+    const payloadWithPdf = {
+      ...basePayload,
+      signed_pdf_path: "signed/test-contract.pdf",
+      // For Buy contracts we can also treat this as the approved copy
+      approved_pdf_path: body.option === "buy" ? "signed/test-contract.pdf" : null,
+    };
+
+    const { error: insertError } = await supabaseAdmin
+      .from("contracts")
+      .insert([payloadWithPdf]);
+
     if (insertError) {
       console.error("Error inserting contract", insertError);
       return res.status(500).json({ error: "Failed to save contract." });
