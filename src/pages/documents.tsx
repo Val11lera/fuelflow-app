@@ -212,6 +212,44 @@ export default function DocumentsPage() {
     }
   }
 
+  // ----- PDF helpers -----
+  async function openContractPdf(path: string | null | undefined) {
+    if (!path) return;
+    try {
+      const { data, error } = await supabase.storage
+        .from(CONTRACTS_BUCKET)
+        .createSignedUrl(path, 60); // 60 seconds
+
+      if (error || !data?.signedUrl) {
+        alert("Could not open contract PDF. Please try again.");
+        return;
+      }
+
+      window.open(data.signedUrl, "_blank");
+    } catch {
+      alert("Could not open contract PDF. Please try again.");
+    }
+  }
+
+  async function openTermsPdf() {
+    try {
+      const { data, error } = await supabase.storage
+        .from(LEGAL_BUCKET)
+        .createSignedUrl(TERMS_PDF_PATH, 60); // 60 seconds
+
+      if (error || !data?.signedUrl) {
+        alert("Could not open Terms PDF. Please try again.");
+        return;
+      }
+
+      window.open(data.signedUrl, "_blank");
+    } catch {
+      alert("Could not open Terms PDF. Please try again.");
+    }
+  }
+
+
+   
   const docsComplete =
     termsAccepted &&
     ((buyLatest && buyLatest.status === "approved") || (rentLatest && rentLatest.status === "approved"));
