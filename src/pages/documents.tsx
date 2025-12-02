@@ -893,6 +893,7 @@ function Tile(props: {
   statusBadge: React.ReactNode;
   secondary?: { label: string; onClick?: () => void; href?: string };
   primary?: { label: string; onClick?: () => void; href?: string };
+  children?: React.ReactNode; // NEW
 }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
@@ -936,9 +937,15 @@ function Tile(props: {
             </button>
           ))}
       </div>
+
+      {/* NEW: extra content area for small links/buttons like “View PDF” */}
+      {props.children && (
+        <div className="mt-3 space-y-1 text-xs text-white/70">{props.children}</div>
+      )}
     </div>
   );
 }
+
 
 /* --------------------------- Contract modal (full) --------------------------- */
 
