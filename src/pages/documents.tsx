@@ -371,21 +371,63 @@ export default function DocumentsPage() {
 </Tile>
 
 
-          <Tile
-            title="Buy Contract"
-            statusBadge={<StatusBadge status={buyLatest?.status} onClick={() => setShowGuide(true)} />}
-            body="For purchase agreements: a signed contract becomes Active immediately."
-            secondary={{ label: "ROI / Calculator", onClick: () => setShowCalc({ open: true, option: "buy" }) }}
-            primary={{ label: buyLatest ? "Update / Resign" : "Start", onClick: () => setShowBuy(true) }}
-          />
+<Tile
+  title="Buy Contract"
+  statusBadge={<StatusBadge status={buyLatest?.status} onClick={() => setShowGuide(true)} />}
+  body="For purchase agreements: a signed contract becomes Active immediately."
+  secondary={{ label: "ROI / Calculator", onClick: () => setShowCalc({ open: true, option: "buy" }) }}
+  primary={{ label: buyLatest ? "Update / Resign" : "Start", onClick: () => setShowBuy(true) }}
+>
+  {buyLatest?.signed_pdf_path && (
+    <button
+      type="button"
+      onClick={() => openContractPdf(buyLatest.signed_pdf_path)}
+      className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
+    >
+      View signed Buy contract (PDF)
+    </button>
+  )}
+  {buyLatest?.approved_pdf_path &&
+    buyLatest.approved_pdf_path !== buyLatest.signed_pdf_path && (
+      <button
+        type="button"
+        onClick={() => openContractPdf(buyLatest.approved_pdf_path)}
+        className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
+      >
+        View approved Buy contract (PDF)
+      </button>
+    )}
+</Tile>
 
-          <Tile
-            title="Rent Contract"
-            statusBadge={<StatusBadge status={rentLatest?.status} onClick={() => setShowGuide(true)} />}
-            body="Rental agreements require admin approval after signing."
-            secondary={{ label: "ROI / Calculator", onClick: () => setShowCalc({ open: true, option: "rent" }) }}
-            primary={{ label: rentLatest ? "Update / Resign" : "Start", onClick: () => setShowRent(true) }}
-          />
+
+<Tile
+  title="Rent Contract"
+  statusBadge={<StatusBadge status={rentLatest?.status} onClick={() => setShowGuide(true)} />}
+  body="Rental agreements require admin approval after signing."
+  secondary={{ label: "ROI / Calculator", onClick: () => setShowCalc({ open: true, option: "rent" }) }}
+  primary={{ label: rentLatest ? "Update / Resign" : "Start", onClick: () => setShowRent(true) }}
+>
+  {rentLatest?.signed_pdf_path && (
+    <button
+      type="button"
+      onClick={() => openContractPdf(rentLatest.signed_pdf_path)}
+      className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
+    >
+      View signed Rent contract (PDF)
+    </button>
+  )}
+  {rentLatest?.approved_pdf_path &&
+    rentLatest.approved_pdf_path !== rentLatest.signed_pdf_path && (
+      <button
+        type="button"
+        onClick={() => openContractPdf(rentLatest.approved_pdf_path)}
+        className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
+      >
+        View approved Rent contract (PDF)
+      </button>
+    )}
+</Tile>
+
         </section>
 
         {/* Invoices */}
