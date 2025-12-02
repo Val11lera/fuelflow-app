@@ -16,6 +16,12 @@ type TankOption = "buy" | "rent";
 const TERMS_VERSION = "v1.2";
 const INVOICES_BUCKET = "invoices";
 
+// NEW: storage buckets/paths for PDFs
+const CONTRACTS_BUCKET = "contracts";
+const LEGAL_BUCKET = "legal";
+const TERMS_PDF_PATH = `terms/${TERMS_VERSION}.pdf`;
+
+
 const supabase =
   typeof window !== "undefined"
     ? createClient(
