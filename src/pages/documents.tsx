@@ -15,6 +15,7 @@ type TankOption = "buy" | "rent";
 
 const TERMS_VERSION = "v1.2";
 const INVOICES_BUCKET = "invoices";
+const CONTRACTS_BUCKET = "contracts";
 
 // NEW: storage buckets/paths for PDFs
 const CONTRACTS_BUCKET = "contracts";
