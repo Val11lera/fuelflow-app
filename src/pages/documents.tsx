@@ -347,20 +347,29 @@ export default function DocumentsPage() {
 
         {/* Tiles */}
         <section className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <Tile
-            title="Terms & Conditions"
-            statusBadge={
-              <StatusBadge
-                status={termsAccepted ? "approved" : undefined}
-                onClick={() => setShowGuide(true)}
-              />
-            }
-            body="You must accept the latest Terms before ordering."
-            primary={{
-              label: "Read & accept",
-              href: `/terms?return=/documents&email=${encodeURIComponent(userEmail)}`,
-            }}
-          />
+<Tile
+  title="Terms & Conditions"
+  statusBadge={
+    <StatusBadge
+      status={termsAccepted ? "approved" : undefined}
+      onClick={() => setShowGuide(true)}
+    />
+  }
+  body="You must accept the latest Terms before ordering."
+  primary={{
+    label: "Read & accept",
+    href: `/terms?return=/documents&email=${encodeURIComponent(userEmail)}`,
+  }}
+>
+  <button
+    type="button"
+    onClick={openTermsPdf}
+    className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
+  >
+    View Terms as PDF
+  </button>
+</Tile>
+
 
           <Tile
             title="Buy Contract"
