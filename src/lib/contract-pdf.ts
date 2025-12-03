@@ -177,8 +177,9 @@ const signedBy =
     : "authorised signatory";
 
 
-  const signedOn =
-    contract.signed_at || new Date().toISOString();
+const signedOn =
+  contract.signedAt || new Date().toISOString();
+
 
   const subTitle = `Signed on ${gbDate(
     signedOn
