@@ -96,7 +96,7 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
       });
     }
   } catch {
-    // ignore logo failures
+    // If the logo can't be loaded, just skip it.
   }
 
   const titleText = `${COMPANY_NAME} Contract`;
@@ -267,10 +267,6 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   });
 
   /* ===========
-     Footer – neat block near bottom
-     =========== */
-
-   /* ===========
      Footer – short legal text + company details
      =========== */
 
@@ -334,35 +330,6 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   footerY -= 4;
 
   // Company details – left aligned and evenly spaced
-  const companyLines: string[] = [];
-  if (COMPANY_NAME) companyLines.push(COMPANY_NAME);
-  if (COMPANY_NUMBER) companyLines.push(`Company No. ${COMPANY_NUMBER}`);
-  if (COMPANY_VAT_NUMBER) companyLines.push(`VAT No. ${COMPANY_VAT_NUMBER}`);
-
-  const addressLines =
-    COMPANY_ADDRESS.split(/\\n|\n/)
-      .map((l) => l.trim())
-      .filter(Boolean) || [];
-  companyLines.push(...addressLines);
-
-  const contactBits: string[] = [];
-  if (COMPANY_EMAIL) contactBits.push(COMPANY_EMAIL);
-  if (COMPANY_PHONE) contactBits.push(COMPANY_PHONE);
-  if (contactBits.length) companyLines.push(contactBits.join(" · "));
-
-  for (const line of companyLines) {
-    footerY -= 10;
-    page.drawText(line, {
-      x: marginX,
-      y: footerY,
-      size: footerFontSize,
-      font: fontRegular,
-      color: rgb(0.3, 0.3, 0.35),
-    });
-  }
-
-
-  // Company details – all left aligned and evenly spaced
   const companyLines: string[] = [];
   if (COMPANY_NAME) companyLines.push(COMPANY_NAME);
   if (COMPANY_NUMBER) companyLines.push(`Company No. ${COMPANY_NUMBER}`);
