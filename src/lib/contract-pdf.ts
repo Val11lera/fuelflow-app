@@ -27,7 +27,7 @@ export type ContractForPdf = {
   sitePostcode: string;
   siteCountry: string;
 
-  // Tank & ROI (kept in type for compatibility, but NOT rendered)
+  // Tank & ROI (kept in type for compatibility, not rendered)
   tankSizeL: number;
   monthlyConsumptionL: number;
   marketPricePerL: number;
@@ -62,7 +62,7 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   const pageHeight = 842;
   const marginX = 50;
   const topMargin = 60;
-  const bottomMargin = 80; // keep space for footer
+  const bottomMargin = 110; // more space from bottom edge
 
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([pageWidth, pageHeight]);
@@ -166,7 +166,7 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
       color: rgb(0.95, 0.96, 0.98),
     });
 
-    // section title – baseline a bit lower so no clipping
+    // section title – positioned so no clipping
     page.drawText(title, {
       x: marginX + 8,
       y: y + 3,
@@ -231,12 +231,12 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   drawRow("Postcode", fmt(data.sitePostcode));
   drawRow("Country", fmt(data.siteCountry));
 
-  /* 5. Signature & declaration (renumbered to keep sequence tidy) */
+  /* 5. Signature & declaration */
   drawSection("5. Signature & declaration");
   drawRow("Signed by", fmt(data.signatureName));
   drawRow("Job title", fmt(data.jobTitle));
 
-  // Leave a bit of space before date + line
+  // small space before date + line
   y -= 6;
 
   // Signed date
@@ -265,7 +265,9 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
     color: rgb(0.2, 0.2, 0.25),
   });
 
-  page.drawText("Authorised signatory", {
+  // Caption including who signed
+  const sigCaption = `Authorised signatory: ${fmt(data.signatureName)}`;
+  page.drawText(sigCaption, {
     x: labelX,
     y: sigLineY - 12,
     size: 9,
@@ -279,7 +281,17 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
 
   const footerFontSize = 8;
   const footerWidth = pageWidth - marginX * 2;
-  let footerY = bottomMargin;
+
+  // put a subtle line above the footer and start text a bit higher
+  const footerTopY = bottomMargin + 30;
+  page.drawLine({
+    start: { x: marginX, y: footerTopY },
+    end: { x: pageWidth - marginX, y: footerTopY },
+    thickness: 0.4,
+    color: rgb(0.85, 0.85, 0.9),
+  });
+
+  let footerY = footerTopY - 14;
 
   function drawWrappedLines(text: string): void {
     const words = text.split(" ");
@@ -313,9 +325,9 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
     }
   }
 
-  // Option A disclaimer
+  // Option A disclaimer – updated to cover pricing / ROI whether or not shown here
   drawWrappedLines(
-    "All pricing and ROI calculations in this document are estimates only. They do not constitute financial advice, projections, or guarantees."
+    "Any pricing and ROI calculations relating to this contract (whether shown here or provided separately) are estimates only. They do not constitute financial advice, projections, or guarantees."
   );
   drawWrappedLines(
     `Final pricing may vary due to market changes, supply conditions and taxation. ${COMPANY_NAME} makes no assurance of future fuel savings and encourages customers to verify calculations independently.`
