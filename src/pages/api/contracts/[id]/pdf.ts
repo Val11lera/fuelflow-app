@@ -1,52 +1,56 @@
 // src/pages/api/contracts/[id]/pdf.ts
+// src/pages/api/contracts/[id]/pdf.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 import { generateContractPdf, ContractForPdf } from "@/lib/contract-pdf";
 
-/**
- * IMPORTANT:
- * - SUPABASE_SERVICE_ROLE_KEY must be set in your Vercel env (server-side only).
- * - Do NOT expose this key in the browser.
- */
-const supabase = createClient(
+// Admin Supabase client (server-side)
+const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.SUPABASE_SERVICE_ROLE_KEY || ""
 );
 
-// Type matching your SQL comments (only the fields we actually use)
 type ContractRow = {
   id: string;
-  email: string | null;
-  customer_name: string | null;
-  address_line1: string | null;
-  address_line2: string | null;
-  city: string | null;
-  postcode: string | null;
-  tank_option: "buy" | "rent" | string;
+
+  // company
+  company_name: string | null;
+  company_number: string | null;
+  vat_number: string | null;
+
+  // primary contact
+  contact_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+
+  // registered / billing
+  reg_address_line1: string | null;
+  reg_address_line2: string | null;
+  reg_city: string | null;
+  reg_postcode: string | null;
+  reg_country: string | null;
+
+  // site / delivery
+  site_address_line1: string | null;
+  site_address_line2: string | null;
+  site_city: string | null;
+  site_postcode: string | null;
+  site_country: string | null;
+
+  // ROI
   tank_size_l: number | null;
   monthly_consumption_l: number | null;
   market_price_gbp_l: number | null;
   fuelflow_price_gbp_l: number | null;
+  capex_gbp: number | null;
   est_monthly_savings_gbp: number | null;
   est_payback_months: number | null;
-  terms_version: string | null;
-  signature_name: string | null;
-  signed_at: string | null;
-  approved_at: string | null;
-  approved_by: string | null;
-  cheaper_by_gbp_l: number | null;
-  capex_required_gbp: number | null;
-  signer_title: string | null;
-  has_authority: boolean | null;
-  signed_ip: string | null;
-  signed_user_agent: string | null;
-  extra: any | null; // jsonb – used for extra form fields (company no, VAT, phone, etc.)
-};
 
-function safeText(v: unknown): string | null {
-  if (typeof v === "string" && v.trim().length > 0) return v.trim();
-  return null;
-}
+  // signature
+  signature_name: string | null;
+  signer_title: string | null;
+  signed_at: string | null;
+};
 
 export default async function handler(
   req: NextApiRequest,
@@ -54,143 +58,90 @@ export default async function handler(
 ) {
   if (req.method !== "GET") {
     res.setHeader("Allow", "GET");
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).end("Method Not Allowed");
   }
 
   const { id } = req.query;
-  if (!id || typeof id !== "string") {
-    return res.status(400).json({ error: "Missing contract id" });
+  if (!id || Array.isArray(id)) {
+    return res.status(400).json({ error: "Invalid contract id" });
   }
 
-  // Load the contract row
-  const { data, error } = await supabase
+  // Load contract row from Supabase
+  const { data, error } = await supabaseAdmin
     .from("contracts")
     .select("*")
     .eq("id", id)
-    .single<ContractRow>();
+    .maybeSingle<ContractRow>();
 
-  if (error || !data) {
-    console.error("Contract not found or error:", error);
+  if (error) {
+    console.error("Error loading contract:", error);
+    return res.status(500).json({ error: "Failed to load contract" });
+  }
+
+  if (!data) {
     return res.status(404).json({ error: "Contract not found" });
   }
 
-  // ----- Pull extras from jsonb if present -----
-  const extra = (data.extra || {}) as Record<string, any>;
-
-  // Adjust the keys below if your form stores them differently in extra.jsonb
-  const companyName =
-    safeText(extra.company_name) ||
-    safeText(extra.company) ||
-    safeText(data.customer_name) ||
-    "—";
-
-  const companyNumber =
-    safeText(extra.company_number) ||
-    safeText(extra.company_no) ||
-    "—";
-
-  const vatNumber =
-    safeText(extra.vat_number) ||
-    safeText(extra.vat) ||
-    null;
-
-  const primaryName =
-    safeText(extra.primary_contact_name) ||
-    safeText(extra.contact_name) ||
-    safeText(data.customer_name) ||
-    "—";
-
-  const primaryEmail =
-    safeText(extra.primary_contact_email) ||
-    safeText(data.email) ||
-    "—";
-
-  const primaryPhone =
-    safeText(extra.primary_contact_phone) ||
-    safeText(extra.phone) ||
-    "—";
-
-  // If you later split registered vs site addresses, update here.
-  const regAddress1 = safeText(extra.reg_address_line1) || safeText(data.address_line1) || "—";
-  const regAddress2 = safeText(extra.reg_address_line2) || safeText(data.address_line2);
-  const regCity = safeText(extra.reg_city) || safeText(data.city) || "—";
-  const regPostcode = safeText(extra.reg_postcode) || safeText(data.postcode) || "—";
-  const regCountry = safeText(extra.reg_country) || "UK";
-
-  const siteAddress1 = safeText(extra.site_address_line1) || safeText(data.address_line1) || "—";
-  const siteAddress2 = safeText(extra.site_address_line2) || safeText(data.address_line2);
-  const siteCity = safeText(extra.site_city) || safeText(data.city) || "—";
-  const sitePostcode = safeText(extra.site_postcode) || safeText(data.postcode) || "—";
-  const siteCountry = safeText(extra.site_country) || "UK";
-
-  // Est payback as friendly text
-  let estPaybackText: string | null = null;
-  if (data.est_payback_months != null) {
-    const months = Number(data.est_payback_months);
-    if (!Number.isNaN(months) && months > 0) {
-      estPaybackText =
-        months === 1 ? "1 month" : `${months.toFixed(0)} months`;
-    }
-  }
-
-  const signedAtIso =
-    data.signed_at ||
-    new Date().toISOString();
-
+  // Map DB row → ContractForPdf (camelCase)
   const contractForPdf: ContractForPdf = {
     // Company details
-    companyName,
-    companyNumber,
-    vatNumber,
+    companyName: data.company_name || "",
+    companyNumber: data.company_number || "",
+    vatNumber: data.vat_number || null,
 
     // Primary contact
-    primaryName,
-    primaryEmail,
-    primaryPhone,
+    primaryName: data.contact_name || "",
+    primaryEmail: data.contact_email || "",
+    primaryPhone: data.contact_phone || "",
 
     // Registered / billing address
-    regAddress1,
-    regAddress2: regAddress2 || null,
-    regCity,
-    regPostcode,
-    regCountry,
+    regAddress1: data.reg_address_line1 || "",
+    regAddress2: data.reg_address_line2 || null,
+    regCity: data.reg_city || "",
+    regPostcode: data.reg_postcode || "",
+    regCountry: data.reg_country || "UK",
 
     // Site / delivery address
-    siteAddress1,
-    siteAddress2: siteAddress2 || null,
-    siteCity,
-    sitePostcode,
-    siteCountry,
+    siteAddress1: data.site_address_line1 || "",
+    siteAddress2: data.site_address_line2 || null,
+    siteCity: data.site_city || "",
+    sitePostcode: data.site_postcode || "",
+    siteCountry: data.site_country || "UK",
 
-    // Tank & ROI
-    tankSizeL: Number(data.tank_size_l || 0),
-    monthlyConsumptionL: Number(data.monthly_consumption_l || 0),
-    marketPricePerL: Number(data.market_price_gbp_l || 0),
-    fuelflowPricePerL: Number(data.fuelflow_price_gbp_l || 0),
+    // Tank & ROI (kept for compatibility, not currently rendered)
+    tankSizeL: Number(data.tank_size_l ?? 0),
+    monthlyConsumptionL: Number(data.monthly_consumption_l ?? 0),
+    marketPricePerL: Number(data.market_price_gbp_l ?? 0),
+    fuelflowPricePerL: Number(data.fuelflow_price_gbp_l ?? 0),
     capexGbp:
-      data.capex_required_gbp != null
-        ? Number(data.capex_required_gbp)
+      data.capex_gbp !== null && data.capex_gbp !== undefined
+        ? Number(data.capex_gbp)
         : null,
     estMonthlySavingsGbp:
-      data.est_monthly_savings_gbp != null
+      data.est_monthly_savings_gbp !== null &&
+      data.est_monthly_savings_gbp !== undefined
         ? Number(data.est_monthly_savings_gbp)
         : null,
-    estPaybackText,
+    estPaybackText:
+      data.est_payback_months !== null &&
+      data.est_payback_months !== undefined
+        ? `${data.est_payback_months} months`
+        : null,
 
     // Signature
-    signatureName: data.signature_name || "—",
-    jobTitle: data.signer_title || "—",
-    signedAtIso,
+    signatureName: data.signature_name || "",
+    jobTitle: data.signer_title || "",
+    signedAtIso: data.signed_at || new Date().toISOString(),
   };
 
+  // Generate PDF
   const pdfBytes = await generateContractPdf(contractForPdf);
 
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader(
     "Content-Disposition",
-    `attachment; filename="fuelflow-contract-${id}.pdf"`
+    `inline; filename="contract-${id}.pdf"`
   );
-
-  // Node can send a Buffer directly
-  res.status(200).send(Buffer.from(pdfBytes));
+  return res.status(200).send(Buffer.from(pdfBytes));
 }
+
