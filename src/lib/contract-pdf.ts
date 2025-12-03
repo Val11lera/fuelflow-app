@@ -270,11 +270,15 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
      Footer – neat block near bottom
      =========== */
 
+   /* ===========
+     Footer – short legal text + company details
+     =========== */
+
   const footerFontSize = 8;
   const footerWidth = pageWidth - marginX * 2;
 
-  // Where the footer text starts (from bottom upwards)
-  const footerStartY = 190; // tune for how high above bottom the block sits
+  // Start the footer closer to the bottom of the page
+  const footerStartY = 140;
   let footerY = footerStartY;
 
   // Horizontal rule above footer
@@ -313,25 +317,50 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
         font: fontRegular,
         color: rgb(0.35, 0.35, 0.4),
       });
-      footerY -= 14; // extra space between paragraphs
+      footerY -= 14; // space between paragraphs
     }
   }
 
-  // 1) Link contract to Terms & Conditions
+  // Short, simple legal text
   drawFooterParagraph(
-    "This contract forms part of the FuelFlow Terms & Conditions accepted via the FuelFlow online portal. In the event of any inconsistency, those Terms & Conditions shall prevail."
+    "This contract forms part of the FuelFlow Terms & Conditions accepted via the FuelFlow online portal. If there is any inconsistency, the Terms & Conditions will apply."
   );
-  // 2) Estimates / no advice
+
   drawFooterParagraph(
-    "Any pricing and ROI calculations relating to this contract (whether shown here or provided separately) are estimates only. They do not constitute financial advice, projections, or guarantees."
-  );
-  // 3) Pricing may vary / no guarantee of savings
-  drawFooterParagraph(
-    `${COMPANY_NAME} pricing may vary due to market changes, supply conditions and taxation. ${COMPANY_NAME} makes no assurance of future fuel savings and encourages customers to verify calculations independently.`
+    "Any pricing information relating to this contract is indicative only and may change due to market conditions, supply and taxation. FuelFlow does not guarantee any level of future savings."
   );
 
   // Small gap before company details
   footerY -= 4;
+
+  // Company details – left aligned and evenly spaced
+  const companyLines: string[] = [];
+  if (COMPANY_NAME) companyLines.push(COMPANY_NAME);
+  if (COMPANY_NUMBER) companyLines.push(`Company No. ${COMPANY_NUMBER}`);
+  if (COMPANY_VAT_NUMBER) companyLines.push(`VAT No. ${COMPANY_VAT_NUMBER}`);
+
+  const addressLines =
+    COMPANY_ADDRESS.split(/\\n|\n/)
+      .map((l) => l.trim())
+      .filter(Boolean) || [];
+  companyLines.push(...addressLines);
+
+  const contactBits: string[] = [];
+  if (COMPANY_EMAIL) contactBits.push(COMPANY_EMAIL);
+  if (COMPANY_PHONE) contactBits.push(COMPANY_PHONE);
+  if (contactBits.length) companyLines.push(contactBits.join(" · "));
+
+  for (const line of companyLines) {
+    footerY -= 10;
+    page.drawText(line, {
+      x: marginX,
+      y: footerY,
+      size: footerFontSize,
+      font: fontRegular,
+      color: rgb(0.3, 0.3, 0.35),
+    });
+  }
+
 
   // Company details – all left aligned and evenly spaced
   const companyLines: string[] = [];
