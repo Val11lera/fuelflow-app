@@ -1,390 +1,547 @@
 // src/lib/contract-pdf.ts
 // src/lib/contract-pdf.ts
-// src/lib/contract-pdf.ts
+// Generates the customer-facing FuelFlow contract PDF.
+
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 export type ContractForPdf = {
-  // Company details
-  companyName: string;
-  companyNumber: string;
-  vatNumber: string | null;
+  id: string;
+  tank_option: "buy" | "rent";
 
-  // Primary contact
-  primaryName: string;
-  primaryEmail: string;
-  primaryPhone: string;
+  customer_name?: string | null;
+  email?: string | null;
 
-  // Registered / billing address
-  regAddress1: string;
-  regAddress2: string | null;
-  regCity: string;
-  regPostcode: string;
-  regCountry: string;
+  company_name?: string | null;
+  company_number?: string | null;
+  vat_number?: string | null;
 
-  // Site / delivery address
-  siteAddress1: string;
-  siteAddress2: string | null;
-  siteCity: string;
-  sitePostcode: string;
-  siteCountry: string;
+  contact_name?: string | null;
+  contact_email?: string | null;
+  contact_phone?: string | null;
 
-  // Tank & ROI (kept for compatibility, not rendered)
-  tankSizeL: number;
-  monthlyConsumptionL: number;
-  marketPricePerL: number;
-  fuelflowPricePerL: number;
-  capexGbp: number | null;
-  estMonthlySavingsGbp: number | null;
-  estPaybackText: string | null;
+  reg_address_line1?: string | null;
+  reg_address_line2?: string | null;
+  reg_city?: string | null;
+  reg_postcode?: string | null;
+  reg_country?: string | null;
 
-  // Signature
-  signatureName: string;
-  jobTitle: string;
-  signedAtIso: string;
+  site_address_line1?: string | null;
+  site_address_line2?: string | null;
+  site_city?: string | null;
+  site_postcode?: string | null;
+  site_country?: string | null;
+
+  signature_name?: string | null;
+  signer_title?: string | null;
+  signed_at?: string | null;
+
+  terms_version?: string | null;
 };
 
-/* =========
-   Company details from env
-   ========= */
+// ----- env / company details -----
 
-const COMPANY_NAME = process.env.COMPANY_NAME || "FuelFlow";
-const COMPANY_ADDRESS = process.env.COMPANY_ADDRESS || "";
-const COMPANY_EMAIL = process.env.COMPANY_EMAIL || "";
-const COMPANY_PHONE = process.env.COMPANY_PHONE || "";
-const COMPANY_VAT_NUMBER = process.env.COMPANY_VAT_NUMBER || "";
-const COMPANY_NUMBER = process.env.COMPANY_NUMBER || "";
+const COMPANY_NAME =
+  process.env.COMPANY_NAME || "FuelFlow";
 
-function fmt(v: string | null | undefined) {
-  return v && v.trim() ? v.trim() : "—";
+const COMPANY_NUMBER =
+  process.env.COMPANY_NUMBER || "12345678";
+
+const COMPANY_VAT_NUMBER =
+  process.env.COMPANY_VAT_NUMBER || "GB123456789";
+
+const COMPANY_ADDRESS =
+  process.env.COMPANY_ADDRESS ||
+  "1 Example Street, Example Town, EX1 2MP, United Kingdom";
+
+const COMPANY_EMAIL =
+  process.env.COMPANY_EMAIL || "invoices@mail.fuelflow.co.uk";
+
+const COMPANY_PHONE =
+  process.env.COMPANY_PHONE || "+44 (0)20 1234 5678";
+
+// Signed URL logo is handled elsewhere – for the contract we embed from public path.
+const LOGO_URL =
+  process.env.NEXT_PUBLIC_CONTRACT_LOGO_URL ||
+  "https://dashboard.fuelflow.co.uk/logo-email.png";
+
+// ----- helpers -----
+
+const gbDate = (iso?: string | null) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-GB");
+};
+
+const safe = (v?: string | null) => (v && v.trim().length ? v.trim() : "—");
+
+type DrawFieldRowArgs = {
+  label: string;
+  value: string;
+  page: any;
+  font: any;
+  xLabel: number;
+  xValue: number;
+  y: number;
+  lineHeight: number;
+};
+
+function drawFieldRow({
+  label,
+  value,
+  page,
+  font,
+  xLabel,
+  xValue,
+  y,
+  lineHeight,
+}: DrawFieldRowArgs) {
+  page.drawText(label, {
+    x: xLabel,
+    y,
+    size: 9,
+    font,
+    color: rgb(0.38, 0.4, 0.46),
+  });
+  page.drawText(value, {
+    x: xValue,
+    y,
+    size: 10,
+    font,
+    color: rgb(0.07, 0.08, 0.12),
+  });
 }
 
-export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Array> {
-  const pageWidth = 595; // A4
-  const pageHeight = 842;
-  const marginX = 50;
-  const topMargin = 60;
-
-  const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([pageWidth, pageHeight]);
-
-  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-  const signedDate = new Date(data.signedAtIso);
-
-  /* ===========
-     Header (logo + centred title)
-     =========== */
-
-  const logoUrl = "https://dashboard.fuelflow.co.uk/logo-email.png";
+async function fetchLogoBytes(): Promise<Uint8Array | null> {
   try {
-    const logoRes = await fetch(logoUrl);
-    if (logoRes.ok) {
-      const logoBytes = await logoRes.arrayBuffer();
-      const logoImage = await pdfDoc.embedPng(logoBytes);
-      const maxLogoWidth = 110;
-      const scale = maxLogoWidth / logoImage.width;
-      const logoDims = logoImage.scale(scale);
-
-      const logoX = marginX;
-      const logoY = pageHeight - topMargin - logoDims.height + 20;
-
-      page.drawImage(logoImage, {
-        x: logoX,
-        y: logoY,
-        width: logoDims.width,
-        height: logoDims.height,
-      });
-    }
+    if (!LOGO_URL) return null;
+    const res = await fetch(LOGO_URL);
+    if (!res.ok) return null;
+    const buf = await res.arrayBuffer();
+    return new Uint8Array(buf);
   } catch {
-    // If the logo can't be loaded, just skip it.
+    return null;
+  }
+}
+
+// ----- main export -----
+
+export async function createContractPdf(
+  contract: ContractForPdf
+): Promise<Uint8Array> {
+  const pdf = await PDFDocument.create();
+  const page = pdf.addPage([595.28, 841.89]); // A4 portrait
+
+  const width = page.getWidth();
+  const height = page.getHeight();
+
+  const marginX = 56;
+  const contentWidth = width - marginX * 2;
+
+  const fontRegular = await pdf.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+  let cursorY = height - 72;
+
+  // ---- header: logo + title ----
+  const logoBytes = await fetchLogoBytes();
+  if (logoBytes) {
+    try {
+      const png = await pdf.embedPng(logoBytes);
+      const logoW = 80;
+      const logoH = (png.height / png.width) * logoW;
+
+      page.drawImage(png, {
+        x: marginX,
+        y: cursorY - logoH + 10,
+        width: logoW,
+        height: logoH,
+      });
+    } catch {
+      // ignore logo errors
+    }
   }
 
-  const titleText = `${COMPANY_NAME} Contract`;
-  const titleSize = 18;
-  const titleWidth = fontBold.widthOfTextAtSize(titleText, titleSize);
-  const titleX = (pageWidth - titleWidth) / 2;
-  const titleY = pageHeight - topMargin - 25;
+  const title = "FuelFlow Contract";
+  const signedBy =
+    contract.signature_name && contract.signature_name.trim().length
+      ? contract.signature_name.trim()
+      : "authorised signatory";
 
-  page.drawText(titleText, {
-    x: titleX,
-    y: titleY,
-    size: titleSize,
+  const signedOn =
+    contract.signed_at || new Date().toISOString();
+
+  const subTitle = `Signed on ${gbDate(
+    signedOn
+  )} by ${signedBy.toLowerCase()}`;
+
+  page.drawText(title, {
+    x: marginX + 120,
+    y: cursorY,
+    size: 18,
     font: fontBold,
-    color: rgb(0.05, 0.05, 0.1),
+    color: rgb(0.07, 0.08, 0.12),
   });
 
-  const subtitle = `Signed on ${signedDate.toLocaleDateString(
-    "en-GB"
-  )} by ${fmt(data.signatureName)}`;
-  const subtitleSize = 10;
-  const subtitleWidth = fontRegular.widthOfTextAtSize(subtitle, subtitleSize);
-  const subtitleX = (pageWidth - subtitleWidth) / 2;
-
-  page.drawText(subtitle, {
-    x: subtitleX,
-    y: titleY - 18,
-    size: subtitleSize,
-    font: fontRegular,
-    color: rgb(0.3, 0.3, 0.35),
-  });
-
-  // Separator under header
-  page.drawLine({
-    start: { x: marginX, y: pageHeight - topMargin - 52 },
-    end: { x: pageWidth - marginX, y: pageHeight - topMargin - 52 },
-    thickness: 0.7,
-    color: rgb(0.8, 0.8, 0.85),
-  });
-
-  /* ===========
-     Body – single page
-     =========== */
-
-  let y = pageHeight - topMargin - 90; // starting Y for sections
-
-  const sectionLabelSize = 11;
-  const sectionHeaderHeight = 20;
-  const sectionGap = 14;
-  const rowLabelSize = 9;
-  const rowValueSize = 11;
-  const rowGap = 16;
-
-  const labelX = marginX;
-  const valueX = marginX + 170;
-
-  function drawSection(title: string) {
-    y -= sectionGap;
-
-    page.drawRectangle({
-      x: marginX,
-      y: y - 4,
-      width: pageWidth - marginX * 2,
-      height: sectionHeaderHeight,
-      color: rgb(0.95, 0.96, 0.98),
-    });
-
-    page.drawText(title, {
-      x: marginX + 8,
-      y: y + 3,
-      size: sectionLabelSize,
-      font: fontBold,
-      color: rgb(0.15, 0.18, 0.25),
-    });
-
-    y -= sectionHeaderHeight + 6;
-  }
-
-  function drawRow(label: string, value: string) {
-    page.drawText(label, {
-      x: labelX,
-      y,
-      size: rowLabelSize,
-      font: fontRegular,
-      color: rgb(0.35, 0.35, 0.4),
-    });
-
-    page.drawText(value, {
-      x: valueX,
-      y,
-      size: rowValueSize,
-      font: fontRegular,
-      color: rgb(0.05, 0.05, 0.12),
-    });
-
-    y -= rowGap;
-  }
-
-  /* 1. Company details */
-  drawSection("1. Company details");
-  drawRow("Company name", fmt(data.companyName));
-  drawRow("Company number", fmt(data.companyNumber));
-  drawRow("VAT number", fmt(data.vatNumber));
-
-  /* 2. Primary contact */
-  drawSection("2. Primary contact");
-  drawRow("Name", fmt(data.primaryName));
-  drawRow("Email", fmt(data.primaryEmail));
-  drawRow("Phone", fmt(data.primaryPhone));
-
-  /* 3. Registered / billing address */
-  drawSection("3. Registered / billing address");
-  const regAddressCombined = `${fmt(data.regAddress1)}${
-    data.regAddress2 ? ", " + fmt(data.regAddress2) : ""
-  }`;
-  drawRow("Address", regAddressCombined);
-  drawRow("City", fmt(data.regCity));
-  drawRow("Postcode", fmt(data.regPostcode));
-  drawRow("Country", fmt(data.regCountry));
-
-  /* 4. Site / delivery address */
-  drawSection("4. Site / delivery address");
-  const siteAddressCombined = `${fmt(data.siteAddress1)}${
-    data.siteAddress2 ? ", " + fmt(data.siteAddress2) : ""
-  }`;
-  drawRow("Address", siteAddressCombined);
-  drawRow("City", fmt(data.siteCity));
-  drawRow("Postcode", fmt(data.sitePostcode));
-  drawRow("Country", fmt(data.siteCountry));
-
-  /* 5. Signature & declaration */
-  drawSection("5. Signature & declaration");
-  drawRow("Signed by", fmt(data.signatureName));
-  drawRow("Job title", fmt(data.jobTitle));
-
-  y -= 6;
-
-  page.drawText("Signed date", {
-    x: labelX,
-    y,
-    size: rowLabelSize,
-    font: fontRegular,
-    color: rgb(0.35, 0.35, 0.4),
-  });
-
-  page.drawText(signedDate.toLocaleDateString("en-GB"), {
-    x: valueX,
-    y,
-    size: rowValueSize,
-    font: fontRegular,
-    color: rgb(0.05, 0.05, 0.12),
-  });
-
-  const sigLineY = y - 20;
-  page.drawLine({
-    start: { x: labelX, y: sigLineY },
-    end: { x: labelX + 220, y: sigLineY },
-    thickness: 0.8,
-    color: rgb(0.2, 0.2, 0.25),
-  });
-
-  const sigCaption = `Authorised signatory: ${fmt(data.signatureName)}`;
-  page.drawText(sigCaption, {
-    x: labelX,
-    y: sigLineY - 12,
+  page.drawText(subTitle, {
+    x: marginX + 120,
+    y: cursorY - 18,
     size: 9,
     font: fontRegular,
-    color: rgb(0.25, 0.25, 0.3),
+    color: rgb(0.25, 0.27, 0.35),
   });
 
-  /* ===========
-     Footer – protective wording + compact centred company info
-     =========== */
-
-  const footerFontSize = 8;
-  const footerWidth = pageWidth - marginX * 2;
-
-  // Start footer a bit lower on the page (closer to bottom)
-  const footerStartY = 120;
-  let footerY = footerStartY;
-
-  // Horizontal rule above footer
+  // thin divider under title
   page.drawLine({
-    start: { x: marginX, y: footerStartY + 14 },
-    end: { x: pageWidth - marginX, y: footerStartY + 14 },
-    thickness: 0.4,
-    color: rgb(0.85, 0.85, 0.9),
+    start: { x: marginX, y: cursorY - 32 },
+    end: { x: marginX + contentWidth, y: cursorY - 32 },
+    thickness: 0.7,
+    color: rgb(0.85, 0.87, 0.93),
   });
 
-  function drawFooterParagraph(text: string) {
-    const words = text.split(" ");
-    let line = "";
-    for (const word of words) {
-      const testLine = line ? `${line} ${word}` : word;
-      const testWidth = fontRegular.widthOfTextAtSize(testLine, footerFontSize);
-      if (testWidth > footerWidth) {
-        page.drawText(line, {
-          x: marginX,
-          y: footerY,
-          size: footerFontSize,
-          font: fontRegular,
-          color: rgb(0.35, 0.35, 0.4),
-        });
-        footerY -= 10;
-        line = word;
-      } else {
-        line = testLine;
-      }
-    }
-    if (line) {
-      page.drawText(line, {
-        x: marginX,
-        y: footerY,
-        size: footerFontSize,
-        font: fontRegular,
-        color: rgb(0.35, 0.35, 0.4),
-      });
-      footerY -= 14; // space between paragraphs
-    }
-  }
+  cursorY -= 56;
 
-  // 1) Tie to Terms & Conditions and make them dominant
-  drawFooterParagraph(
-    "This contract forms part of the FuelFlow Terms & Conditions accepted via the FuelFlow online portal. If there is any inconsistency, the Terms & Conditions will take precedence."
+  const sectionHeaderHeight = 20;
+  const sectionHeaderColor = rgb(0.95, 0.97, 1);
+  const sectionHeaderTextColor = rgb(0.07, 0.08, 0.12);
+
+  const xLabel = marginX + 18;
+  const xValue = marginX + 180;
+  const lineGap = 16;
+
+  const drawSectionHeader = (label: string) => {
+    page.drawRectangle({
+      x: marginX,
+      y: cursorY - sectionHeaderHeight,
+      width: contentWidth,
+      height: sectionHeaderHeight,
+      color: sectionHeaderColor,
+    });
+
+    page.drawText(label, {
+      x: marginX + 8,
+      y: cursorY - sectionHeaderHeight + 6,
+      size: 10,
+      font: fontBold,
+      color: sectionHeaderTextColor,
+    });
+
+    cursorY -= sectionHeaderHeight + 14;
+  };
+
+  const companyName =
+    safe(contract.company_name) ||
+    safe(contract.customer_name);
+
+  // ---- 1. Company details ----
+  drawSectionHeader("1. Company details");
+
+  drawFieldRow({
+    label: "Company name",
+    value: companyName,
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "Company number",
+    value: safe(contract.company_number),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "VAT number",
+    value: safe(contract.vat_number),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+
+  cursorY -= lineGap + 10;
+
+  // ---- 2. Primary contact ----
+  drawSectionHeader("2. Primary contact");
+
+  drawFieldRow({
+    label: "Name",
+    value: safe(contract.contact_name || contract.customer_name),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "Email",
+    value: safe(contract.contact_email || contract.email),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "Phone",
+    value: safe(contract.contact_phone),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap + 10;
+
+  // ---- 3. Registered / billing address ----
+  drawSectionHeader("3. Registered / billing address");
+
+  const regAddress =
+    safe(contract.reg_address_line1) !== "—"
+      ? `${safe(contract.reg_address_line1)}${
+          safe(contract.reg_address_line2) !== "—"
+            ? `, ${safe(contract.reg_address_line2)}`
+            : ""
+        }`
+      : safe(contract.reg_address_line2);
+
+  drawFieldRow({
+    label: "Address",
+    value: regAddress,
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "City",
+    value: safe(contract.reg_city),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "Postcode",
+    value: safe(contract.reg_postcode),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "Country",
+    value: safe(contract.reg_country || "UK"),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap + 10;
+
+  // ---- 4. Site / delivery address ----
+  drawSectionHeader("4. Site / delivery address");
+
+  const siteAddress =
+    safe(contract.site_address_line1) !== "—"
+      ? `${safe(contract.site_address_line1)}${
+          safe(contract.site_address_line2) !== "—"
+            ? `, ${safe(contract.site_address_line2)}`
+            : ""
+        }`
+      : safe(contract.site_address_line2);
+
+  drawFieldRow({
+    label: "Address",
+    value: siteAddress,
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "City",
+    value: safe(contract.site_city),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "Postcode",
+    value: safe(contract.site_postcode),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "Country",
+    value: safe(contract.site_country || "UK"),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap + 10;
+
+  // ---- 5. Signature & declaration ----
+  drawSectionHeader("5. Signature & declaration");
+
+  drawFieldRow({
+    label: "Signed by",
+    value: safe(contract.signature_name),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "Job title",
+    value: safe(contract.signer_title),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap;
+
+  drawFieldRow({
+    label: "Signed date",
+    value: gbDate(contract.signed_at),
+    page,
+    font: fontRegular,
+    xLabel,
+    xValue,
+    y: cursorY,
+    lineHeight: lineGap,
+  });
+  cursorY -= lineGap + 10;
+
+  // signature line
+  page.drawLine({
+    start: { x: xValue, y: cursorY },
+    end: { x: xValue + 180, y: cursorY },
+    thickness: 0.7,
+    color: rgb(0.2, 0.22, 0.28),
+  });
+
+  cursorY -= 18;
+
+  page.drawText(
+    `Authorised signatory: ${safe(contract.signature_name)}`,
+    {
+      x: xLabel,
+      y: cursorY,
+      size: 9,
+      font: fontRegular,
+      color: rgb(0.2, 0.22, 0.28),
+    }
   );
 
-  // 2) Strong but short pricing / advice disclaimer
-  drawFooterParagraph(
-    "All pricing and ROI information relating to this contract is indicative only, does not constitute financial, tax or investment advice, and may change due to market conditions, supply and taxation. FuelFlow does not guarantee any particular level of savings or future fuel prices."
-  );
+  // ---- footer text ----
+  const footerTopY = 110;
 
-  // Small gap before company details
-  footerY -= 4;
+  // divider above footer
+  page.drawLine({
+    start: { x: marginX, y: footerTopY + 46 },
+    end: { x: marginX + contentWidth, y: footerTopY + 46 },
+    thickness: 0.5,
+    color: rgb(0.85, 0.87, 0.93),
+  });
 
-  // -------- Compact, centred company block (2 lines) --------
+  const footerTextColor = rgb(0.35, 0.37, 0.43);
 
-  // Clean address into one line
-  const cleanedAddress = COMPANY_ADDRESS
-    ? COMPANY_ADDRESS.split(/\\n|\n/)
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .join(", ")
-    : "";
+  const footerLines: string[] = [
+    "This contract forms part of the FuelFlow Terms & Conditions accepted via the FuelFlow online portal. If there is any inconsistency, the Terms & Conditions will take precedence.",
+    "All pricing and ROI information relating to this contract is indicative only, does not constitute financial, tax or investment advice, and may change due to market conditions, supply and taxation. FuelFlow does not guarantee any particular level of savings or future fuel prices.",
+  ];
 
-  // Line 1: name + company meta
-  const metaBits: string[] = [];
-  if (COMPANY_NUMBER) metaBits.push(`Company No. ${COMPANY_NUMBER}`);
-  if (COMPANY_VAT_NUMBER) metaBits.push(`VAT No. ${COMPANY_VAT_NUMBER}`);
-  const metaJoined = metaBits.join(" · ");
+  let footerY = footerTopY + 32;
+  const footerFontSize = 7.5;
 
-  const line1Parts: string[] = [];
-  if (COMPANY_NAME) line1Parts.push(COMPANY_NAME);
-  if (metaJoined) line1Parts.push(metaJoined);
-  const companyLine1 = line1Parts.join(" · ");
-
-  // Line 2: address + contact
-  const contactBits: string[] = [];
-  if (COMPANY_EMAIL) contactBits.push(COMPANY_EMAIL);
-  if (COMPANY_PHONE) contactBits.push(COMPANY_PHONE);
-
-  const line2Parts: string[] = [];
-  if (cleanedAddress) line2Parts.push(cleanedAddress);
-  if (contactBits.length) line2Parts.push(contactBits.join(" · "));
-  const companyLine2 = line2Parts.join(" · ");
-
-  // helper to centre a footer line
-  function drawCenteredFooterLine(text: string) {
-    const width = fontRegular.widthOfTextAtSize(text, footerFontSize);
-    const x = (pageWidth - width) / 2;
-    page.drawText(text, {
-      x,
+  for (const line of footerLines) {
+    page.drawText(line, {
+      x: marginX,
       y: footerY,
       size: footerFontSize,
       font: fontRegular,
-      color: rgb(0.3, 0.3, 0.35),
+      color: footerTextColor,
     });
+    footerY -= 11;
   }
 
-  if (companyLine1) {
-    footerY -= 12;
-    drawCenteredFooterLine(companyLine1);
-  }
+  // company line centred near bottom
+  const companyLine = `${COMPANY_NAME} · Company No. ${COMPANY_NUMBER} · VAT No. ${COMPANY_VAT_NUMBER} · ${COMPANY_ADDRESS} · ${COMPANY_EMAIL} · ${COMPANY_PHONE}`;
 
-  if (companyLine2) {
-    footerY -= 10;
-    drawCenteredFooterLine(companyLine2);
-  }
+  const textWidth = fontRegular.widthOfTextAtSize(
+    companyLine,
+    footerFontSize
+  );
 
-  const pdfBytes = await pdfDoc.save();
-  return pdfBytes;
+  page.drawText(companyLine, {
+    x: (width - textWidth) / 2,
+    y: 60,
+    size: footerFontSize,
+    font: fontRegular,
+    color: footerTextColor,
+  });
+
+  const bytes = await pdf.save();
+  return bytes;
 }
