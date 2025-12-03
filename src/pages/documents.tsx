@@ -405,20 +405,23 @@ export default function DocumentsPage() {
 
 <Tile
   title="Rent Contract"
-  statusBadge={<StatusBadge status={rentLatest?.status} onClick={() => setShowGuide(true)} />}
-  body="Rental agreements require admin approval after signing."
-  secondary={{ label: "ROI / Calculator", onClick: () => setShowCalc({ open: true, option: "rent" }) }}
-  primary={{ label: rentLatest ? "Update / Resign" : "Start", onClick: () => setShowRent(true) }}
->
-  {rentLatest?.id && rentLatest.status !== "draft" && (
-    <button
-      type="button"
-      onClick={() => openContractPdf(rentLatest.id)}
-      className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
+  statusBadge={
+    <span
+      className="inline-flex items-center rounded-full bg-white/5 px-2.5 py-1 text-xs font-medium text-white/60 ring-1 ring-white/20"
+      aria-label="Rent contracts are not available yet"
     >
-      View Rent contract (PDF)
-    </button>
-  )}
+      Not available yet
+    </span>
+  }
+  body="Rental tank contracts are not available yet for self-serve sign-up. We’ll let you know when this option launches."
+>
+  <p className="text-xs text-white/60">
+    If you’re interested in rental tanks, please email{" "}
+    <a href="mailto:info@fuelflow.co.uk" className="underline">
+      info@fuelflow.co.uk
+    </a>
+    .
+  </p>
 </Tile>
 
 
