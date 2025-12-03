@@ -126,7 +126,7 @@ async function fetchLogoBytes(): Promise<Uint8Array | null> {
 
 // ----- main export -----
 
-export async function createContractPdf(
+export async function generateContractPdf(
   contract: ContractForPdf
 ): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
