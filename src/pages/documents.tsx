@@ -257,18 +257,21 @@ export default function DocumentsPage() {
         onClick: undefined as any,
       };
     }
-    if (!buyLatest?.id && !rentLatest?.id) {
+    // No contract at all yet
+    if (!buyLatest?.id) {
       return { label: "Start Buy Contract", href: undefined, onClick: () => setShowBuy(true) };
     }
-    if ((buyLatest?.status as any) !== "approved" && (rentLatest?.status as any) !== "approved") {
+    // Contract exists but isn’t active
+    if ((buyLatest?.status as any) !== "approved") {
       return {
-        label: "Complete Contract",
+        label: "Complete Buy Contract",
         href: undefined,
-        onClick: () => (rentLatest ? setShowRent(true) : setShowBuy(true)),
+        onClick: () => setShowBuy(true),
       };
     }
     return null;
-  }, [docsComplete, termsAccepted, userEmail, buyLatest, rentLatest]);
+  }, [docsComplete, termsAccepted, userEmail, buyLatest]);
+
 
   // Small checklist for quick read
   const checklist: { label: string; ok: boolean }[] = [
