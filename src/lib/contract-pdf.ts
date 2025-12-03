@@ -267,13 +267,13 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   });
 
   /* ===========
-     Footer – short legal text + company details
+     Footer – protective wording + compact company info
      =========== */
 
   const footerFontSize = 8;
   const footerWidth = pageWidth - marginX * 2;
 
-  // Start the footer closer to the bottom of the page
+  // Start footer text reasonably low on the page
   const footerStartY = 140;
   let footerY = footerStartY;
 
@@ -317,38 +317,64 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
     }
   }
 
-  // Short, simple legal text
+  // 1) Tie to Terms & Conditions and make them dominant
   drawFooterParagraph(
-    "This contract forms part of the FuelFlow Terms & Conditions accepted via the FuelFlow online portal. If there is any inconsistency, the Terms & Conditions will apply."
+    "This contract forms part of the FuelFlow Terms & Conditions accepted via the FuelFlow online portal. If there is any inconsistency, the Terms & Conditions will take precedence."
   );
 
+  // 2) Strong but short pricing / advice disclaimer
   drawFooterParagraph(
-    "Any pricing information relating to this contract is indicative only and may change due to market conditions, supply and taxation. FuelFlow does not guarantee any level of future savings."
+    "All pricing and ROI information relating to this contract is indicative only, does not constitute financial, tax or investment advice, and may change due to market conditions, supply and taxation. FuelFlow does not guarantee any particular level of savings or future fuel prices."
   );
 
   // Small gap before company details
   footerY -= 4;
 
-  // Company details – left aligned and evenly spaced
-  const companyLines: string[] = [];
-  if (COMPANY_NAME) companyLines.push(COMPANY_NAME);
-  if (COMPANY_NUMBER) companyLines.push(`Company No. ${COMPANY_NUMBER}`);
-  if (COMPANY_VAT_NUMBER) companyLines.push(`VAT No. ${COMPANY_VAT_NUMBER}`);
+  // -------- Compact company block (1–2 lines) --------
 
-  const addressLines =
-    COMPANY_ADDRESS.split(/\\n|\n/)
-      .map((l) => l.trim())
-      .filter(Boolean) || [];
-  companyLines.push(...addressLines);
+  // Clean address into one line
+  const cleanedAddress = COMPANY_ADDRESS
+    ? COMPANY_ADDRESS.split(/\\n|\n/)
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .join(", ")
+    : "";
 
+  // Line 1: name + company meta
+  const metaBits: string[] = [];
+  if (COMPANY_NUMBER) metaBits.push(`Company No. ${COMPANY_NUMBER}`);
+  if (COMPANY_VAT_NUMBER) metaBits.push(`VAT No. ${COMPANY_VAT_NUMBER}`);
+  const metaJoined = metaBits.join(" · ");
+
+  const line1Parts: string[] = [];
+  if (COMPANY_NAME) line1Parts.push(COMPANY_NAME);
+  if (metaJoined) line1Parts.push(metaJoined);
+  const companyLine1 = line1Parts.join(" · ");
+
+  // Line 2: address + contact
   const contactBits: string[] = [];
   if (COMPANY_EMAIL) contactBits.push(COMPANY_EMAIL);
   if (COMPANY_PHONE) contactBits.push(COMPANY_PHONE);
-  if (contactBits.length) companyLines.push(contactBits.join(" · "));
 
-  for (const line of companyLines) {
+  const line2Parts: string[] = [];
+  if (cleanedAddress) line2Parts.push(cleanedAddress);
+  if (contactBits.length) line2Parts.push(contactBits.join(" · "));
+  const companyLine2 = line2Parts.join(" · ");
+
+  if (companyLine1) {
     footerY -= 10;
-    page.drawText(line, {
+    page.drawText(companyLine1, {
+      x: marginX,
+      y: footerY,
+      size: footerFontSize,
+      font: fontRegular,
+      color: rgb(0.3, 0.3, 0.35),
+    });
+  }
+
+  if (companyLine2) {
+    footerY -= 10;
+    page.drawText(companyLine2, {
       x: marginX,
       y: footerY,
       size: footerFontSize,
