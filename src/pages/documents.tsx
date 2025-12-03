@@ -277,8 +277,8 @@ export default function DocumentsPage() {
   const checklist: { label: string; ok: boolean }[] = [
     { label: "Terms", ok: termsAccepted },
     { label: "Buy Active", ok: buyLatest?.status === "approved" },
-    { label: "Rent Active", ok: rentLatest?.status === "approved" },
   ];
+
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white pt-[env(safe-area-inset-top)]">
