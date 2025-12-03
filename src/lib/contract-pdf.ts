@@ -1,557 +1,298 @@
 // src/lib/contract-pdf.ts
 // src/lib/contract-pdf.ts
-// Generates the customer-facing FuelFlow contract PDF.
+// FuelFlow contract PDF – 1-page, legally-worded layout.
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
+/* ------------------------------------------------------------------
+   Types – match the columns on public.contracts that we actually use
+   ------------------------------------------------------------------ */
+
 export type ContractForPdf = {
-  // Identity / meta
-  contractId: string;
-  signedAtIso: string | null;
-  signerName: string | null;
-  signerTitle: string | null;
-  tankOption: "buy" | "rent" | null;
+  id: string;
 
-  // 1. Company details
-  companyName: string | null;
-  companyNumber: string | null;
-  vatNumber: string | null;
+  // high-level
+  email: string | null;
+  customer_name: string | null;
 
-  // 2. Primary contact
-  contactName: string | null;
-  contactEmail: string | null;
-  contactPhone: string | null;
+  // company details
+  company_name: string | null;
+  company_number: string | null;
+  vat_number: string | null;
 
-  // 3. Registered / billing address
-  regAddressLine1: string | null;
-  regAddressLine2: string | null;
-  regCity: string | null;
-  regPostcode: string | null;
-  regCountry: string | null;
+  // primary contact
+  contact_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
 
-  // 4. Site / delivery address
-  siteAddressLine1: string | null;
-  siteAddressLine2: string | null;
-  siteCity: string | null;
-  sitePostcode: string | null;
-  siteCountry: string | null;
+  // registered / billing address
+  reg_address_line1: string | null;
+  reg_address_line2: string | null;
+  reg_city: string | null;
+  reg_postcode: string | null;
+  reg_country: string | null;
 
-  // 5. Tank & ROI – kept as optional so we can safely include them later
-  tankSizeL?: number | null;
-  monthlyConsumptionL?: number | null;
-  marketPriceGbpL?: number | null;
-  fuelflowPriceGbpL?: number | null;
-  estMonthlySavingsGbp?: number | null;
-  estPaybackMonths?: number | null;
+  // site / delivery address
+  site_address_line1: string | null;
+  site_address_line2: string | null;
+  site_city: string | null;
+  site_postcode: string | null;
+  site_country: string | null;
+
+  // sign-off
+  signature_name: string | null;
+  signer_title: string | null;
+  signed_at: string | null; // ISO date from DB
+
+  // not currently printed, but kept for future:
+  tank_option?: "buy" | "rent" | null;
+  tank_size_l?: number | null;
+  monthly_consumption_l?: number | null;
+  market_price_gbp_l?: number | null;
+  fuelflow_price_gbp_l?: number | null;
+  capex_gbp?: number | null;
 };
 
+/* ------------------------------------------------------------------
+   Helpers
+   ------------------------------------------------------------------ */
 
-// ----- env / company details -----
+const gbp = new Intl.NumberFormat("en-GB", {
+  style: "currency",
+  currency: "GBP",
+});
 
-const COMPANY_NAME =
-  process.env.COMPANY_NAME || "FuelFlow";
+function fmtMoney(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(Number(n))) return "—";
+  return gbp.format(Number(n));
+}
 
-const COMPANY_NUMBER =
-  process.env.COMPANY_NUMBER || "12345678";
-
-const COMPANY_VAT_NUMBER =
-  process.env.COMPANY_VAT_NUMBER || "GB123456789";
-
-const COMPANY_ADDRESS =
-  process.env.COMPANY_ADDRESS ||
-  "1 Example Street, Example Town, EX1 2MP, United Kingdom";
-
-const COMPANY_EMAIL =
-  process.env.COMPANY_EMAIL || "invoices@mail.fuelflow.co.uk";
-
-const COMPANY_PHONE =
-  process.env.COMPANY_PHONE || "+44 (0)20 1234 5678";
-
-// Signed URL logo is handled elsewhere – for the contract we embed from public path.
-const LOGO_URL =
-  process.env.NEXT_PUBLIC_CONTRACT_LOGO_URL ||
-  "https://dashboard.fuelflow.co.uk/logo-email.png";
-
-// ----- helpers -----
-
-const gbDate = (iso?: string | null) => {
+function gbDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("en-GB");
-};
-
-const safe = (v?: string | null) => (v && v.trim().length ? v.trim() : "—");
-
-type DrawFieldRowArgs = {
-  label: string;
-  value: string;
-  page: any;
-  font: any;
-  xLabel: number;
-  xValue: number;
-  y: number;
-  lineHeight: number;
-};
-
-function drawFieldRow({
-  label,
-  value,
-  page,
-  font,
-  xLabel,
-  xValue,
-  y,
-  lineHeight,
-}: DrawFieldRowArgs) {
-  page.drawText(label, {
-    x: xLabel,
-    y,
-    size: 9,
-    font,
-    color: rgb(0.38, 0.4, 0.46),
-  });
-  page.drawText(value, {
-    x: xValue,
-    y,
-    size: 10,
-    font,
-    color: rgb(0.07, 0.08, 0.12),
-  });
 }
 
-async function fetchLogoBytes(): Promise<Uint8Array | null> {
+function safe(v: string | null | undefined): string {
+  const s = (v ?? "").trim();
+  return s.length ? s : "—";
+}
+
+/* ------------------------------------------------------------------
+   Main: createContractPdf
+   ------------------------------------------------------------------ */
+
+export async function createContractPdf(contract: ContractForPdf): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage();
+
+  const { width, height } = page.getSize();
+  const marginX = 60;
+  let y = height - 60;
+
+  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  // -------- Logo + title -------------------------------------------------
+
   try {
-    if (!LOGO_URL) return null;
-    const res = await fetch(LOGO_URL);
-    if (!res.ok) return null;
-    const buf = await res.arrayBuffer();
-    return new Uint8Array(buf);
+    const logoUrl = "https://dashboard.fuelflow.co.uk/logo-email.png";
+    const logoBytes = await fetch(logoUrl).then((r) => r.arrayBuffer());
+    const logoImage = await pdfDoc.embedPng(logoBytes);
+    const logoWidth = 110;
+    const logoHeight = (logoImage.height / logoImage.width) * logoWidth;
+
+    page.drawImage(logoImage, {
+      x: marginX,
+      y: y - logoHeight,
+      width: logoWidth,
+      height: logoHeight,
+    });
   } catch {
-    return null;
-  }
-}
-
-// ----- main export -----
-
-export async function generateContractPdf(
-  contract: ContractForPdf
-): Promise<Uint8Array> {
-  const pdf = await PDFDocument.create();
-  const page = pdf.addPage([595.28, 841.89]); // A4 portrait
-
-  const width = page.getWidth();
-  const height = page.getHeight();
-
-  const marginX = 56;
-  const contentWidth = width - marginX * 2;
-
-  const fontRegular = await pdf.embedFont(StandardFonts.Helvetica);
-  const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
-
-  let cursorY = height - 72;
-
-  // ---- header: logo + title ----
-  const logoBytes = await fetchLogoBytes();
-  if (logoBytes) {
-    try {
-      const png = await pdf.embedPng(logoBytes);
-      const logoW = 80;
-      const logoH = (png.height / png.width) * logoW;
-
-      page.drawImage(png, {
-        x: marginX,
-        y: cursorY - logoH + 10,
-        width: logoW,
-        height: logoH,
-      });
-    } catch {
-      // ignore logo errors
-    }
+    // if logo fails, just skip – don't break PDF
   }
 
- const title = "FuelFlow Contract";
-const signedBy =
-  contract.signerName && contract.signerName.trim().length
-    ? contract.signerName.trim()
-    : "authorised signatory";
-
-
-const signedOn =
-  contract.signedAt || new Date().toISOString();
-
-
-  const subTitle = `Signed on ${gbDate(
-    signedOn
-  )} by ${signedBy.toLowerCase()}`;
+  // Title block
+  const title = "FuelFlow Contract";
+  const signedOn =
+    contract.signed_at || new Date().toISOString();
+  const signedByLine = `Signed on ${gbDate(signedOn)} by ${
+    safe(contract.signature_name).toLowerCase()
+  }`;
 
   page.drawText(title, {
-    x: marginX + 120,
-    y: cursorY,
+    x: marginX,
+    y: y - 20,
     size: 18,
     font: fontBold,
-    color: rgb(0.07, 0.08, 0.12),
+    color: rgb(0.11, 0.15, 0.25),
   });
 
-  page.drawText(subTitle, {
-    x: marginX + 120,
-    y: cursorY - 18,
-    size: 9,
+  page.drawText(signedByLine, {
+    x: marginX,
+    y: y - 38,
+    size: 10,
     font: fontRegular,
-    color: rgb(0.25, 0.27, 0.35),
+    color: rgb(0.25, 0.25, 0.25),
   });
 
-  // thin divider under title
+  // divider line
+  y = y - 52;
   page.drawLine({
-    start: { x: marginX, y: cursorY - 32 },
-    end: { x: marginX + contentWidth, y: cursorY - 32 },
+    start: { x: marginX, y },
+    end: { x: width - marginX, y },
     thickness: 0.7,
-    color: rgb(0.85, 0.87, 0.93),
+    color: rgb(0.8, 0.82, 0.9),
   });
+  y -= 26;
 
-  cursorY -= 56;
+  // -------- helpers for sections ----------------------------------------
 
-  const sectionHeaderHeight = 20;
-  const sectionHeaderColor = rgb(0.95, 0.97, 1);
-  const sectionHeaderTextColor = rgb(0.07, 0.08, 0.12);
+  const headerFill = rgb(0.95, 0.97, 1);
+  const headerText = rgb(0.1, 0.14, 0.24);
+  const labelColor = rgb(0.35, 0.35, 0.4);
+  const valueColor = rgb(0.08, 0.09, 0.12);
 
-  const xLabel = marginX + 18;
-  const xValue = marginX + 180;
-  const lineGap = 16;
-
-  const drawSectionHeader = (label: string) => {
+  function sectionHeader(title: string) {
+    const h = 20;
     page.drawRectangle({
       x: marginX,
-      y: cursorY - sectionHeaderHeight,
-      width: contentWidth,
-      height: sectionHeaderHeight,
-      color: sectionHeaderColor,
+      y: y - h + 4,
+      width: width - marginX * 2,
+      height: h,
+      color: headerFill,
     });
-
-    page.drawText(label, {
-      x: marginX + 8,
-      y: cursorY - sectionHeaderHeight + 6,
-      size: 10,
+    page.drawText(title, {
+      x: marginX + 16,
+      y: y,
+      size: 11,
       font: fontBold,
-      color: sectionHeaderTextColor,
+      color: headerText,
     });
+    y -= h + 10;
+  }
 
-    cursorY -= sectionHeaderHeight + 14;
-  };
-
-  const companyName =
-    safe(contract.company_name) ||
-    safe(contract.customer_name);
-
-  // ---- 1. Company details ----
-  drawSectionHeader("1. Company details");
-
-  drawFieldRow({
-    label: "Company name",
-    value: companyName,
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "Company number",
-    value: safe(contract.company_number),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "VAT number",
-    value: safe(contract.vat_number),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-
-  cursorY -= lineGap + 10;
-
-  // ---- 2. Primary contact ----
-  drawSectionHeader("2. Primary contact");
-
-  drawFieldRow({
-    label: "Name",
-    value: safe(contract.contact_name || contract.customer_name),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "Email",
-    value: safe(contract.contact_email || contract.email),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "Phone",
-    value: safe(contract.contact_phone),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap + 10;
-
-  // ---- 3. Registered / billing address ----
-  drawSectionHeader("3. Registered / billing address");
-
-  const regAddress =
-    safe(contract.reg_address_line1) !== "—"
-      ? `${safe(contract.reg_address_line1)}${
-          safe(contract.reg_address_line2) !== "—"
-            ? `, ${safe(contract.reg_address_line2)}`
-            : ""
-        }`
-      : safe(contract.reg_address_line2);
-
-  drawFieldRow({
-    label: "Address",
-    value: regAddress,
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "City",
-    value: safe(contract.reg_city),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "Postcode",
-    value: safe(contract.reg_postcode),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "Country",
-    value: safe(contract.reg_country || "UK"),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap + 10;
-
-  // ---- 4. Site / delivery address ----
-  drawSectionHeader("4. Site / delivery address");
-
-  const siteAddress =
-    safe(contract.site_address_line1) !== "—"
-      ? `${safe(contract.site_address_line1)}${
-          safe(contract.site_address_line2) !== "—"
-            ? `, ${safe(contract.site_address_line2)}`
-            : ""
-        }`
-      : safe(contract.site_address_line2);
-
-  drawFieldRow({
-    label: "Address",
-    value: siteAddress,
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "City",
-    value: safe(contract.site_city),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "Postcode",
-    value: safe(contract.site_postcode),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "Country",
-    value: safe(contract.site_country || "UK"),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap + 10;
-
-  // ---- 5. Signature & declaration ----
-  drawSectionHeader("5. Signature & declaration");
-
-  drawFieldRow({
-    label: "Signed by",
-    value: safe(contract.signature_name),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "Job title",
-    value: safe(contract.signer_title),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap;
-
-  drawFieldRow({
-    label: "Signed date",
-    value: gbDate(contract.signed_at),
-    page,
-    font: fontRegular,
-    xLabel,
-    xValue,
-    y: cursorY,
-    lineHeight: lineGap,
-  });
-  cursorY -= lineGap + 10;
-
-  // signature line
-  page.drawLine({
-    start: { x: xValue, y: cursorY },
-    end: { x: xValue + 180, y: cursorY },
-    thickness: 0.7,
-    color: rgb(0.2, 0.22, 0.28),
-  });
-
-  cursorY -= 18;
-
-  page.drawText(
-    `Authorised signatory: ${safe(contract.signature_name)}`,
-    {
-      x: xLabel,
-      y: cursorY,
+  function fieldRow(label: string, value: string) {
+    const rowHeight = 14;
+    page.drawText(label, {
+      x: marginX,
+      y,
       size: 9,
       font: fontRegular,
-      color: rgb(0.2, 0.22, 0.28),
+      color: labelColor,
+    });
+    page.drawText(value, {
+      x: marginX + 120,
+      y,
+      size: 10,
+      font: fontRegular,
+      color: valueColor,
+    });
+    y -= rowHeight;
+  }
+
+  // -------- 1. Company details ------------------------------------------
+
+  sectionHeader("1. Company details");
+  fieldRow("Company name", safe(contract.company_name));
+  fieldRow("Company number", safe(contract.company_number));
+  fieldRow("VAT number", safe(contract.vat_number));
+  y -= 8;
+
+  // -------- 2. Primary contact -----------------------------------------
+
+  sectionHeader("2. Primary contact");
+  fieldRow("Name", safe(contract.contact_name));
+  fieldRow("Email", safe(contract.contact_email));
+  fieldRow("Phone", safe(contract.contact_phone));
+  y -= 8;
+
+  // -------- 3. Registered / billing address -----------------------------
+
+  sectionHeader("3. Registered / billing address");
+  fieldRow("Address", safe(contract.reg_address_line1));
+  fieldRow("City", safe(contract.reg_city));
+  fieldRow("Postcode", safe(contract.reg_postcode));
+  fieldRow("Country", safe(contract.reg_country || "UK"));
+  y -= 8;
+
+  // -------- 4. Site / delivery address ----------------------------------
+
+  sectionHeader("4. Site / delivery address");
+  fieldRow("Address", safe(contract.site_address_line1));
+  fieldRow("City", safe(contract.site_city));
+  fieldRow("Postcode", safe(contract.site_postcode));
+  fieldRow("Country", safe(contract.site_country || "UK"));
+  y -= 8;
+
+  // -------- 5. Signature & declaration ----------------------------------
+
+  sectionHeader("5. Signature & declaration");
+
+  fieldRow("Signed by", safe(contract.signature_name));
+  fieldRow("Job title", safe(contract.signer_title));
+  fieldRow("Signed date", gbDate(contract.signed_at));
+
+  // signature line
+  y -= 10;
+  page.drawLine({
+    start: { x: marginX, y },
+    end: { x: marginX + 220, y },
+    thickness: 0.7,
+    color: rgb(0.2, 0.2, 0.25),
+  });
+  y -= 14;
+  page.drawText(
+    `Authorised signatory: ${safe(contract.signature_name).toLowerCase()}`,
+    {
+      x: marginX,
+      y,
+      size: 9,
+      font: fontRegular,
+      color: valueColor,
     }
   );
 
-  // ---- footer text ----
-  const footerTopY = 110;
+  // -------- Footer legal text & company details -------------------------
 
-  // divider above footer
-  page.drawLine({
-    start: { x: marginX, y: footerTopY + 46 },
-    end: { x: marginX + contentWidth, y: footerTopY + 46 },
-    thickness: 0.5,
-    color: rgb(0.85, 0.87, 0.93),
-  });
+  const footerTop = 110;
+  const footerMargin = 70;
+  const legalSize = 8;
+  const legalColor = rgb(0.3, 0.3, 0.35);
 
-  const footerTextColor = rgb(0.35, 0.37, 0.43);
-
-  const footerLines: string[] = [
-    "This contract forms part of the FuelFlow Terms & Conditions accepted via the FuelFlow online portal. If there is any inconsistency, the Terms & Conditions will take precedence.",
-    "All pricing and ROI information relating to this contract is indicative only, does not constitute financial, tax or investment advice, and may change due to market conditions, supply and taxation. FuelFlow does not guarantee any particular level of savings or future fuel prices.",
+  const legalLines = [
+    "This contract forms part of the FuelFlow Terms & Conditions accepted via the FuelFlow online portal. If there is any inconsistency, the Terms",
+    "& Conditions will take precedence.",
+    "All pricing and ROI information relating to this contract is indicative only, does not constitute financial, tax or investment advice, and may",
+    "change due to market conditions, supply and taxation. FuelFlow does not guarantee any particular level of savings or future fuel prices.",
   ];
 
-  let footerY = footerTopY + 32;
-  const footerFontSize = 7.5;
-
-  for (const line of footerLines) {
+  let ly = footerTop;
+  for (const line of legalLines) {
     page.drawText(line, {
-      x: marginX,
-      y: footerY,
-      size: footerFontSize,
+      x: footerMargin,
+      y: ly,
+      size: legalSize,
       font: fontRegular,
-      color: footerTextColor,
+      color: legalColor,
     });
-    footerY -= 11;
+    ly -= 11;
   }
 
-  // company line centred near bottom
-  const companyLine = `${COMPANY_NAME} · Company No. ${COMPANY_NUMBER} · VAT No. ${COMPANY_VAT_NUMBER} · ${COMPANY_ADDRESS} · ${COMPANY_EMAIL} · ${COMPANY_PHONE}`;
-
-  const textWidth = fontRegular.widthOfTextAtSize(
-    companyLine,
-    footerFontSize
-  );
+  const companyLine =
+    "FuelFlow · Company No. 12345678 · VAT No. GB123456789 · 1 Example Street, Example Town, EX1 2MP, United Kingdom · invoices@mail.fuelflow.co.uk · +44 (0)20 1234 5678";
 
   page.drawText(companyLine, {
-    x: (width - textWidth) / 2,
-    y: 60,
-    size: footerFontSize,
+    x: footerMargin,
+    y: ly - 6,
+    size: legalSize,
     font: fontRegular,
-    color: footerTextColor,
+    color: legalColor,
   });
 
-  const bytes = await pdf.save();
-  return bytes;
+  // ----------------------------------------------------------------------
+
+  const pdfBytes = await pdfDoc.save();
+  return pdfBytes;
 }
