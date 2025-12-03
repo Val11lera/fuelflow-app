@@ -380,9 +380,15 @@ export default function DocumentsPage() {
 <Tile
   title="Buy Contract"
   statusBadge={<StatusBadge status={buyLatest?.status} onClick={() => setShowGuide(true)} />}
-  body="For purchase agreements: a signed contract becomes Active immediately."
-  secondary={{ label: "ROI / Calculator", onClick: () => setShowCalc({ open: true, option: "buy" }) }}
-  primary={{ label: buyLatest ? "Update / Resign" : "Start", onClick: () => setShowBuy(true) }}
+  body="For purchase agreements: a signed Buy contract becomes Active immediately."
+  secondary={{
+    label: "ROI / Calculator",
+    onClick: () => setShowCalc({ open: true, option: "buy" }),
+  }}
+  primary={{
+    label: buyLatest ? "Update / sign new contract" : "Start Buy contract",
+    onClick: () => setShowBuy(true),
+  }}
 >
   {buyLatest?.id && buyLatest.status !== "draft" && (
     <button
@@ -390,7 +396,7 @@ export default function DocumentsPage() {
       onClick={() => openContractPdf(buyLatest.id)}
       className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
     >
-      View Buy contract (PDF)
+      View current Buy contract (PDF)
     </button>
   )}
 </Tile>
