@@ -5,38 +5,46 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 export type ContractForPdf = {
-  id: string;
-  tank_option: "buy" | "rent";
+  // Identity / meta
+  contractId: string;
+  signedAtIso: string | null;
+  signerName: string | null;
+  signerTitle: string | null;
+  tankOption: "buy" | "rent" | null;
 
-  customer_name?: string | null;
-  email?: string | null;
+  // 1. Company details
+  companyName: string | null;
+  companyNumber: string | null;
+  vatNumber: string | null;
 
-  company_name?: string | null;
-  company_number?: string | null;
-  vat_number?: string | null;
+  // 2. Primary contact
+  contactName: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
 
-  contact_name?: string | null;
-  contact_email?: string | null;
-  contact_phone?: string | null;
+  // 3. Registered / billing address
+  regAddressLine1: string | null;
+  regAddressLine2: string | null;
+  regCity: string | null;
+  regPostcode: string | null;
+  regCountry: string | null;
 
-  reg_address_line1?: string | null;
-  reg_address_line2?: string | null;
-  reg_city?: string | null;
-  reg_postcode?: string | null;
-  reg_country?: string | null;
+  // 4. Site / delivery address
+  siteAddressLine1: string | null;
+  siteAddressLine2: string | null;
+  siteCity: string | null;
+  sitePostcode: string | null;
+  siteCountry: string | null;
 
-  site_address_line1?: string | null;
-  site_address_line2?: string | null;
-  site_city?: string | null;
-  site_postcode?: string | null;
-  site_country?: string | null;
-
-  signature_name?: string | null;
-  signer_title?: string | null;
-  signed_at?: string | null;
-
-  terms_version?: string | null;
+  // 5. Tank & ROI – kept as optional so we can safely include them later
+  tankSizeL?: number | null;
+  monthlyConsumptionL?: number | null;
+  marketPriceGbpL?: number | null;
+  fuelflowPriceGbpL?: number | null;
+  estMonthlySavingsGbp?: number | null;
+  estPaybackMonths?: number | null;
 };
+
 
 // ----- env / company details -----
 
