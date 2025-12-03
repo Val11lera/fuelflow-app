@@ -349,20 +349,32 @@ export default function DocumentsPage() {
       onClick={() => setShowGuide(true)}
     />
   }
-  body="You must accept the latest Terms before ordering."
-  primary={{
-    label: "Read & accept",
-    href: `/terms?return=/documents&email=${encodeURIComponent(userEmail)}`,
-  }}
+  body={
+    termsAccepted
+      ? "You’ve accepted the latest Terms. You can still view or download a copy at any time."
+      : "You must accept the latest Terms before ordering."
+  }
+  primary={
+    termsAccepted
+      ? {
+          label: "View Terms",
+          href: `/terms?return=/documents&email=${encodeURIComponent(userEmail)}`,
+        }
+      : {
+          label: "Read & accept",
+          href: `/terms?return=/documents&email=${encodeURIComponent(userEmail)}`,
+        }
+  }
 >
   <button
     type="button"
     onClick={openTermsPdf}
     className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
   >
-    View Terms as PDF
+    Download Terms (PDF)
   </button>
 </Tile>
+
 
 
 <Tile
