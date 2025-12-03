@@ -27,7 +27,7 @@ export type ContractForPdf = {
   sitePostcode: string;
   siteCountry: string;
 
-  // Tank & ROI (kept in type for compatibility, not rendered)
+  // Tank & ROI (kept for compatibility, not rendered)
   tankSizeL: number;
   monthlyConsumptionL: number;
   marketPricePerL: number;
@@ -58,11 +58,10 @@ function fmt(v: string | null | undefined) {
 }
 
 export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Array> {
-  const pageWidth = 595;  // A4
+  const pageWidth = 595; // A4
   const pageHeight = 842;
   const marginX = 50;
   const topMargin = 60;
-  const bottomMargin = 140; // more room at the bottom
 
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([pageWidth, pageHeight]);
@@ -138,7 +137,7 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   });
 
   /* ===========
-     Body – single page only
+     Body – single page
      =========== */
 
   let y = pageHeight - topMargin - 90; // starting Y for sections
@@ -154,10 +153,8 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   const valueX = marginX + 170;
 
   function drawSection(title: string) {
-    // small gap before section
     y -= sectionGap;
 
-    // background strip
     page.drawRectangle({
       x: marginX,
       y: y - 4,
@@ -174,7 +171,6 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
       color: rgb(0.15, 0.18, 0.25),
     });
 
-    // move Y to just below the header strip
     y -= sectionHeaderHeight + 6;
   }
 
@@ -196,44 +192,6 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
     });
 
     y -= rowGap;
-  }
-
-  function drawSmallWrapped(text: string, startY: number, maxWidth: number): number {
-    const size = 8;
-    const words = text.split(" ");
-    let line = "";
-    let yPos = startY;
-
-    for (const word of words) {
-      const testLine = line ? `${line} ${word}` : word;
-      const testWidth = fontRegular.widthOfTextAtSize(testLine, size);
-      if (testWidth > maxWidth) {
-        page.drawText(line, {
-          x: marginX,
-          y: yPos,
-          size,
-          font: fontRegular,
-          color: rgb(0.35, 0.35, 0.4),
-        });
-        yPos -= 10;
-        line = word;
-      } else {
-        line = testLine;
-      }
-    }
-
-    if (line) {
-      page.drawText(line, {
-        x: marginX,
-        y: yPos,
-        size,
-        font: fontRegular,
-        color: rgb(0.35, 0.35, 0.4),
-      });
-      yPos -= 12;
-    }
-
-    return yPos;
   }
 
   /* 1. Company details */
@@ -273,10 +231,8 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   drawRow("Signed by", fmt(data.signatureName));
   drawRow("Job title", fmt(data.jobTitle));
 
-  // small space before date + line
   y -= 6;
 
-  // Signed date
   page.drawText("Signed date", {
     x: labelX,
     y,
@@ -293,7 +249,6 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
     color: rgb(0.05, 0.05, 0.12),
   });
 
-  // Signature line
   const sigLineY = y - 20;
   page.drawLine({
     start: { x: labelX, y: sigLineY },
@@ -302,7 +257,6 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
     color: rgb(0.2, 0.2, 0.25),
   });
 
-  // Caption including who signed
   const sigCaption = `Authorised signatory: ${fmt(data.signatureName)}`;
   page.drawText(sigCaption, {
     x: labelX,
@@ -312,32 +266,63 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
     color: rgb(0.25, 0.25, 0.3),
   });
 
-  // Note linking to Terms & Conditions
-  const sigNote =
-    "By signing this document you confirm that you are authorised to bind the company and that this contract is to be read together with the FuelFlow Terms & Conditions accepted via the FuelFlow online portal. " +
-    "If there is any inconsistency between this contract and those Terms & Conditions, the Terms & Conditions will take precedence.";
-
-  drawSmallWrapped(sigNote, sigLineY - 28, pageWidth - marginX * 2);
-
   /* ===========
-     Footer – legal disclaimer + company details (Option A + Terms link)
+     Footer – tidy block anchored near bottom
      =========== */
 
   const footerFontSize = 8;
   const footerWidth = pageWidth - marginX * 2;
 
-  // subtle line above the footer
-  const footerTopY = bottomMargin + 30;
+  // We'll anchor company lines near the bottom, then place legal text above them.
+  const bottomMargin = 40; // distance from page bottom to last line
+  let companyY = bottomMargin;
+
+  // Build company lines
+  const companyLines: string[] = [];
+  if (COMPANY_NAME) companyLines.push(COMPANY_NAME);
+  if (COMPANY_NUMBER) companyLines.push(`Company No. ${COMPANY_NUMBER}`);
+  if (COMPANY_VAT_NUMBER) companyLines.push(`VAT No. ${COMPANY_VAT_NUMBER}`);
+
+  const addressLines =
+    COMPANY_ADDRESS.split(/\\n|\n/)
+      .map((l) => l.trim())
+      .filter(Boolean) || [];
+  companyLines.push(...addressLines);
+
+  const contactBits: string[] = [];
+  if (COMPANY_EMAIL) contactBits.push(COMPANY_EMAIL);
+  if (COMPANY_PHONE) contactBits.push(COMPANY_PHONE);
+  if (contactBits.length) companyLines.push(contactBits.join(" · "));
+
+  // Draw company block from bottom upwards
+  for (const line of companyLines) {
+    page.drawText(line, {
+      x: marginX,
+      y: companyY,
+      size: footerFontSize,
+      font: fontRegular,
+      color: rgb(0.3, 0.3, 0.35),
+    });
+    companyY += 10;
+  }
+
+  // Small gap above company block
+  companyY += 10;
+
+  // Now legal text above that, drawn downward from a fixed start
+  // so that it forms a neat paragraph block above the company info.
+  const legalStartY = companyY + 70; // tune height so it sits nicely
+  let footerY = legalStartY;
+
+  // subtle line above footer block
   page.drawLine({
-    start: { x: marginX, y: footerTopY },
-    end: { x: pageWidth - marginX, y: footerTopY },
+    start: { x: marginX, y: legalStartY + 12 },
+    end: { x: pageWidth - marginX, y: legalStartY + 12 },
     thickness: 0.4,
     color: rgb(0.85, 0.85, 0.9),
   });
 
-  let footerY = footerTopY - 14;
-
-  function drawFooterWrapped(text: string): void {
+  function drawFooterWrapped(text: string) {
     const words = text.split(" ");
     let line = "";
     for (const word of words) {
@@ -369,47 +354,18 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
     }
   }
 
-  // Option A disclaimer – generic to cover any pricing / ROI
+  // 1) Link to Terms & Conditions
+  drawFooterWrapped(
+    "This contract forms part of the FuelFlow Terms & Conditions accepted via the FuelFlow online portal. In the event of any inconsistency, those Terms & Conditions shall prevail."
+  );
+  // 2) Estimates / no advice
   drawFooterWrapped(
     "Any pricing and ROI calculations relating to this contract (whether shown here or provided separately) are estimates only. They do not constitute financial advice, projections, or guarantees."
   );
+  // 3) Pricing may vary / no guarantee of savings
   drawFooterWrapped(
-    `Final pricing may vary due to market changes, supply conditions and taxation. ${COMPANY_NAME} makes no assurance of future fuel savings and encourages customers to verify calculations independently.`
+    `${COMPANY_NAME} pricing may vary due to market changes, supply conditions and taxation. ${COMPANY_NAME} makes no assurance of future fuel savings and encourages customers to verify calculations independently.`
   );
-  // Explicitly tie contract to Terms & Conditions
-  drawFooterWrapped(
-    "This contract forms part of the wider FuelFlow Terms & Conditions accepted via the FuelFlow online portal. In the event of any inconsistency, those Terms & Conditions shall prevail."
-  );
-
-  // Company details
-  const companyLines: string[] = [];
-  if (COMPANY_NAME) companyLines.push(COMPANY_NAME);
-  if (COMPANY_NUMBER) companyLines.push(`Company No. ${COMPANY_NUMBER}`);
-  if (COMPANY_VAT_NUMBER) companyLines.push(`VAT No. ${COMPANY_VAT_NUMBER}`);
-
-  // Split address on real line breaks or "\n"
-  const addressLines =
-    COMPANY_ADDRESS.split(/\\n|\n/)
-      .map((l) => l.trim())
-      .filter(Boolean) || [];
-  companyLines.push(...addressLines);
-
-  const contactBits: string[] = [];
-  if (COMPANY_EMAIL) contactBits.push(COMPANY_EMAIL);
-  if (COMPANY_PHONE) contactBits.push(COMPANY_PHONE);
-  if (contactBits.length) companyLines.push(contactBits.join(" · "));
-
-  footerY -= 4;
-  for (const line of companyLines) {
-    page.drawText(line, {
-      x: marginX,
-      y: footerY,
-      size: footerFontSize,
-      font: fontRegular,
-      color: rgb(0.3, 0.3, 0.35),
-    });
-    footerY -= 10;
-  }
 
   const pdfBytes = await pdfDoc.save();
   return pdfBytes;
