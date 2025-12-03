@@ -170,11 +170,12 @@ export async function generateContractPdf(
     }
   }
 
-  const title = "FuelFlow Contract";
-  const signedBy =
-    contract.signature_name && contract.signature_name.trim().length
-      ? contract.signature_name.trim()
-      : "authorised signatory";
+ const title = "FuelFlow Contract";
+const signedBy =
+  contract.signerName && contract.signerName.trim().length
+    ? contract.signerName.trim()
+    : "authorised signatory";
+
 
   const signedOn =
     contract.signed_at || new Date().toISOString();
