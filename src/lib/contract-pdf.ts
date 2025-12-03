@@ -267,14 +267,14 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   });
 
   /* ===========
-     Footer – protective wording + compact company info
+     Footer – protective wording + compact centred company info
      =========== */
 
   const footerFontSize = 8;
   const footerWidth = pageWidth - marginX * 2;
 
-  // Start footer text reasonably low on the page
-  const footerStartY = 140;
+  // Start footer a bit lower on the page (closer to bottom)
+  const footerStartY = 120;
   let footerY = footerStartY;
 
   // Horizontal rule above footer
@@ -330,7 +330,7 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   // Small gap before company details
   footerY -= 4;
 
-  // -------- Compact company block (1–2 lines) --------
+  // -------- Compact, centred company block (2 lines) --------
 
   // Clean address into one line
   const cleanedAddress = COMPANY_ADDRESS
@@ -361,10 +361,12 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   if (contactBits.length) line2Parts.push(contactBits.join(" · "));
   const companyLine2 = line2Parts.join(" · ");
 
-  if (companyLine1) {
-    footerY -= 10;
-    page.drawText(companyLine1, {
-      x: marginX,
+  // helper to centre a footer line
+  function drawCenteredFooterLine(text: string) {
+    const width = fontRegular.widthOfTextAtSize(text, footerFontSize);
+    const x = (pageWidth - width) / 2;
+    page.drawText(text, {
+      x,
       y: footerY,
       size: footerFontSize,
       font: fontRegular,
@@ -372,15 +374,14 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
     });
   }
 
+  if (companyLine1) {
+    footerY -= 12;
+    drawCenteredFooterLine(companyLine1);
+  }
+
   if (companyLine2) {
     footerY -= 10;
-    page.drawText(companyLine2, {
-      x: marginX,
-      y: footerY,
-      size: footerFontSize,
-      font: fontRegular,
-      color: rgb(0.3, 0.3, 0.35),
-    });
+    drawCenteredFooterLine(companyLine2);
   }
 
   const pdfBytes = await pdfDoc.save();
