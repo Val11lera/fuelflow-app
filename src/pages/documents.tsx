@@ -241,9 +241,9 @@ export default function DocumentsPage() {
 
 
    
-  const docsComplete =
-    termsAccepted &&
-    ((buyLatest && buyLatest.status === "approved") || (rentLatest && rentLatest.status === "approved"));
+   const docsComplete =
+    termsAccepted && buyLatest && buyLatest.status === "approved";
+
 
   // Mobile sticky CTA logic
   const mobileCta = useMemo(() => {
