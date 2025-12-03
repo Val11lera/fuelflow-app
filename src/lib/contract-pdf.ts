@@ -1,6 +1,6 @@
 // src/lib/contract-pdf.ts
 // src/lib/contract-pdf.ts
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb, PDFPage } from "pdf-lib";
 
 export type ContractForPdf = {
   // Company details
@@ -39,11 +39,11 @@ export type ContractForPdf = {
   // Signature
   signatureName: string;
   jobTitle: string;
-  signedAtIso: string; // e.g. new Date().toISOString()
+  signedAtIso: string;
 };
 
 /* =========
-   Env-based company details (footer)
+   Company details from env
    ========= */
 
 const COMPANY_NAME = process.env.COMPANY_NAME || "FuelFlow";
@@ -70,31 +70,37 @@ function fmt(v: string | null | undefined) {
 export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Array> {
   const pageWidth = 595; // A4
   const pageHeight = 842;
-  const margin = 50;
+  const marginX = 50;
+  const bottomMargin = 80; // keep space for footer
+  const firstPageHeaderHeight = 120;
 
   const pdfDoc = await PDFDocument.create();
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
+  const pages: PDFPage[] = [];
   let page = pdfDoc.addPage([pageWidth, pageHeight]);
-  let y = pageHeight - margin;
+  pages.push(page);
 
-  // ===========
-  // Header with logo
-  // ===========
+  const signedDate = new Date(data.signedAtIso);
+
+  /* ===========
+     Header (logo + centred title)
+     =========== */
+
+  // Logo (top-left)
   const logoUrl = "https://dashboard.fuelflow.co.uk/logo-email.png";
-
   try {
     const logoRes = await fetch(logoUrl);
     if (logoRes.ok) {
       const logoBytes = await logoRes.arrayBuffer();
       const logoImage = await pdfDoc.embedPng(logoBytes);
-      const maxLogoWidth = 120;
+      const maxLogoWidth = 110;
       const scale = maxLogoWidth / logoImage.width;
       const logoDims = logoImage.scale(scale);
 
-      const logoX = margin;
-      const logoY = pageHeight - margin - logoDims.height + 10;
+      const logoX = marginX;
+      const logoY = pageHeight - marginX - logoDims.height + 15;
 
       page.drawImage(logoImage, {
         x: logoX,
@@ -104,88 +110,110 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
       });
     }
   } catch {
-    // if logo fails, continue with text-only header
+    // ignore logo failures
   }
 
-  const signedDate = new Date(data.signedAtIso);
+  // Title centred
+  const titleText = `${COMPANY_NAME} Contract`;
+  const titleSize = 18;
+  const titleWidth = fontBold.widthOfTextAtSize(titleText, titleSize);
+  const titleX = (pageWidth - titleWidth) / 2;
+  const titleY = pageHeight - marginX - 25;
 
-  page.drawText(`${COMPANY_NAME} Contract`, {
-    x: margin + 160,
-    y: pageHeight - margin - 10,
-    size: 18,
+  page.drawText(titleText, {
+    x: titleX,
+    y: titleY,
+    size: titleSize,
     font: fontBold,
     color: rgb(0.05, 0.05, 0.1),
   });
 
-  page.drawText(
-    `Signed on ${signedDate.toLocaleDateString("en-GB")} by ${fmt(data.signatureName)}`,
-    {
-      x: margin + 160,
-      y: pageHeight - margin - 30,
-      size: 10,
-      font: fontRegular,
-      color: rgb(0.25, 0.25, 0.3),
-    }
-  );
+  const subtitle = `Signed on ${signedDate.toLocaleDateString(
+    "en-GB"
+  )} by ${fmt(data.signatureName)}`;
+  const subtitleSize = 10;
+  const subtitleWidth = fontRegular.widthOfTextAtSize(subtitle, subtitleSize);
+  const subtitleX = (pageWidth - subtitleWidth) / 2;
 
-  // Separator line
+  page.drawText(subtitle, {
+    x: subtitleX,
+    y: titleY - 18,
+    size: subtitleSize,
+    font: fontRegular,
+    color: rgb(0.3, 0.3, 0.35),
+  });
+
+  // Thin separator under header
   page.drawLine({
-    start: { x: margin, y: pageHeight - margin - 50 },
-    end: { x: pageWidth - margin, y: pageHeight - margin - 50 },
+    start: { x: marginX, y: pageHeight - marginX - 52 },
+    end: { x: pageWidth - marginX, y: pageHeight - marginX - 52 },
     thickness: 0.7,
     color: rgb(0.8, 0.8, 0.85),
   });
 
-  y = pageHeight - margin - 70;
+  // Content Y start on first page
+  let y = pageHeight - marginX - firstPageHeaderHeight;
 
   const sectionTitleSize = 12;
   const labelSize = 9;
   const valueSize = 11;
 
-  const labelX = margin;
-  const valueX = margin + 170;
+  const labelX = marginX;
+  const valueX = marginX + 170;
   const rowGap = 16;
 
+  // For subsequent pages: top position and "continued" label
+  const continuedTopY = pageHeight - marginX - 40;
+
+  function startNewPage() {
+    page = pdfDoc.addPage([pageWidth, pageHeight]);
+    pages.push(page);
+
+    // small "continued" label
+    page.drawText(`${COMPANY_NAME} Contract (continued)`, {
+      x: marginX,
+      y: pageHeight - marginX - 20,
+      size: 10,
+      font: fontRegular,
+      color: rgb(0.4, 0.4, 0.45),
+    });
+
+    y = continuedTopY;
+  }
+
   function ensureSpace(rows: number = 1) {
-    const needed = rows * rowGap + 60;
-    if (y - needed < margin + 60) {
-      page = pdfDoc.addPage([pageWidth, pageHeight]);
-      y = pageHeight - margin;
-
-      page.drawText(`${COMPANY_NAME} Contract (continued)`, {
-        x: margin,
-        y,
-        size: 10,
-        font: fontRegular,
-        color: rgb(0.4, 0.4, 0.45),
-      });
-
-      y -= 24;
+    const needed = rows * rowGap + 20;
+    if (y - needed < bottomMargin) {
+      startNewPage();
     }
   }
 
-  function drawSection(title: string, note?: string) {
-    ensureSpace(2);
-    // soft strip background
+  function drawSection(title: string, note?: string, minBlockHeight?: number) {
+    const rowsNeeded = minBlockHeight ? Math.ceil(minBlockHeight / rowGap) : 2;
+    ensureSpace(rowsNeeded);
+
+    const hasNote = !!note;
+    const boxHeight = hasNote ? 32 : 22;
+
     page.drawRectangle({
-      x: margin,
+      x: marginX,
       y: y - 6,
-      width: pageWidth - margin * 2,
-      height: note ? 32 : 22,
+      width: pageWidth - marginX * 2,
+      height: boxHeight,
       color: rgb(0.95, 0.96, 0.98),
     });
 
     page.drawText(title, {
-      x: margin + 8,
+      x: marginX + 8,
       y,
       size: sectionTitleSize,
       font: fontBold,
       color: rgb(0.15, 0.18, 0.25),
     });
 
-    if (note) {
+    if (hasNote && note) {
       page.drawText(note, {
-        x: margin + 8,
+        x: marginX + 8,
         y: y - 16,
         size: 8,
         font: fontRegular,
@@ -260,7 +288,7 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   drawRow("Country", fmt(data.siteCountry));
 
   /* ===========
-     5. Tank & ROI (estimates)
+     5. Tank & ROI – indicative
      =========== */
   drawSection(
     "5. Tank & ROI – indicative figures",
@@ -287,21 +315,40 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   /* ===========
      6. Signature & declaration
      =========== */
-  drawSection("6. Signature & declaration");
+  // Force enough room so the entire signature block stays on the same page
+  drawSection("6. Signature & declaration", undefined, 120);
+
   drawRow("Signed by", fmt(data.signatureName));
   drawRow("Job title", fmt(data.jobTitle));
-  drawRow("Signed date", signedDate.toLocaleDateString("en-GB"));
 
+  // "Signed date" + line + caption – keep together
   ensureSpace(3);
 
-  // Signature line
-  const sigLineY = y - 10;
+  page.drawText("Signed date", {
+    x: labelX,
+    y,
+    size: labelSize,
+    font: fontRegular,
+    color: rgb(0.35, 0.35, 0.4),
+  });
+
+  page.drawText(signedDate.toLocaleDateString("en-GB"), {
+    x: valueX,
+    y,
+    size: valueSize,
+    font: fontRegular,
+    color: rgb(0.05, 0.05, 0.12),
+  });
+
+  const sigLineY = y - 18;
+
   page.drawLine({
     start: { x: labelX, y: sigLineY },
     end: { x: labelX + 220, y: sigLineY },
     thickness: 0.8,
     color: rgb(0.2, 0.2, 0.25),
   });
+
   page.drawText("Authorised signatory", {
     x: labelX,
     y: sigLineY - 12,
@@ -311,37 +358,15 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
   });
 
   /* ===========
-     Footer – legal + company details (Option A)
+     Footer – legal disclaimer + company details on last page only
      =========== */
 
-  const footerTextLines: string[] = [];
-
-  // Option A disclaimer, but with dynamic company name
-  footerTextLines.push(
-    "All pricing and ROI calculations in this document are estimates only. They do not constitute financial advice, projections, or guarantees."
-  );
-  footerTextLines.push(
-    "Final pricing may vary due to market changes, supply conditions and taxation. " +
-      `${COMPANY_NAME} makes no assurance of future fuel savings and encourages customers to verify calculations independently.`
-  );
-
-  const footerCompanyLines: string[] = [];
-  if (COMPANY_NAME) footerCompanyLines.push(COMPANY_NAME);
-  if (COMPANY_NUMBER)
-    footerCompanyLines.push(`Company No. ${COMPANY_NUMBER}`);
-  if (COMPANY_VAT_NUMBER)
-    footerCompanyLines.push(`VAT No. ${COMPANY_VAT_NUMBER}`);
-  if (COMPANY_ADDRESS) footerCompanyLines.push(COMPANY_ADDRESS);
-  const contactBits: string[] = [];
-  if (COMPANY_EMAIL) contactBits.push(COMPANY_EMAIL);
-  if (COMPANY_PHONE) contactBits.push(COMPANY_PHONE);
-  if (contactBits.length) footerCompanyLines.push(contactBits.join(" · "));
-
+  const lastPage = pages[pages.length - 1];
+  let footerY = bottomMargin - 10;
   const footerFontSize = 8;
-  const footerWidth = pageWidth - margin * 2;
-  const footerBottomMargin = 24;
+  const footerWidth = pageWidth - marginX * 2;
 
-  function drawWrappedLines(text: string, startY: number): number {
+  function drawWrappedLinesOn(p: PDFPage, text: string, startY: number): number {
     const words = text.split(" ");
     let line = "";
     let yPos = startY;
@@ -350,8 +375,8 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
       const testLine = line ? `${line} ${word}` : word;
       const testWidth = fontRegular.widthOfTextAtSize(testLine, footerFontSize);
       if (testWidth > footerWidth) {
-        page.drawText(line, {
-          x: margin,
+        p.drawText(line, {
+          x: marginX,
           y: yPos,
           size: footerFontSize,
           font: fontRegular,
@@ -365,8 +390,8 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
     }
 
     if (line) {
-      page.drawText(line, {
-        x: margin,
+      p.drawText(line, {
+        x: marginX,
         y: yPos,
         size: footerFontSize,
         font: fontRegular,
@@ -378,28 +403,50 @@ export async function generateContractPdf(data: ContractForPdf): Promise<Uint8Ar
     return yPos;
   }
 
-  // Draw legal disclaimer at very bottom of last page
-  let footerY = margin + footerBottomMargin + 14;
+  // Option A disclaimer, with your company name
+  const legal1 =
+    "All pricing and ROI calculations in this document are estimates only. They do not constitute financial advice, projections, or guarantees.";
+  const legal2 =
+    "Final pricing may vary due to market changes, supply conditions and taxation. " +
+    `${COMPANY_NAME} makes no assurance of future fuel savings and encourages customers to verify calculations independently.`;
 
-  footerTextLines.forEach((t) => {
-    footerY = drawWrappedLines(t, footerY);
-  });
+  footerY = drawWrappedLinesOn(lastPage, legal1, footerY);
+  footerY = drawWrappedLinesOn(lastPage, legal2, footerY - 2);
 
-  if (footerCompanyLines.length) {
+  // Company lines
+  const companyLines: string[] = [];
+
+  if (COMPANY_NAME) companyLines.push(COMPANY_NAME);
+  if (COMPANY_NUMBER) companyLines.push(`Company No. ${COMPANY_NUMBER}`);
+  if (COMPANY_VAT_NUMBER) companyLines.push(`VAT No. ${COMPANY_VAT_NUMBER}`);
+
+  const addressLines =
+    COMPANY_ADDRESS
+      .split(/\\n|\n/)
+      .map((l) => l.trim())
+      .filter(Boolean) || [];
+
+  companyLines.push(...addressLines);
+
+  const contactBits: string[] = [];
+  if (COMPANY_EMAIL) contactBits.push(COMPANY_EMAIL);
+  if (COMPANY_PHONE) contactBits.push(COMPANY_PHONE);
+  if (contactBits.length) companyLines.push(contactBits.join(" · "));
+
+  if (companyLines.length) {
     footerY -= 4;
-    footerCompanyLines.forEach((t) => {
-      page.drawText(t, {
-        x: margin,
+    for (const line of companyLines) {
+      lastPage.drawText(line, {
+        x: marginX,
         y: footerY,
         size: footerFontSize,
         font: fontRegular,
         color: rgb(0.3, 0.3, 0.35),
       });
       footerY -= 10;
-    });
+    }
   }
 
   const pdfBytes = await pdfDoc.save();
   return pdfBytes;
 }
-
