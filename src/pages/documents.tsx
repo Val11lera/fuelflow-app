@@ -222,22 +222,31 @@ export default function DocumentsPage() {
   }
 
 
-  async function openTermsPdf() {
-    try {
-      const { data, error } = await supabase.storage
-        .from(LEGAL_BUCKET)
-        .createSignedUrl(TERMS_PDF_PATH, 60); // 60 seconds
+async function openTermsPdf() {
+  try {
+    const { data, error } = await supabase.storage
+      .from(LEGAL_BUCKET)
+      .createSignedUrl(TERMS_PDF_PATH, 60); // 60 seconds
 
-      if (error || !data?.signedUrl) {
-        alert("Could not open Terms PDF. Please try again.");
-        return;
-      }
+    console.log("openTermsPdf result:", {
+      bucket: LEGAL_BUCKET,
+      path: TERMS_PDF_PATH,
+      data,
+      error,
+    });
 
-      window.open(data.signedUrl, "_blank");
-    } catch {
+    if (error || !data?.signedUrl) {
       alert("Could not open Terms PDF. Please try again.");
+      return;
     }
+
+    window.open(data.signedUrl, "_blank");
+  } catch (e) {
+    console.error("openTermsPdf exception:", e);
+    alert("Could not open Terms PDF. Please try again.");
   }
+}
+
 
 
    
