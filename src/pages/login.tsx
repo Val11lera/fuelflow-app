@@ -305,8 +305,37 @@ export default function Login() {
       }
 
       // Approved → success then route (admin or client)
+      // Approved → success then route (simple direct routing)
       setMsg({ type: "success", text: "Login successful! Redirecting…" });
-      await routeAfterLogin(email);
+
+      try {
+        const lower = email.toLowerCase();
+
+        // Is this email an admin?
+        const { data, error } = await supabase
+          .from("admins")
+          .select("email")
+          .eq("email", lower)
+          .maybeSingle();
+
+        if (error) {
+          // If the check fails for any reason, just send to client dashboard
+          router.push("/client-dashboard");
+          return;
+        }
+
+        if (data?.email) {
+          // Admin user
+          router.push("/admin-dashboard");
+        } else {
+          // Normal client user
+          router.push("/client-dashboard");
+        }
+      } catch {
+        // On any unexpected error, still try client dashboard
+        router.push("/client-dashboard");
+      }
+
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
     } finally {
