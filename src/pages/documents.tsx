@@ -302,7 +302,7 @@ async function openTermsPdf() {
             <BackIcon className="h-5 w-5" />
           </a>
           <img src="/logo-email.png" alt="FuelFlow" className="h-7 w-auto hidden md:block" />
-          <h1 className="text-xl font-bold sm:text-2xl">Documents</h1>
+          <h1 className="text-xl font-bold sm:text-2xl">Documents (TEST)</h1>
         </div>
 
         <div className="flex items-center gap-2">
