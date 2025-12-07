@@ -157,9 +157,10 @@ export default function Login() {
 
   /** Route user after successful login (admin vs normal client) */
   /** Route user after successful login (admin vs normal client) */
+  /** Route user after successful login (admin vs normal client) */
   async function routeAfterLogin(email: string | null) {
-    // Where normal clients should land
-    const clientPath = "/client-dashboard"; // or "/documents" if you really want that
+    // Where normal clients should land:
+    const clientPath = "/documents"; // or "/client-dashboard" if you prefer
 
     if (!email) {
       router.replace("/login");
@@ -169,23 +170,26 @@ export default function Login() {
     const lower = email.toLowerCase();
 
     try {
-      // Is this email an admin?
+      // Check if this email is in the admins table
       const { data, error } = await supabase
         .from("admins")
         .select("email")
         .eq("email", lower)
         .maybeSingle();
 
-      // If query fails or user is not an admin → treat as normal client
+      // If it's an admin and no error → admin dashboard
+      // Otherwise → normal client area
       const target =
-        !error && data?.email ? "/admin-dashboard" : clientPath;
+        !error && data && data.email ? "/admin-dashboard" : clientPath;
 
       router.replace(target);
-    } catch {
-      // On any unexpected error, still send them to the client area
+    } catch (e) {
+      console.error("routeAfterLogin error", e);
+      // On any error just send them to the normal client area
       router.replace(clientPath);
     }
   }
+
 
       if (data?.email) {
         // Admin → admin dashboard
