@@ -94,7 +94,7 @@ export default function Login() {
     setCaptchaToken(null);
   }
 
-  // Optional ?next=/foo support – currently unused, but safe to keep
+  // optional future “next” support, currently unused
   const nextPath =
     typeof router.query.next === "string" && router.query.next.startsWith("/")
       ? router.query.next
@@ -157,10 +157,11 @@ export default function Login() {
 
   /** Route user after successful login (admin vs normal client) */
   async function routeAfterLogin(email: string | null) {
-    // Where normal clients should land
-    const clientPath = "/documents"; // change to "/client-dashboard" if you prefer
+    const clientPath = "/documents"; // client area
+    const adminPath = "/admin-dashboard";
 
     if (!email) {
+      // no email – go back to login
       if (typeof window !== "undefined") {
         window.location.href = "/login";
       } else {
@@ -172,31 +173,27 @@ export default function Login() {
     const lower = email.toLowerCase();
 
     try {
-      // Check if email is in the admins table
+      // Is this email an admin?
       const { data: adminRow, error } = await supabase
         .from("admins")
         .select("email")
         .eq("email", lower)
         .maybeSingle();
 
-      const target =
-        !error && adminRow && adminRow.email
-          ? "/admin-dashboard"
-          : clientPath;
+      const dest =
+        !error && adminRow && adminRow.email ? adminPath : clientPath;
 
-      // Hard redirect first, router as fallback
       if (typeof window !== "undefined") {
-        window.location.href = target;
+        window.location.href = dest;
       } else {
-        router.replace(target);
+        router.replace(dest);
       }
-    } catch (err) {
-      console.error("routeAfterLogin error", err);
-      const fallback = clientPath;
+    } catch {
+      // If anything goes wrong, send them to client area
       if (typeof window !== "undefined") {
-        window.location.href = fallback;
+        window.location.href = clientPath;
       } else {
-        router.replace(fallback);
+        router.replace(clientPath);
       }
     }
   }
@@ -207,18 +204,21 @@ export default function Login() {
 
   // Prefill remembered email
   useEffect(() => {
-    const saved = localStorage.getItem("ff_login_email");
+    const saved = typeof window !== "undefined"
+      ? window.localStorage.getItem("ff_login_email")
+      : null;
     if (saved) setEmail(saved);
   }, []);
 
   // Keep remembered email updated
   useEffect(() => {
-    if (remember && email) localStorage.setItem("ff_login_email", email);
-    if (!remember) localStorage.removeItem("ff_login_email");
+    if (typeof window === "undefined") return;
+    if (remember && email) window.localStorage.setItem("ff_login_email", email);
+    if (!remember) window.localStorage.removeItem("ff_login_email");
   }, [remember, email]);
 
-  // NOTE: auto-redirect-if-already-signed-in effect has been removed
-  // to avoid any unexpected redirect loops.
+  // IMPORTANT: we do NOT auto-redirect on page load anymore.
+  // Only handleLogin() will redirect, to avoid redirect loops.
 
   /* -------------------------
      Actions
@@ -251,7 +251,7 @@ export default function Login() {
         return;
       }
 
-      // Write HTTP-only cookies for SSR
+      // Write HTTP-only cookies for SSR / API routes
       await syncServerSession();
 
       // Access gate (block / approve)
@@ -314,7 +314,11 @@ export default function Login() {
         return;
       }
 
-      const redirectTo = `${window.location.origin}/update-password`;
+      const redirectTo =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/update-password`
+          : undefined;
+
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo,
         captchaToken,
@@ -664,7 +668,6 @@ function ChartArt({ className }: { className?: string }) {
     </svg>
   );
 }
-
 function TruckArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
@@ -690,7 +693,6 @@ function TruckArt({ className }: { className?: string }) {
     </svg>
   );
 }
-
 function ShieldCardArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
@@ -714,7 +716,6 @@ function ShieldCardArt({ className }: { className?: string }) {
     </svg>
   );
 }
-
 function HeadsetArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
@@ -730,3 +731,4 @@ function HeadsetArt({ className }: { className?: string }) {
     </svg>
   );
 }
+
