@@ -161,7 +161,11 @@ export default function Login() {
     const clientPath = "/documents"; // change to "/client-dashboard" if you prefer
 
     if (!email) {
-      router.replace("/login");
+      if (typeof window !== "undefined") {
+        window.location.href = "/login";
+      } else {
+        router.replace("/login");
+      }
       return;
     }
 
@@ -180,10 +184,20 @@ export default function Login() {
           ? "/admin-dashboard"
           : clientPath;
 
-      router.replace(target);
+      // Hard redirect first, router as fallback
+      if (typeof window !== "undefined") {
+        window.location.href = target;
+      } else {
+        router.replace(target);
+      }
     } catch (err) {
       console.error("routeAfterLogin error", err);
-      router.replace(clientPath);
+      const fallback = clientPath;
+      if (typeof window !== "undefined") {
+        window.location.href = fallback;
+      } else {
+        router.replace(fallback);
+      }
     }
   }
 
@@ -203,17 +217,8 @@ export default function Login() {
     if (!remember) localStorage.removeItem("ff_login_email");
   }, [remember, email]);
 
-  // If already signed in, sync cookies then route them (prevents loops)
-  useEffect(() => {
-    (async () => {
-      const { data: auth } = await supabase.auth.getUser();
-      if (auth?.user?.email) {
-        await syncServerSession();
-        await routeAfterLogin(auth.user.email);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // NOTE: auto-redirect-if-already-signed-in effect has been removed
+  // to avoid any unexpected redirect loops.
 
   /* -------------------------
      Actions
@@ -725,4 +730,3 @@ function HeadsetArt({ className }: { className?: string }) {
     </svg>
   );
 }
-
