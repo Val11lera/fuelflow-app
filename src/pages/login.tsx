@@ -94,7 +94,7 @@ export default function Login() {
     setCaptchaToken(null);
   }
 
-  // Where should we go next (unused right now but kept for future)?
+  // Optional ?next=/foo support – currently unused, but safe to keep
   const nextPath =
     typeof router.query.next === "string" && router.query.next.startsWith("/")
       ? router.query.next
@@ -156,11 +156,9 @@ export default function Login() {
   }
 
   /** Route user after successful login (admin vs normal client) */
-  /** Route user after successful login (admin vs normal client) */
-  /** Route user after successful login (admin vs normal client) */
   async function routeAfterLogin(email: string | null) {
-    // Where normal clients should land:
-    const clientPath = "/documents"; // or "/client-dashboard" if you prefer
+    // Where normal clients should land
+    const clientPath = "/documents"; // change to "/client-dashboard" if you prefer
 
     if (!email) {
       router.replace("/login");
@@ -170,37 +168,22 @@ export default function Login() {
     const lower = email.toLowerCase();
 
     try {
-      // Check if this email is in the admins table
-      const { data, error } = await supabase
+      // Check if email is in the admins table
+      const { data: adminRow, error } = await supabase
         .from("admins")
         .select("email")
         .eq("email", lower)
         .maybeSingle();
 
-      // If it's an admin and no error → admin dashboard
-      // Otherwise → normal client area
       const target =
-        !error && data && data.email ? "/admin-dashboard" : clientPath;
+        !error && adminRow && adminRow.email
+          ? "/admin-dashboard"
+          : clientPath;
 
       router.replace(target);
-    } catch (e) {
-      console.error("routeAfterLogin error", e);
-      // On any error just send them to the normal client area
+    } catch (err) {
+      console.error("routeAfterLogin error", err);
       router.replace(clientPath);
-    }
-  }
-
-
-      if (data?.email) {
-        // Admin → admin dashboard
-        router.push("/admin-dashboard");
-      } else {
-        // Normal client → documents page
-        router.push(clientPath);
-      }
-    } catch {
-      // Network / other error → still send them to client area
-      router.push(clientPath);
     }
   }
 
@@ -676,6 +659,7 @@ function ChartArt({ className }: { className?: string }) {
     </svg>
   );
 }
+
 function TruckArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
@@ -701,6 +685,7 @@ function TruckArt({ className }: { className?: string }) {
     </svg>
   );
 }
+
 function ShieldCardArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
@@ -724,6 +709,7 @@ function ShieldCardArt({ className }: { className?: string }) {
     </svg>
   );
 }
+
 function HeadsetArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
