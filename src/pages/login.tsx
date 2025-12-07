@@ -94,7 +94,7 @@ export default function Login() {
     setCaptchaToken(null);
   }
 
-  // Where should we go next?
+  // Where should we go next (unused right now but kept for future)?
   const nextPath =
     typeof router.query.next === "string" && router.query.next.startsWith("/")
       ? router.query.next
@@ -116,7 +116,9 @@ export default function Login() {
   }
 
   /** Check access state for the given (or current) user */
-  async function getAccessState(explicitEmail?: string): Promise<"blocked" | "approved" | "pending" | "unknown"> {
+  async function getAccessState(
+    explicitEmail?: string
+  ): Promise<"blocked" | "approved" | "pending" | "unknown"> {
     try {
       let lower = (explicitEmail || "").toLowerCase();
       if (!lower) {
@@ -153,74 +155,65 @@ export default function Login() {
     }
   }
 
-  /** Route respecting admin/client + access gates */
-async function routeAfterLogin(
-  router: ReturnType<typeof useRouter>,
-  state: AccessState,
-  email?: string | null
-) {
-  // Where non-admin users should land in TEST env
-  const clientPath = "/documents";
+  /** Route user after successful login (admin vs normal client) */
+  async function routeAfterLogin(email: string | null) {
+    // In this TEST branch, normal users go to the documents page:
+    const clientPath = "/documents";
 
-  if (!email) {
-    router.push("/login");
-    return;
-  }
-
-  // We already checked this before calling, but keep it defensive
-  if (state !== "approved") {
-    router.push("/login");
-    return;
-  }
-
-  const lower = email.toLowerCase();
-
-  try {
-    // Sync Supabase auth cookie for API routes
-    await fetch("/api/auth/set", { method: "POST" });
-
-    // Is this email an admin?
-    const { data, error } = await supabase
-      .from("admins")
-      .select("email")
-      .eq("email", lower)
-      .maybeSingle();
-
-    if (error) {
-      // If anything goes wrong, just treat them as a normal client
-      router.push(clientPath);
+    if (!email) {
+      router.push("/login");
       return;
     }
 
-    if (data?.email) {
-      // Admin → admin dashboard
-      router.push("/admin-dashboard");
-    } else {
-      // Normal client → documents page
+    const lower = email.toLowerCase();
+
+    try {
+      // Ensure auth cookies are set for API routes
+      await fetch("/api/auth/set", { method: "POST" }).catch(() => {});
+
+      // Is this email an admin?
+      const { data, error } = await supabase
+        .from("admins")
+        .select("email")
+        .eq("email", lower)
+        .maybeSingle();
+
+      if (error) {
+        // If anything goes wrong, treat them as a normal client
+        router.push(clientPath);
+        return;
+      }
+
+      if (data?.email) {
+        // Admin → admin dashboard
+        router.push("/admin-dashboard");
+      } else {
+        // Normal client → documents page
+        router.push(clientPath);
+      }
+    } catch {
+      // Network / other error → still send them to client area
       router.push(clientPath);
     }
-  } catch {
-    // Network / other error → still send them to client area
-    router.push(clientPath);
   }
-}
-
 
   /* -------------------------
      Effects
   -------------------------- */
 
+  // Prefill remembered email
   useEffect(() => {
     const saved = localStorage.getItem("ff_login_email");
     if (saved) setEmail(saved);
   }, []);
 
+  // Keep remembered email updated
   useEffect(() => {
     if (remember && email) localStorage.setItem("ff_login_email", email);
     if (!remember) localStorage.removeItem("ff_login_email");
   }, [remember, email]);
 
-  // If already signed in, sync cookies then check access BEFORE routing (prevents loops)
+  // If already signed in, sync cookies then route them (prevents loops)
   useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
@@ -274,7 +267,10 @@ async function routeAfterLogin(
           await supabase.auth.signOut();
         } catch {}
         await fetch("/api/auth/signout", { method: "POST" }).catch(() => {});
-        setMsg({ type: "error", text: "Your account is blocked. Please contact support." });
+        setMsg({
+          type: "error",
+          text: "Your account is blocked. Please contact support.",
+        });
         resetCaptcha();
         return;
       }
@@ -295,38 +291,10 @@ async function routeAfterLogin(
         return;
       }
 
-      // Approved → success then route (admin or client)
-      // Approved → success then route (simple direct routing)
+      // Approved → show success then route
       setMsg({ type: "success", text: "Login successful! Redirecting…" });
 
-      try {
-        const lower = email.toLowerCase();
-
-        // Is this email an admin?
-        const { data, error } = await supabase
-          .from("admins")
-          .select("email")
-          .eq("email", lower)
-          .maybeSingle();
-
-        if (error) {
-          // If the check fails for any reason, just send to client dashboard
-          router.push("/client-dashboard");
-          return;
-        }
-
-        if (data?.email) {
-          // Admin user
-          router.push("/admin-dashboard");
-        } else {
-          // Normal client user
-          router.push("/client-dashboard");
-        }
-      } catch {
-        // On any unexpected error, still try client dashboard
-        router.push("/client-dashboard");
-      }
-
+      await routeAfterLogin(email);
     } catch (e: any) {
       setMsg({ type: "error", text: e?.message || "Unexpected error." });
     } finally {
@@ -340,7 +308,10 @@ async function routeAfterLogin(
       setMsg(null);
 
       if (!email) {
-        setMsg({ type: "error", text: "Enter your email to receive a reset link." });
+        setMsg({
+          type: "error",
+          text: "Enter your email to receive a reset link.",
+        });
         return;
       }
       if (!captchaToken) {
@@ -355,7 +326,10 @@ async function routeAfterLogin(
       });
 
       if (error) {
-        setMsg({ type: "error", text: "Couldn’t send reset email: " + error.message });
+        setMsg({
+          type: "error",
+          text: "Couldn’t send reset email: " + error.message,
+        });
         resetCaptcha();
         return;
       }
@@ -401,9 +375,12 @@ async function routeAfterLogin(
           {/* VISUAL Welcome (left) */}
           <section className="order-2 flex lg:order-1 lg:col-span-7">
             <div className="flex-1 rounded-2xl bg-gray-800/40 p-6 md:p-7 h-full">
-              <h1 className="text-3xl font-bold tracking-tight">Welcome to FuelFlow</h1>
+              <h1 className="text-3xl font-bold tracking-tight">
+                Welcome to FuelFlow
+              </h1>
               <p className="mt-2 max-w-xl text-white/70">
-                Your hub for live fuel pricing, orders, contracts and invoices — all in one place.
+                Your hub for live fuel pricing, orders, contracts and invoices —
+                all in one place.
               </p>
 
               <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -441,8 +418,12 @@ async function routeAfterLogin(
           <section className="order-1 flex lg:order-2 lg:col-span-5">
             <div className="flex-1 rounded-2xl bg-gray-800 p-6 md:p-7 h-full">
               <div className="mb-5">
-                <h2 className="text-xl font-semibold tracking-tight">Client login</h2>
-                <p className="mt-1 text-sm text-white/70">Use your account email and password.</p>
+                <h2 className="text-xl font-semibold tracking-tight">
+                  Client login
+                </h2>
+                <p className="mt-1 text-sm text-white/70">
+                  Use your account email and password.
+                </p>
               </div>
 
               {/* Email */}
@@ -491,7 +472,11 @@ async function routeAfterLogin(
                     </button>
                   </div>
                 </label>
-                {capsOn && <div className="mt-1 text-xs text-amber-300">Caps Lock is ON</div>}
+                {capsOn && (
+                  <div className="mt-1 text-xs text-amber-300">
+                    Caps Lock is ON
+                  </div>
+                )}
               </div>
 
               {/* hCaptcha */}
@@ -541,7 +526,9 @@ async function routeAfterLogin(
               {/* Divider + Register */}
               <div className="my-5 flex items-center gap-3 text-white/40">
                 <span className="h-px w-full bg-white/10" />
-                <span className="text-[11px] uppercase tracking-widest">New to FuelFlow?</span>
+                <span className="text-[11px] uppercase tracking-widest">
+                  New to FuelFlow?
+                </span>
                 <span className="h-px w-full bg-white/10" />
               </div>
               <a
@@ -569,7 +556,10 @@ async function routeAfterLogin(
 
               <p className="mt-4 text-[11px] leading-relaxed text-white/60">
                 By signing in you agree to our{" "}
-                <a href="/terms?return=/client-dashboard" className="text-yellow-300 underline-offset-2 hover:underline">
+                <a
+                  href="/terms?return=/client-dashboard"
+                  className="text-yellow-300 underline-offset-2 hover:underline"
+                >
                   Terms
                 </a>
                 .
@@ -594,7 +584,9 @@ async function routeAfterLogin(
           >
             <div className="mb-3 flex items-center gap-3">
               {(() => {
-                const Art = openFeature ? FEATURES[openFeature].Art : FEATURES.pricing.Art;
+                const Art = openFeature
+                  ? FEATURES[openFeature].Art
+                  : FEATURES.pricing.Art;
                 return <Art className="h-8 w-8" />;
               })()}
               <div className="text-lg font-semibold">
@@ -618,7 +610,8 @@ async function routeAfterLogin(
 
       <footer className="relative border-t border-white/10">
         <div className="mx-auto max-w-6xl px-4 py-4 text-center text-xs text-white/60">
-          © {new Date().getFullYear()} FuelFlow. Secure login powered by Supabase &amp; hCaptcha.
+          © {new Date().getFullYear()} FuelFlow. Secure login powered by Supabase
+          &amp; hCaptcha.
         </div>
       </footer>
     </div>
@@ -629,7 +622,14 @@ async function routeAfterLogin(
 
 function MailIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      aria-hidden="true"
+    >
       <rect x="3" y="5" width="18" height="14" rx="2" ry="2" />
       <path d="M3 7l9 6 9-6" />
     </svg>
@@ -646,7 +646,16 @@ function ChartArt({ className }: { className?: string }) {
           <stop offset="1" stopColor="#FFD000" stopOpacity="0.4" />
         </linearGradient>
       </defs>
-      <rect x="6" y="10" width="52" height="40" rx="8" fill="none" stroke="currentColor" opacity="0.3" />
+      <rect
+        x="6"
+        y="10"
+        width="52"
+        height="40"
+        rx="8"
+        fill="none"
+        stroke="currentColor"
+        opacity="0.3"
+      />
       <path
         d="M12 40 L24 28 L34 33 L46 20 L54 24"
         fill="none"
@@ -663,8 +672,22 @@ function ChartArt({ className }: { className?: string }) {
 function TruckArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
-      <rect x="6" y="22" width="30" height="16" rx="3" fill="none" stroke="currentColor" opacity="0.35" />
-      <path d="M36 26h10l6 6v6H36z" fill="none" stroke="currentColor" opacity="0.35" />
+      <rect
+        x="6"
+        y="22"
+        width="30"
+        height="16"
+        rx="3"
+        fill="none"
+        stroke="currentColor"
+        opacity="0.35"
+      />
+      <path
+        d="M36 26h10l6 6v6H36z"
+        fill="none"
+        stroke="currentColor"
+        opacity="0.35"
+      />
       <circle cx="18" cy="42" r="4" fill="#FFD000" />
       <circle cx="46" cy="42" r="4" fill="#FFD000" />
       <path d="M8 22h26" stroke="#FFD000" strokeWidth="2" opacity="0.5" />
@@ -674,8 +697,22 @@ function TruckArt({ className }: { className?: string }) {
 function ShieldCardArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
-      <path d="M32 10l16 6v12c0 10-7 18-16 22-9-4-16-12-16-22V16l16-6z" fill="none" stroke="currentColor" opacity="0.35" />
-      <rect x="22" y="24" width="20" height="12" rx="3" fill="none" stroke="#FFD000" opacity="0.6" />
+      <path
+        d="M32 10l16 6v12c0 10-7 18-16 22-9-4-16-12-16-22V16l16-6z"
+        fill="none"
+        stroke="currentColor"
+        opacity="0.35"
+      />
+      <rect
+        x="22"
+        y="24"
+        width="20"
+        height="12"
+        rx="3"
+        fill="none"
+        stroke="#FFD000"
+        opacity="0.6"
+      />
       <circle cx="32" cy="30" r="2" fill="#FFD000" />
     </svg>
   );
@@ -683,7 +720,12 @@ function ShieldCardArt({ className }: { className?: string }) {
 function HeadsetArt({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className}>
-      <path d="M12 36v-4c0-11 9-20 20-20s20 9 20 20v4" fill="none" stroke="currentColor" opacity="0.35" />
+      <path
+        d="M12 36v-4c0-11 9-20 20-20s20 9 20 20v4"
+        fill="none"
+        stroke="currentColor"
+        opacity="0.35"
+      />
       <rect x="10" y="34" width="10" height="12" rx="3" fill="#FFD000" />
       <rect x="44" y="34" width="10" height="12" rx="3" fill="#FFD000" />
       <path d="M40 48c0 3-4 6-8 6" stroke="currentColor" opacity="0.35" />
