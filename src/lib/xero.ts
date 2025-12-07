@@ -93,10 +93,12 @@ export async function createXeroInvoiceForOrder(order: OrderRow) {
     ],
   };
 
-  const payload = { invoices: [invoice] };
+// Build payload for Xero – cast to any so TypeScript stops complaining
+const payload: any = { invoices: [invoice as any] };
 
-  const result = await xero.accountingApi.createInvoices(tenantId, payload);
-  const created = result.body.invoices?.[0];
+const result = await (xero.accountingApi as any).createInvoices(tenantId, payload);
+const created = (result.body as any).invoices?.[0];
+
 
   if (!created) {
     throw new Error("Xero createInvoices returned no invoices");
