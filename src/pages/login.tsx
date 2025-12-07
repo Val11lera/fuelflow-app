@@ -154,66 +154,57 @@ export default function Login() {
   }
 
   /** Route respecting admin/client + access gates */
-  async function routeAfterLogin(explicitEmail?: string) {
-    // 0) Gate by access first to avoid loops
-    const state = await getAccessState(explicitEmail);
+async function routeAfterLogin(
+  router: ReturnType<typeof useRouter>,
+  state: AccessState,
+  email?: string | null
+) {
+  // Where non-admin users should land in TEST env
+  const clientPath = "/documents";
 
-    if (state === "blocked") {
-      try {
-        await supabase.auth.signOut();
-      } catch {}
-      await fetch("/api/auth/signout", { method: "POST" }).catch(() => {});
-      setMsg({ type: "error", text: "Your account is blocked. Please contact support." });
-      return;
-    }
-
-    if (state !== "approved") {
-      try {
-        await supabase.auth.signOut();
-      } catch {}
-      await fetch("/api/auth/signout", { method: "POST" }).catch(() => {});
-      setMsg({
-        type: "info",
-        text:
-          state === "pending"
-            ? "Your account is pending approval. An admin will grant access soon."
-            : "Please try again.",
-      });
-      return;
-    }
-
-    // 1) Approved → decide admin vs client
-    try {
-      let lower = (explicitEmail || "").toLowerCase();
-      if (!lower) {
-        const { data: auth } = await supabase.auth.getUser();
-        lower = (auth?.user?.email || "").toLowerCase();
-      }
-      if (!lower) {
-        router.push(nextPath);
-        return;
-      }
-
-      const { data, error } = await supabase
-        .from("admins")
-        .select("email")
-        .eq("email", lower)
-        .maybeSingle();
-
-      if (error) {
-        router.push(nextPath);
-        return;
-      }
-
-      if (data?.email) {
-        router.push("/admin-dashboard");
-      } else {
-        router.push(nextPath);
-      }
-    } catch {
-      router.push(nextPath);
-    }
+  if (!email) {
+    router.push("/login");
+    return;
   }
+
+  // We already checked this before calling, but keep it defensive
+  if (state !== "approved") {
+    router.push("/login");
+    return;
+  }
+
+  const lower = email.toLowerCase();
+
+  try {
+    // Sync Supabase auth cookie for API routes
+    await fetch("/api/auth/set", { method: "POST" });
+
+    // Is this email an admin?
+    const { data, error } = await supabase
+      .from("admins")
+      .select("email")
+      .eq("email", lower)
+      .maybeSingle();
+
+    if (error) {
+      // If anything goes wrong, just treat them as a normal client
+      router.push(clientPath);
+      return;
+    }
+
+    if (data?.email) {
+      // Admin → admin dashboard
+      router.push("/admin-dashboard");
+    } else {
+      // Normal client → documents page
+      router.push(clientPath);
+    }
+  } catch {
+    // Network / other error → still send them to client area
+    router.push(clientPath);
+  }
+}
+
 
   /* -------------------------
      Effects
