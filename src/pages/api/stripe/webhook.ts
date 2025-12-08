@@ -158,25 +158,28 @@ function buildItemsFromOrderOrStripe(args: {
   const { order, lineItems, session } = args;
 
   // Prefer order row if present
-  if (order && (order.litres || order.total_pence || order.unit_price_pence)) {
-    const litres = Number(order.litres || 0);
-    const desc =
-      order.product ||
-      order.fuel ||
-      (lineItems?.data?.[0]?.description ?? "Fuel order");
-    const totalMajor =
-      order.total_pence != null ? Number(order.total_pence) / 100 : undefined;
-    const unitMajor =
-      order.unit_price_pence != null
-        ? Number(order.unit_price_pence) / 100
-        : totalMajor && litres
-        ? totalMajor / litres
-        : undefined;
+  if (order) {
+    const o = order;
+    if (o.litres || o.total_pence || o.unit_price_pence) {
+      const litres = Number(o.litres || 0);
+      const desc =
+        o.product ||
+        o.fuel ||
+        (lineItems?.data?.[0]?.description ?? "Fuel order");
+      const totalMajor =
+        o.total_pence != null ? Number(o.total_pence) / 100 : undefined;
+      const unitMajor =
+        o.unit_price_pence != null
+          ? Number(o.unit_price_pence) / 100
+          : totalMajor && litres
+          ? totalMajor / litres
+          : undefined;
 
-    if (litres && totalMajor != null)
-      return [{ description: desc, litres, total: totalMajor }];
-    if (litres && unitMajor != null)
-      return [{ description: desc, litres, unitPrice: unitMajor }];
+      if (litres && totalMajor != null)
+        return [{ description: desc, litres, total: totalMajor }];
+      if (litres && unitMajor != null)
+        return [{ description: desc, litres, unitPrice: unitMajor }];
+    }
   }
 
   // Fallback: derive from Stripe line items
@@ -186,6 +189,55 @@ function buildItemsFromOrderOrStripe(args: {
     total?: number;
     unitPrice?: number;
   }> = [];
+
+  if (lineItems) {
+    for (const row of lineItems.data) {
+      const qty = row.quantity ?? 1;
+      const metaLitres =
+        Number(
+          // @ts-ignore
+          (row as any)?.metadata?.litres ??
+            (row.price?.metadata as any)?.litres ??
+            ((row.price?.product as any)?.metadata?.litres)
+        ) || 0;
+      const sessionLitres = Number((session?.metadata as any)?.litres || 0);
+      const litres =
+        metaLitres || (sessionLitres && qty === 1 ? sessionLitres : qty);
+
+      const lineTotalMajor =
+        ((row.amount_total ?? row.price?.unit_amount ?? 0) * qty) / 100;
+      const lineUnitMajor =
+        row.price?.unit_amount != null
+          ? row.price.unit_amount / 100
+          : lineTotalMajor / litres;
+
+      const desc =
+        row.description ||
+        row.price?.nickname ||
+        (row.price?.product as any)?.name ||
+        "Fuel order";
+
+      items.push({
+        description: desc,
+        litres,
+        total: lineTotalMajor,
+        unitPrice: lineUnitMajor,
+      });
+    }
+  }
+
+  return items.length
+    ? items
+    : [
+        {
+          description: "Fuel order",
+          litres: Number((session?.metadata as any)?.litres || 1),
+          total:
+            ((session?.amount_total ?? session?.amount_subtotal ?? 0) as number) /
+            100,
+        },
+      ];
+}
 
   if (lineItems) {
     for (const row of lineItems.data) {
