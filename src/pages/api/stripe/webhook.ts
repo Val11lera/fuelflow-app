@@ -613,57 +613,150 @@ export default async function handler(
          SECONDARY path — only when there is NO Checkout Session
          (e.g. manual PI confirmation, some API flows)
          ============================================================ */
-      case "payment_intent.succeeded": {
-        const pi = event.data.object as Stripe.PaymentIntent;
-        const piId = pi.id;
+case "payment_intent.succeeded": {
+  const pi = event.data.object as Stripe.PaymentIntent;
+  const piId = pi.id;
 
-        // If this PI is tied to a Checkout Session,
-        // still mark the order as paid and save the payment,
-        // but leave invoicing to checkout.session.completed.
-        if (await hasCheckoutSessionForPI(piId)) {
-          const orderIdFromPi = (pi.metadata as any)?.order_id || null;
+  const orderId =
+    (pi.metadata as any)?.order_id ||
+    (typeof pi.latest_charge === "string"
+      ? (await stripe.charges.retrieve(pi.latest_charge)).metadata?.order_id
+      : undefined);
 
-          if (orderIdFromPi) {
-            const { error } = await sb()
-              .from("orders")
-              .update({
-                status: "paid",
-                paid_at: new Date().toISOString(),
-              })
-              .eq("id", orderIdFromPi);
+  await logRow({
+    event_type: "payment_intent.succeeded/received",
+    order_id: orderId ?? null,
+    extra: { pi_id: piId, metadata: pi.metadata || null },
+  });
 
-            if (error)
-              throw new Error(`Supabase update failed: ${error.message}`);
+  const order = await fetchOrder(orderId);
 
-            await logRow({
-              event_type:
-                "pi.succeeded_skipped_due_to_checkout_session_order_paid",
-              order_id: orderIdFromPi,
-              status: "paid",
-              extra: { pi_id: piId },
-            });
-          } else {
-            await logRow({
-              event_type:
-                "pi.succeeded_skipped_due_to_checkout_session_no_order_id",
-              status: pi.status,
-              extra: { pi_id: piId },
-            });
-          }
+  if (orderId) {
+    const { error } = await sb()
+      .from("orders")
+      .update({
+        status: "paid",
+        paid_at: new Date().toISOString(),
+      })
+      .eq("id", orderId);
 
-          await upsertPaymentRow({
-            pi_id: piId,
-            amount: (pi.amount_received ?? pi.amount) ?? null,
-            currency: (pi.currency || "gbp").toUpperCase(),
-            status: pi.status,
-            email:
-              (pi.receipt_email || (pi.metadata as any)?.customer_email) ?? null,
-            order_id: orderIdFromPi,
-            meta: pi.metadata ?? null,
-          });
+    if (error)
+      throw new Error(`Supabase update failed: ${error.message}`);
 
-          break;
-        }
+    await logRow({
+      event_type: "order_updated_to_paid",
+      order_id: orderId,
+      status: "paid",
+    });
+  }
+
+  await upsertPaymentRow({
+    pi_id: piId,
+    amount: (pi.amount_received ?? pi.amount) ?? null,
+    currency: (pi.currency || "gbp").toUpperCase(),
+    status: pi.status,
+    email:
+      (pi.receipt_email || (pi.metadata as any)?.customer_email) ?? null,
+    order_id: orderId ?? null,
+    meta: pi.metadata ?? null,
+  });
+
+  // Idempotency: if already invoiced for this order, skip
+  if (await invoiceAlreadySent(orderId)) {
+    await logRow({
+      event_type: "invoice_skip_already_sent",
+      order_id: orderId ?? null,
+    });
+    break;
+  }
+
+  // Build invoice from PI / order
+  let items: Array<{
+    description: string;
+    litres: number;
+    total?: number;
+    unitPrice?: number;
+  }>;
+
+  if (
+    order &&
+    (order.litres || order.total_pence || order.unit_price_pence)
+  ) {
+    const litres = Number(order.litres || 0);
+    const totalMajor =
+      order.total_pence != null
+        ? Number(order.total_pence) / 100
+        : undefined;
+    const unitMajor =
+      order.unit_price_pence != null
+        ? Number(order.unit_price_pence) / 100
+        : totalMajor && litres
+        ? totalMajor / litres
+        : undefined;
+    const desc = order.product || order.fuel || "Payment";
+
+    items =
+      totalMajor != null
+        ? [{ description: desc, litres, total: totalMajor }]
+        : [{ description: desc, litres, unitPrice: unitMajor || 0 }];
+  } else {
+    const litres = Number((pi.metadata as any)?.litres || 1);
+    const totalMajor = ((pi.amount_received ?? pi.amount) || 0) / 100;
+    const desc = (pi.metadata as any)?.description || "Payment";
+    items = [{ description: desc, litres, total: totalMajor }];
+  }
+
+  const dateISO =
+    toISODate(order?.delivery_date) ||
+    toISODate((pi.metadata as any)?.deliveryDate) ||
+    new Date().toISOString();
+
+  const emailLower = (
+    order?.user_email ||
+    pi.receipt_email ||
+    (pi.metadata as any)?.customer_email ||
+    ""
+  )
+    .toString()
+    .toLowerCase();
+
+  const resp = await callInvoiceRoute({
+    customer: {
+      name:
+        order?.name ||
+        pi.shipping?.name ||
+        (pi.metadata as any)?.customer_name ||
+        "Customer",
+      email: emailLower,
+      address_line1: order?.address_line1 ?? null,
+      address_line2: order?.address_line2 ?? null,
+      city: order?.city ?? null,
+      postcode: order?.postcode ?? null,
+    },
+    items,
+    currency: (pi.currency || "gbp").toUpperCase(),
+    meta: {
+      orderId: orderId ?? undefined,
+      notes: (pi.metadata as any)?.notes ?? undefined,
+      dateISO,
+    },
+  });
+
+  await logRow({
+    event_type: "invoice_sent",
+    order_id: orderId ?? null,
+    status: "paid",
+    extra: { storagePath: resp?.storagePath },
+  });
+
+  // NEW: mark refinery as ready for non-Checkout flows as well
+  await markRefineryReady({
+    orderId: orderId ?? null,
+    storagePath: resp?.storagePath,
+  });
+
+  break;
+}
 
         const orderId =
           (pi.metadata as any)?.order_id ||
