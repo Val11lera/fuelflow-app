@@ -537,15 +537,22 @@ export default async function handler(
 
         // Mark order as paid
         if (orderId) {
-          const { error } = await sb()
-            .from("orders")
-            .update({
-              status: "paid",
-              paid_at: new Date().toISOString(),
-              stripe_session_id: session.id,
-              stripe_payment_intent: piId ?? null,
-            } as any)
-            .eq("id", orderId);
+const { error } = await sb()
+  .from("orders")
+  .update({
+    status: "paid",
+    paid_at: new Date().toISOString(),
+    stripe_session_id: session.id,
+    stripe_payment_intent: piId ?? null,
+
+    // 👇 NEW – mark this order ready to send to Xero
+    xero_sync_status: "pending",
+    xero_sync_error: null,
+    xero_invoice_id: null,
+    xero_invoice_number: null,
+  } as any)
+  .eq("id", orderId);
+
 
           if (error)
             throw new Error(`Supabase order update failed: ${error.message}`);
