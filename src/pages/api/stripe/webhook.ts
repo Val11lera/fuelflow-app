@@ -624,7 +624,7 @@ export default async function handler(
                 ?.order_id
             : undefined);
 
-        // 🔹 Fetch order row (can be null)
+        // Fetch order row (may be null)
         const orderRow = await fetchOrder(orderId);
 
         await logRow({
@@ -633,7 +633,7 @@ export default async function handler(
           extra: { pi_id: piId, metadata: pi.metadata || null },
         });
 
-        // 🔹 Mark order as paid in Supabase if we have an orderId
+        // Mark order as paid in Supabase if we have an orderId
         if (orderId) {
           const { error } = await sb()
             .from("orders")
@@ -653,7 +653,7 @@ export default async function handler(
           });
         }
 
-        // 🔹 Upsert payment row
+        // Upsert payment row
         await upsertPaymentRow({
           pi_id: piId,
           amount: (pi.amount_received ?? pi.amount) ?? null,
@@ -665,7 +665,7 @@ export default async function handler(
           meta: pi.metadata ?? null,
         });
 
-        // 🔹 Idempotency: if already invoiced for this order, skip
+        // Idempotency: if already invoiced for this order, skip
         if (await invoiceAlreadySent(orderId)) {
           await logRow({
             event_type: "invoice_skip_already_sent",
@@ -674,130 +674,16 @@ export default async function handler(
           break;
         }
 
-        // 🔹 Build invoice line items
-        let items: Array<{
-          description: string;
-          litres: number;
-          total?: number;
-          unitPrice?: number;
-        }>;
+        // Build invoice line items.
+        // Prefer the order row; fall back to PI metadata.
+        let items =
+          buildItemsFromOrderOrStripe({
+            order: orderRow,
+            lineItems: null,
+            session: null,
+          }) ?? [];
 
-        const hasOrderPricing =
-          !!(orderRow?.litres ||
-            orderRow?.total_pence ||
-            orderRow?.unit_price_pence);
-
-        if (orderRow && hasOrderPricing) {
-          const o = orderRow;
-          const litres = Number(o.litres || 0);
-          const totalMajor =
-            o.total_pence != null ? Number(o.total_pence) / 100 : undefined;
-          const unitMajor =
-            o.unit_price_pence != null
-              ? Number(o.unit_price_pence) / 100
-              : totalMajor && litres
-              ? totalMajor / litres
-              : undefined;
-          const desc = o.product || o.fuel || "Payment";
-
-          items =
-            totalMajor != null
-              ? [{ description: desc, litres, total: totalMajor }]
-              : [{ description: desc, litres, unitPrice: unitMajor || 0 }];
-        } else {
-          // Fallback to PI metadata
-          const litres = Number((pi.metadata as any)?.litres || 1);
-          const totalMajor = ((pi.amount_received ?? pi.amount) || 0) / 100;
-          const desc = (pi.metadata as any)?.description || "Payment";
-          items = [{ description: desc, litres, total: totalMajor }];
-        }
-
-        const dateISO =
-          toISODate(orderRow?.delivery_date) ||
-          toISODate((pi.metadata as any)?.deliveryDate) ||
-          new Date().toISOString();
-
-        const emailLower = (
-          orderRow?.user_email ||
-          pi.receipt_email ||
-          (pi.metadata as any)?.customer_email ||
-          ""
-        )
-          .toString()
-          .toLowerCase();
-
-        const resp = await callInvoiceRoute({
-          customer: {
-            name:
-              orderRow?.name ||
-              pi.shipping?.name ||
-              (pi.metadata as any)?.customer_name ||
-              "Customer",
-            email: emailLower,
-            address_line1: orderRow?.address_line1 ?? null,
-            address_line2: orderRow?.address_line2 ?? null,
-            city: orderRow?.city ?? null,
-            postcode: orderRow?.postcode ?? null,
-          },
-          items,
-          currency: (pi.currency || "gbp").toUpperCase(),
-          meta: {
-            orderId: orderId ?? undefined,
-            notes: (pi.metadata as any)?.notes ?? undefined,
-            dateISO,
-          },
-        });
-
-        await logRow({
-          event_type: "invoice_sent",
-          order_id: orderId ?? null,
-          status: "paid",
-          extra: { storagePath: resp?.storagePath },
-        });
-
-        // 🔹 Mark refinery as ready for non-Checkout flows as well
-        await markRefineryReady({
-          orderId: orderId ?? null,
-          storagePath: resp?.storagePath,
-        });
-
-        break;
-      }
-
-
-        // Build invoice line items
-        let items: Array<{
-          description: string;
-          litres: number;
-          total?: number;
-          unitPrice?: number;
-        }>;
-
-        if (
-          orderRow &&
-          (orderRow.litres ||
-            orderRow.total_pence ||
-            orderRow.unit_price_pence)
-        ) {
-          const litres = Number(orderRow.litres || 0);
-          const totalMajor =
-            orderRow.total_pence != null
-              ? Number(orderRow.total_pence) / 100
-              : undefined;
-          const unitMajor =
-            orderRow.unit_price_pence != null
-              ? Number(orderRow.unit_price_pence) / 100
-              : totalMajor && litres
-              ? totalMajor / litres
-              : undefined;
-          const desc = orderRow.product || orderRow.fuel || "Payment";
-
-          items =
-            totalMajor != null
-              ? [{ description: desc, litres, total: totalMajor }]
-              : [{ description: desc, litres, unitPrice: unitMajor || 0 }];
-        } else {
-          // Fallback to PI metadata
+        if (!items.length) {
           const litres = Number((pi.metadata as any)?.litres || 1);
           const totalMajor = ((pi.amount_received ?? pi.amount) || 0) / 100;
           const desc = (pi.metadata as any)?.description || "Payment";
@@ -855,6 +741,7 @@ export default async function handler(
 
         break;
       }
+
 
         // Build invoice line items
         let items: Array<{
