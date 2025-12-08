@@ -358,7 +358,7 @@ async function upsertPaymentRow(args: {
   }
 }
 
-/* ---------- NEW: refinery helper (very small, additive) ---------- */
+/* ---------- refinery helper ---------- */
 
 async function markRefineryReady(args: {
   orderId?: string | null;
@@ -403,6 +403,46 @@ async function markRefineryReady(args: {
       order_id: orderId,
       error: err?.message || String(err),
       extra: { storagePath },
+    });
+  }
+}
+
+/* ---------- Xero helper: mark order as needing Xero sync ---------- */
+
+async function markXeroPending(args: { orderId?: string | null }) {
+  const orderId = args.orderId;
+  if (!orderId) return;
+
+  try {
+    const { error } = await sb()
+      .from("orders")
+      .update({
+        xero_sync_status: "pending",
+        xero_sync_error: null,
+      } as any)
+      .eq("id", orderId);
+
+    if (error) {
+      console.error("[xero] mark pending failed:", error);
+      await logRow({
+        event_type: "xero_mark_pending_error",
+        order_id: orderId,
+        error: error.message,
+      });
+      return;
+    }
+
+    await logRow({
+      event_type: "xero_mark_pending",
+      order_id: orderId,
+      status: "pending",
+    });
+  } catch (err: any) {
+    console.error("[xero] mark pending crash:", err);
+    await logRow({
+      event_type: "xero_mark_pending_crash",
+      order_id: orderId,
+      error: err?.message || String(err),
     });
   }
 }
@@ -609,11 +649,14 @@ export default async function handler(
           extra: { storagePath: resp?.storagePath },
         });
 
-        // NEW: mark refinery as ready (uses same invoice PDF path)
+        // mark refinery as ready (uses same invoice PDF path)
         await markRefineryReady({
           orderId: orderId ?? null,
           storagePath: resp?.storagePath,
         });
+
+        // NEW: mark this order as needing Xero sync
+        await markXeroPending({ orderId: orderId ?? null });
 
         break;
       }
@@ -748,6 +791,9 @@ export default async function handler(
           storagePath: resp?.storagePath,
         });
 
+        // NEW: mark this order as needing Xero sync
+        await markXeroPending({ orderId: orderId ?? null });
+
         break;
       }
 
@@ -863,4 +909,3 @@ export default async function handler(
 
   return res.status(200).json({ received: true });
 }
-
