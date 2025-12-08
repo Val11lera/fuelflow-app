@@ -23,10 +23,15 @@ export default async function handler(
   res: NextApiResponse
 ) {
   // Simple protection so random people can't trigger this
-  const secret = req.query.secret;
+  const secretParam = req.query.secret;
+  const secret = Array.isArray(secretParam)
+    ? secretParam[0]
+    : secretParam || "";
+
   if (!secret || secret !== process.env.XERO_SYNC_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
+
 
   // 1) Load all PAID orders that are marked as pending for Xero
   const { data: orders, error } = await sb()
