@@ -694,13 +694,19 @@ const { error } = await sb()
 
         // Mark order as paid in Supabase if we have an orderId
         if (orderId) {
-          const { error } = await sb()
-            .from("orders")
-            .update({
-              status: "paid",
-              paid_at: new Date().toISOString(),
-            })
-            .eq("id", orderId);
+const { error } = await sb()
+  .from("orders")
+  .update({
+    status: "paid",
+    paid_at: new Date().toISOString(),
+
+    // 👇 NEW – mark this order ready to send to Xero
+    xero_sync_status: "pending",
+    xero_sync_error: null,
+    xero_invoice_id: null,
+    xero_invoice_number: null,
+  } as any)
+  .eq("id", orderId);
 
           if (error)
             throw new Error(`Supabase update failed: ${error.message}`);
