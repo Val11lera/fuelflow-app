@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/xero-sync",
-      "schedule": "*/240 * * * *"
+      "schedule": "0 */4 * * *"
     }
   ]
 }
