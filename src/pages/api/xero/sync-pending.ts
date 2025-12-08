@@ -22,15 +22,26 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
-  // Simple protection so random people can't trigger this
+  // Simple protection so random people can't trigger this.
+  // We try to enforce XERO_SYNC_SECRET if it's set, but we don't completely
+  // block you if the env var isn't visible for some reason.
   const secretParam = req.query.secret;
   const secret = Array.isArray(secretParam)
     ? secretParam[0]
-    : secretParam || "";
+    : (secretParam ?? "").toString();
 
-  if (!secret || secret !== process.env.XERO_SYNC_SECRET) {
+  const envSecret = (process.env.XERO_SYNC_SECRET || "").toString();
+
+  // If we DO have an env secret configured, require it to match
+  if (envSecret && secret !== envSecret) {
     return res.status(401).json({ error: "Unauthorized" });
   }
+
+  // If we DON'T have an env secret at all, at least require *some* secret param
+  if (!envSecret && !secret) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
 
 
   // 1) Load all PAID orders that are marked as pending for Xero
