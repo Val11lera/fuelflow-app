@@ -1,9 +1,10 @@
 // src/pages/api/xero/sync-pending.ts
+// src/pages/api/xero/sync-pending.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
-// adjust the relative path if your structure is different,
-// this path assumes: src/lib/xero.ts and src/pages/api/xero/sync-pending.ts
+// If you already changed this path to "@/lib/xero" and it works, keep that.
+// Otherwise this relative path should work assuming src/lib/xero.ts exists here.
 import {
   createXeroInvoiceForOrder,
   OrderRow as XeroOrderRow,
@@ -59,23 +60,27 @@ export default async function handler(
 
   const results: any[] = [];
 
-  for (const o of orders || []) {
-    const orderId = o.id as string;
+  // 🔧 MAIN FIX: explicitly treat rows as plain objects (`any`) so TS stops
+  // thinking they're some error type.
+  const rows = (orders ?? []) as any[];
+
+  for (const row of rows) {
+    const orderId = String(row.id);
 
     try {
       const orderForXero: XeroOrderRow = {
-        id: o.id,
-        name: o.name,
-        address_line1: o.address_line1,
-        address_line2: o.address_line2,
-        city: o.city,
-        postcode: o.postcode,
-        fuel: o.fuel,
-        litres: o.litres,
-        unit_price_pence: o.unit_price_pence,
-        delivery_date: o.delivery_date,
-        cost_centre: o.cost_centre,
-        subjective_code: o.subjective_code,
+        id: row.id,
+        name: row.name,
+        address_line1: row.address_line1,
+        address_line2: row.address_line2,
+        city: row.city,
+        postcode: row.postcode,
+        fuel: row.fuel,
+        litres: row.litres,
+        unit_price_pence: row.unit_price_pence,
+        delivery_date: row.delivery_date,
+        cost_centre: row.cost_centre,
+        subjective_code: row.subjective_code,
       };
 
       // 2) Create invoice in Xero using your existing helper
@@ -148,3 +153,4 @@ export default async function handler(
     results,
   });
 }
+
