@@ -624,8 +624,8 @@ export default async function handler(
                 ?.order_id
             : undefined);
 
-        // 🔹 Fetch order *before* we ever use `order`
-        const order = await fetchOrder(orderId);
+        // 🔹 Fetch order row (use name orderRow to avoid conflicts)
+        const orderRow = await fetchOrder(orderId);
 
         await logRow({
           event_type: "payment_intent.succeeded/received",
@@ -673,6 +673,97 @@ export default async function handler(
           });
           break;
         }
+
+        // Build invoice line items
+        let items: Array<{
+          description: string;
+          litres: number;
+          total?: number;
+          unitPrice?: number;
+        }>;
+
+        if (
+          orderRow &&
+          (orderRow.litres ||
+            orderRow.total_pence ||
+            orderRow.unit_price_pence)
+        ) {
+          const litres = Number(orderRow.litres || 0);
+          const totalMajor =
+            orderRow.total_pence != null
+              ? Number(orderRow.total_pence) / 100
+              : undefined;
+          const unitMajor =
+            orderRow.unit_price_pence != null
+              ? Number(orderRow.unit_price_pence) / 100
+              : totalMajor && litres
+              ? totalMajor / litres
+              : undefined;
+          const desc = orderRow.product || orderRow.fuel || "Payment";
+
+          items =
+            totalMajor != null
+              ? [{ description: desc, litres, total: totalMajor }]
+              : [{ description: desc, litres, unitPrice: unitMajor || 0 }];
+        } else {
+          // Fallback to PI metadata
+          const litres = Number((pi.metadata as any)?.litres || 1);
+          const totalMajor = ((pi.amount_received ?? pi.amount) || 0) / 100;
+          const desc = (pi.metadata as any)?.description || "Payment";
+          items = [{ description: desc, litres, total: totalMajor }];
+        }
+
+        const dateISO =
+          toISODate(orderRow?.delivery_date) ||
+          toISODate((pi.metadata as any)?.deliveryDate) ||
+          new Date().toISOString();
+
+        const emailLower = (
+          orderRow?.user_email ||
+          pi.receipt_email ||
+          (pi.metadata as any)?.customer_email ||
+          ""
+        )
+          .toString()
+          .toLowerCase();
+
+        const resp = await callInvoiceRoute({
+          customer: {
+            name:
+              orderRow?.name ||
+              pi.shipping?.name ||
+              (pi.metadata as any)?.customer_name ||
+              "Customer",
+            email: emailLower,
+            address_line1: orderRow?.address_line1 ?? null,
+            address_line2: orderRow?.address_line2 ?? null,
+            city: orderRow?.city ?? null,
+            postcode: orderRow?.postcode ?? null,
+          },
+          items,
+          currency: (pi.currency || "gbp").toUpperCase(),
+          meta: {
+            orderId: orderId ?? undefined,
+            notes: (pi.metadata as any)?.notes ?? undefined,
+            dateISO,
+          },
+        });
+
+        await logRow({
+          event_type: "invoice_sent",
+          order_id: orderId ?? null,
+          status: "paid",
+          extra: { storagePath: resp?.storagePath },
+        });
+
+        // Mark refinery as ready for non-Checkout flows as well
+        await markRefineryReady({
+          orderId: orderId ?? null,
+          storagePath: resp?.storagePath,
+        });
+
+        break;
+      }
 
         // Build invoice line items
         let items: Array<{
