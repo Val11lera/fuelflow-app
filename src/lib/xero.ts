@@ -1,5 +1,7 @@
 // src/lib/xero.ts
+// src/lib/xero.ts
 import { XeroClient, TokenSet } from "xero-node";
+import { buildCostCentreFromPostcode } from "./cost-centre";
 
 function getTokenSetFromEnv(): TokenSet {
   const raw = process.env.XERO_TOKEN_SET;
@@ -54,12 +56,35 @@ export async function createXeroInvoiceForOrder(order: OrderRow) {
     order.postcode || ""
   }`.trim();
 
+  // ----------------------------------------------------
+  // COST CENTRE TRACKING
+  // ----------------------------------------------------
+  // If the order already has a cost_centre in Supabase, we use it.
+  // If not, we build one from the postcode using your region rules.
+  const computedCostCentre =
+    order.cost_centre ||
+    buildCostCentreFromPostcode(order.postcode || "") ||
+    null;
+
   const tracking: any[] = [];
-  if (order.cost_centre) {
-    tracking.push({ name: "Cost Centre", option: order.cost_centre });
+  if (computedCostCentre) {
+    // IMPORTANT: "Cost Centre" must match the Tracking Category name in Xero
+    tracking.push({ name: "Cost Centre", option: computedCostCentre });
   }
   if (order.subjective_code) {
     tracking.push({ name: "Subjective Code", option: order.subjective_code });
+  }
+
+  // ----------------------------------------------------
+  // XERO ACCOUNT CODE
+  // ----------------------------------------------------
+  // Change these numbers to match YOUR account codes in Xero.
+  let accountCode = "200"; // Default Sales account
+
+  if (order.fuel === "diesel") {
+    accountCode = "200"; // e.g. "400" for Diesel Sales
+  } else if (order.fuel === "petrol") {
+    accountCode = "200"; // e.g. "401" for Petrol Sales
   }
 
   const invoice = {
@@ -86,26 +111,29 @@ export async function createXeroInvoiceForOrder(order: OrderRow) {
         description,
         quantity,
         unitAmount,
-        accountCode: "200", // your Sales account in Xero
+        accountCode,
         taxType: "NONE",
         tracking,
       },
     ],
   };
 
-// Build payload for Xero – cast to any so TypeScript stops complaining
-const payload: any = { invoices: [invoice as any] };
+  // Build payload for Xero
+  const payload: any = { invoices: [invoice as any] };
 
-const result = await (xero.accountingApi as any).createInvoices(tenantId, payload);
-const created = (result.body as any).invoices?.[0];
-
+  const result = await (xero.accountingApi as any).createInvoices(
+    tenantId,
+    payload
+  );
+  const created = (result.body as any).invoices?.[0];
 
   if (!created) {
     throw new Error("Xero createInvoices returned no invoices");
   }
 
-  // You can log this once to update XERO_TOKEN_SET occasionally:
-  // console.log("Updated TOKEN_SET:", JSON.stringify(xero.readTokenSet()));
+  // If you ever want to auto-refresh tokens and store them somewhere,
+  // you can read the new tokenSet here:
+  // console.log("Updated token set:", JSON.stringify(xero.readTokenSet()));
 
   return {
     xeroInvoiceId: created.invoiceID,
