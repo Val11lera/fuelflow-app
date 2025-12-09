@@ -2,7 +2,7 @@
 // src/pages/admin-dashboard.tsx
 // src/pages/admin-dashboard.tsx
 // src/pages/admin-dashboard.tsx
-// src/pages/admin-dashboard.tsx 
+// src/pages/admin-dashboard.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
