@@ -4,49 +4,70 @@
 import { NextResponse } from "next/server";
 
 export async function GET(req) {
-  const url = new URL(req.url);
-  const secret = url.searchParams.get("secret");
-
-  // 1) Simple auth – make sure the secret matches
-  if (secret !== process.env.CRON_SECRET) {
-    return NextResponse.json(
-      { ok: false, error: "unauthorized" },
-      { status: 401 }
-    );
-  }
-
-  // 2) Work out our own base URL
-  const origin =
-    process.env.PUBLIC_BASE_URL ??
-    (process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : "http://localhost:3000");
-
-  // 3) *** IMPORTANT: point this at your real Xero sync endpoint ***
-  //    CHANGE "/api/xero-sync" if your real path is different!
-  const targetUrl = `${origin}/api/xero-sync`;
-
   try {
+    const url = new URL(req.url);
+    const secret = url.searchParams.get("secret");
+
+    // 1) Check we have a CRON_SECRET configured
+    if (!process.env.CRON_SECRET) {
+      console.error("CRON_SECRET is not set in Vercel env vars");
+      return NextResponse.json(
+        { ok: false, error: "server-misconfigured (no CRON_SECRET)" },
+        { status: 500 }
+      );
+    }
+
+    // 2) Very simple auth – query param must match CRON_SECRET
+    if (secret !== process.env.CRON_SECRET) {
+      return NextResponse.json(
+        { ok: false, error: "unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    // 3) We will call the *existing* Xero sync endpoint in your app
+    if (!process.env.PUBLIC_BASE_URL) {
+      console.error("PUBLIC_BASE_URL is not set in Vercel env vars");
+      return NextResponse.json(
+        { ok: false, error: "server-misconfigured (no PUBLIC_BASE_URL)" },
+        { status: 500 }
+      );
+    }
+
+    // IMPORTANT: this is the internal API that actually does the sync
+    // If your real path is different, change just this line.
+    const targetUrl = `${process.env.PUBLIC_BASE_URL}/api/xero/sync-pending`;
+
+    console.log("Cron calling:", targetUrl);
+
     const res = await fetch(targetUrl, {
-      method: "GET",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
     });
 
+    // Try to parse JSON, but also survive if it is plain text
     const text = await res.text();
     let body;
     try {
-      body = JSON.parse(text);
+      body = text ? JSON.parse(text) : null;
     } catch {
-      body = text; // not JSON, just return raw text
+      body = text;
     }
 
     return NextResponse.json(
-      { ok: res.ok, status: res.status, body },
-      { status: res.status }
+      {
+        ok: res.ok,
+        status: res.status,
+        body,
+      },
+      { status: res.ok ? 200 : 500 }
     );
   } catch (err) {
-    console.error("CRON ERROR calling Xero sync:", err);
+    console.error("CRON ERROR:", err);
     return NextResponse.json(
-      { ok: false, error: String(err) },
+      { ok: false, error: String(err?.message ?? err) },
       { status: 500 }
     );
   }
