@@ -27,23 +27,21 @@ export async function GET(req) {
   }
 
   try {
-    // Call your existing Xero sync endpoint on the SAME deployment
+    // IMPORTANT CHANGE: call /api/xero/sync with GET (not POST)
     const res = await fetch(`${origin}/api/xero/sync`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      // method: "GET" is the default, so we could omit this,
+      // but leaving it here makes it crystal-clear
+      method: "GET",
     });
 
-    // Do NOT assume JSON – read raw text first
+    // Read raw text – don't assume JSON
     const raw = await res.text();
     let parsed;
 
     try {
       parsed = raw ? JSON.parse(raw) : null;
     } catch {
-      // Not JSON – just return the raw text
-      parsed = raw;
+      parsed = raw; // not JSON, just return text
     }
 
     return NextResponse.json(
