@@ -3,30 +3,27 @@
 
 import { NextResponse } from "next/server";
 
-// This route is called by:
-// 1) Vercel Cron (with Authorization: Bearer <CRON_SECRET> header)
-// 2) You manually in the browser: /api/cron/xero-sync?secret=CRON_SECRET
+// Called by:
+//  - Vercel Cron (with Authorization: Bearer <CRON_SECRET> header)
+//  - You manually: /api/cron/xero-sync?secret=CRON_SECRET
 
 export async function GET(req) {
-  // Figure out our own base URL from the request
-  // e.g. https://fuelflow-app.vercel.app
   const url = new URL(req.url);
   const origin = url.origin;
 
-  // 1) Secret from the Authorization header (used by Vercel Cron)
+  // 1) Secret from header (Vercel Cron)
   const authHeader = req.headers.get("authorization");
   const expectedHeader = `Bearer ${process.env.CRON_SECRET}`;
 
-  // 2) Secret from the query string (used by you in the browser)
+  // 2) Secret from query (manual test)
   const secretFromQuery = url.searchParams.get("secret");
   const expectedSecret = process.env.CRON_SECRET;
 
   const headerOk = authHeader === expectedHeader;
   const queryOk = secretFromQuery && secretFromQuery === expectedSecret;
 
-  // If neither header nor query secret is correct -> block
   if (!headerOk && !queryOk) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
   try {
@@ -38,11 +35,24 @@ export async function GET(req) {
       },
     });
 
-    const data = await res.json();
+    // Do NOT assume JSON – read raw text first
+    const raw = await res.text();
+    let parsed;
+
+    try {
+      parsed = raw ? JSON.parse(raw) : null;
+    } catch {
+      // Not JSON – just return the raw text
+      parsed = raw;
+    }
 
     return NextResponse.json(
-      { ok: res.ok, sync: data },
-      { status: res.status }
+      {
+        ok: res.ok,
+        status: res.status,
+        body: parsed,
+      },
+      { status: res.ok ? 200 : res.status || 500 }
     );
   } catch (err) {
     console.error("CRON ERROR:", err);
@@ -52,4 +62,3 @@ export async function GET(req) {
     );
   }
 }
-
