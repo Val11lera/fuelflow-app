@@ -1,41 +1,55 @@
 // app/api/cron/xero-sync/route.js
+// app/api/cron/xero-sync/route.js
+
 import { NextResponse } from "next/server";
+
+// This route is called by:
+// 1) Vercel Cron (with Authorization: Bearer <CRON_SECRET> header)
+// 2) You manually in the browser: /api/cron/xero-sync?secret=CRON_SECRET
 
 export async function GET(req) {
   const url = new URL(req.url);
 
+  // 1) Secret from the Authorization header (used by Vercel Cron)
+  const authHeader = req.headers.get("authorization");
+  const expectedHeader = `Bearer ${process.env.CRON_SECRET}`;
+
+  // 2) Secret from the query string (used by you in the browser)
   const secretFromQuery = url.searchParams.get("secret");
-  const authHeader = req.headers.get("authorization") || "";
   const expectedSecret = process.env.CRON_SECRET;
 
-  // Basic protection: must send the CRON_SECRET either as ?secret=... or Bearer header
-  if (
-    !expectedSecret ||
-    (secretFromQuery !== expectedSecret &&
-      authHeader !== `Bearer ${expectedSecret}`)
-  ) {
+  const headerOk = authHeader === expectedHeader;
+  const queryOk = secretFromQuery && secretFromQuery === expectedSecret;
+
+  // If neither header nor query secret is correct -> block
+  if (!headerOk && !queryOk) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   try {
-    const baseUrl = process.env.PUBLIC_BASE_URL;
-    if (!baseUrl) {
-      throw new Error("PUBLIC_BASE_URL env var is missing");
-    }
-
     // Call your existing Xero sync endpoint
-    const res = await fetch(`${baseUrl}/api/xero/sync`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    const res = await fetch(
+      `${process.env.PUBLIC_BASE_URL}/api/xero/sync`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
     const data = await res.json();
 
-    return NextResponse.json({ ok: true, sync: data });
+    return NextResponse.json(
+      { ok: true, sync: data },
+      { status: res.ok ? 200 : res.status }
+    );
   } catch (err) {
     console.error("CRON ERROR:", err);
-    return NextResponse.json({ ok: false, error: err.message });
+    return NextResponse.json(
+      { ok: false, error: String(err) },
+      { status: 500 }
+    );
   }
 }
+
