@@ -3,57 +3,48 @@
 
 import { NextResponse } from "next/server";
 
-// Called by:
-//  - Vercel Cron (with Authorization: Bearer <CRON_SECRET> header)
-//  - You manually: /api/cron/xero-sync?secret=CRON_SECRET
-
 export async function GET(req) {
   const url = new URL(req.url);
-  const origin = url.origin;
+  const secret = url.searchParams.get("secret");
 
-  // 1) Secret from header (Vercel Cron)
-  const authHeader = req.headers.get("authorization");
-  const expectedHeader = `Bearer ${process.env.CRON_SECRET}`;
-
-  // 2) Secret from query (manual test)
-  const secretFromQuery = url.searchParams.get("secret");
-  const expectedSecret = process.env.CRON_SECRET;
-
-  const headerOk = authHeader === expectedHeader;
-  const queryOk = secretFromQuery && secretFromQuery === expectedSecret;
-
-  if (!headerOk && !queryOk) {
-    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  // 1) Simple auth – make sure the secret matches
+  if (secret !== process.env.CRON_SECRET) {
+    return NextResponse.json(
+      { ok: false, error: "unauthorized" },
+      { status: 401 }
+    );
   }
 
+  // 2) Work out our own base URL
+  const origin =
+    process.env.PUBLIC_BASE_URL ??
+    (process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : "http://localhost:3000");
+
+  // 3) *** IMPORTANT: point this at your real Xero sync endpoint ***
+  //    CHANGE "/api/xero-sync" if your real path is different!
+  const targetUrl = `${origin}/api/xero-sync`;
+
   try {
-    // IMPORTANT CHANGE: call /api/xero/sync with GET (not POST)
-    const res = await fetch(`${origin}/api/xero/sync`, {
-      // method: "GET" is the default, so we could omit this,
-      // but leaving it here makes it crystal-clear
+    const res = await fetch(targetUrl, {
       method: "GET",
     });
 
-    // Read raw text – don't assume JSON
-    const raw = await res.text();
-    let parsed;
-
+    const text = await res.text();
+    let body;
     try {
-      parsed = raw ? JSON.parse(raw) : null;
+      body = JSON.parse(text);
     } catch {
-      parsed = raw; // not JSON, just return text
+      body = text; // not JSON, just return raw text
     }
 
     return NextResponse.json(
-      {
-        ok: res.ok,
-        status: res.status,
-        body: parsed,
-      },
-      { status: res.ok ? 200 : res.status || 500 }
+      { ok: res.ok, status: res.status, body },
+      { status: res.status }
     );
   } catch (err) {
-    console.error("CRON ERROR:", err);
+    console.error("CRON ERROR calling Xero sync:", err);
     return NextResponse.json(
       { ok: false, error: String(err) },
       { status: 500 }
