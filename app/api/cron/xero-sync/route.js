@@ -8,7 +8,10 @@ import { NextResponse } from "next/server";
 // 2) You manually in the browser: /api/cron/xero-sync?secret=CRON_SECRET
 
 export async function GET(req) {
+  // Figure out our own base URL from the request
+  // e.g. https://fuelflow-app.vercel.app
   const url = new URL(req.url);
+  const origin = url.origin;
 
   // 1) Secret from the Authorization header (used by Vercel Cron)
   const authHeader = req.headers.get("authorization");
@@ -27,22 +30,19 @@ export async function GET(req) {
   }
 
   try {
-    // Call your existing Xero sync endpoint
-    const res = await fetch(
-      `${process.env.PUBLIC_BASE_URL}/api/xero/sync`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    // Call your existing Xero sync endpoint on the SAME deployment
+    const res = await fetch(`${origin}/api/xero/sync`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
 
     const data = await res.json();
 
     return NextResponse.json(
-      { ok: true, sync: data },
-      { status: res.ok ? 200 : res.status }
+      { ok: res.ok, sync: data },
+      { status: res.status }
     );
   } catch (err) {
     console.error("CRON ERROR:", err);
