@@ -147,13 +147,21 @@ export type OrderRow = {
   total_pence?: number | null;
   unit_price_pence?: number | null;
 
+  // order details
   fuel?: string | null;
   litres?: string | number | null;
 
+  // address fields (sync-pending.ts passes these)
+  address_line1?: string | null;
+  address_line2?: string | null;
+  city?: string | null;
+  postcode?: string | null;
+
+  // timestamps
   created_at?: string | null;
   paid_at?: string | null;
-  postcode?: string | null;
 };
+
 
 function poundsFromPence(pence?: number | null) {
   if (pence == null) return undefined;
