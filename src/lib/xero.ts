@@ -236,9 +236,12 @@ export async function createXeroInvoiceForOrder(order: OrderRow): Promise<string
 
     const resp = await xero.accountingApi.createInvoices(tenantId, payload);
 
-    const invoiceId =
-      resp?.body?.invoices?.[0]?.invoiceID ||
-      resp?.body?.Invoices?.[0]?.InvoiceID;
+const invoiceId =
+  (resp?.body as any)?.invoices?.[0]?.invoiceID ||
+  (resp?.body as any)?.invoices?.[0]?.InvoiceID ||
+  (resp?.body as any)?.Invoices?.[0]?.InvoiceID ||
+  (resp?.body as any)?.Invoices?.[0]?.invoiceID;
+
 
     if (!invoiceId) {
       throw new Error("Xero invoice creation succeeded but no InvoiceID returned.");
