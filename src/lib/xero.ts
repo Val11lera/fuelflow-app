@@ -2,10 +2,10 @@
 // src/lib/xero.ts
 import { XeroClient, TokenSet } from "xero-node";
 import { createClient } from "@supabase/supabase-js";
-import { buildCostCentreFromPostcode } from "./cost-centre"; // keep (used elsewhere in your app)
+import { buildCostCentreFromPostcode } from "./cost-centre"; // keep - used elsewhere
 
 // -----------------------------------------------------------------------------
-// Supabase (admin) client
+// Supabase (admin) client (SERVICE ROLE)
 // -----------------------------------------------------------------------------
 const supabaseAdmin =
   process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -38,7 +38,7 @@ function buildXeroClient() {
 }
 
 // -----------------------------------------------------------------------------
-// Token storage helpers
+// Token store helpers
 // Table: public.xero_token_store (id=1, token_set jsonb)
 // -----------------------------------------------------------------------------
 async function loadTokenSet(): Promise<TokenSet | null> {
@@ -77,17 +77,15 @@ async function saveTokenSet(tokenSet: TokenSet) {
 }
 
 function isExpired(tokenSet: any) {
-  // xero-node uses expires_at (unix seconds) most commonly.
-  const expiresAt = tokenSet?.expires_at;
+  const expiresAt = tokenSet?.expires_at; // unix seconds
   if (!expiresAt) return false;
 
   const now = Math.floor(Date.now() / 1000);
-  // refresh 60s early
-  return now >= Number(expiresAt) - 60;
+  return now >= Number(expiresAt) - 60; // refresh early
 }
 
 // -----------------------------------------------------------------------------
-// Public: Get an initialized Xero client with a fresh token set
+// Public: get Xero client (auto-refresh if expired + persist rotated tokens)
 // -----------------------------------------------------------------------------
 export async function getXeroClient() {
   const xero = buildXeroClient();
@@ -102,7 +100,6 @@ export async function getXeroClient() {
 
   xero.setTokenSet(tokenSet);
 
-  // proactive refresh if expired
   if (isExpired(tokenSet)) {
     const newTokenSet = await xero.refreshToken();
     xero.setTokenSet(newTokenSet);
@@ -113,7 +110,7 @@ export async function getXeroClient() {
 }
 
 // -----------------------------------------------------------------------------
-// Public: Retry wrapper (refresh & retry once on invalid/expired token)
+// Public: retry wrapper (refresh & retry once on invalid/expired token)
 // -----------------------------------------------------------------------------
 export async function withXeroRetry<T>(fn: (xero: XeroClient) => Promise<T>): Promise<T> {
   const xero = await getXeroClient();
@@ -136,32 +133,38 @@ export async function withXeroRetry<T>(fn: (xero: XeroClient) => Promise<T>): Pr
 }
 
 // -----------------------------------------------------------------------------
-// Backwards-compatible exports (your build is failing without these)
+// Backwards compatible types/exports for existing routes (sync-pending.ts)
+// IMPORTANT: index signature prevents endless TS build failures when new fields appear
 // -----------------------------------------------------------------------------
 export type OrderRow = {
+  // allow extra fields without breaking build
+  [key: string]: any;
+
   id: string;
+
   user_email?: string | null;
   name?: string | null;
 
-  // money in pence (from your DB)
-  total_pence?: number | null;
-  unit_price_pence?: number | null;
-
-  // order details
+  // common order fields (support both snake_case and camel_case)
   fuel?: string | null;
   litres?: string | number | null;
 
-  // address fields (sync-pending.ts passes these)
+  total_pence?: number | null;
+  unit_price_pence?: number | null;
+
+  created_at?: string | null;
+  paid_at?: string | null;
+
+  postcode?: string | null;
   address_line1?: string | null;
   address_line2?: string | null;
   city?: string | null;
-  postcode?: string | null;
 
-  // timestamps
-  created_at?: string | null;
-  paid_at?: string | null;
+  delivery_date?: string | null;
+
+  cost_centre?: string | null;
+  subjective_code?: string | null;
 };
-
 
 function poundsFromPence(pence?: number | null) {
   if (pence == null) return undefined;
@@ -169,43 +172,44 @@ function poundsFromPence(pence?: number | null) {
 }
 
 async function getTenantIdOrThrow(xero: any): Promise<string> {
-  // If you store a fixed tenant id, use it
   const envTenantId = process.env.XERO_TENANT_ID;
   if (envTenantId) return envTenantId;
 
-  // Otherwise, fetch connected tenants
   const tenants = await xero.updateTenants();
   const tenantId = tenants?.[0]?.tenantId;
-  if (!tenantId) {
-    throw new Error("No Xero tenant connected. Reconnect Xero and try again.");
-  }
+  if (!tenantId) throw new Error("No Xero tenant connected. Reconnect Xero and try again.");
   return tenantId;
 }
 
 /**
- * Back-compat function your existing route imports.
- * Creates an ACCREC invoice for an order and returns the InvoiceID (string).
+ * Back-compat: create invoice for an order row.
+ * Keeps payload conservative to avoid breaking your model.
  */
 export async function createXeroInvoiceForOrder(order: OrderRow): Promise<string> {
   return await withXeroRetry(async (xero) => {
     const tenantId = await getTenantIdOrThrow(xero);
 
-    // quantity
-    const litresNum =
-      typeof order.litres === "string" ? Number(order.litres) : order.litres ?? 1;
-    const qty = Number.isFinite(litresNum) && (litresNum as number) > 0 ? (litresNum as number) : 1;
+    const litresRaw = order.litres ?? order.Litres ?? 1;
+    const litresNum = typeof litresRaw === "string" ? Number(litresRaw) : Number(litresRaw);
+    const qty = Number.isFinite(litresNum) && litresNum > 0 ? litresNum : 1;
 
-    // unit price
+    const unitPricePence = order.unit_price_pence ?? order.unitPricePence ?? null;
+    const totalPence = order.total_pence ?? order.totalPence ?? null;
+
     const unitAmount =
-      poundsFromPence(order.unit_price_pence) ??
-      (order.total_pence != null ? poundsFromPence(order.total_pence)! / qty : 0);
+      poundsFromPence(unitPricePence) ??
+      (totalPence != null ? poundsFromPence(totalPence)! / qty : 0);
 
-    // optional tracking/cost centre (keep if you use it)
+    const fuel = order.fuel ?? order.Fuel ?? "Fuel";
+    const description = `FuelFlow ${fuel} order (${order.id})`;
+
+    // tracking / cost centre (optional)
     const trackingCategoryId = process.env.XERO_TRACKING_CATEGORY_ID;
-    const trackingOptionId =
-      order.postcode ? buildCostCentreFromPostcode(order.postcode) : undefined;
 
-    const description = `FuelFlow ${order.fuel ?? "Fuel"} order (${order.id})`;
+    // Prefer explicit cost_centre, fallback to postcode mapping if present
+    const trackingOptionId =
+      (order.cost_centre as string | undefined) ||
+      (order.postcode ? buildCostCentreFromPostcode(order.postcode) : undefined);
 
     const payload: any = {
       Invoices: [
@@ -244,17 +248,19 @@ export async function createXeroInvoiceForOrder(order: OrderRow): Promise<string
 
     const resp = await xero.accountingApi.createInvoices(tenantId, payload);
 
-const invoiceId =
-  (resp?.body as any)?.invoices?.[0]?.invoiceID ||
-  (resp?.body as any)?.invoices?.[0]?.InvoiceID ||
-  (resp?.body as any)?.Invoices?.[0]?.InvoiceID ||
-  (resp?.body as any)?.Invoices?.[0]?.invoiceID;
+    // Handle multiple response shapes across SDK versions, without TS fighting us
+    const body: any = resp?.body;
 
+    const invoiceId =
+      body?.invoices?.[0]?.invoiceID ||
+      body?.invoices?.[0]?.InvoiceID ||
+      body?.Invoices?.[0]?.invoiceID ||
+      body?.Invoices?.[0]?.InvoiceID;
 
     if (!invoiceId) {
       throw new Error("Xero invoice creation succeeded but no InvoiceID returned.");
     }
 
-    return invoiceId;
+    return invoiceId as string;
   });
 }
