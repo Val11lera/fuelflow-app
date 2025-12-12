@@ -1,143 +1,120 @@
 // src/lib/xero.ts
 // src/lib/xero.ts
-// src/lib/xero.ts
 import { XeroClient, TokenSet } from "xero-node";
-import { buildCostCentreFromPostcode } from "./cost-centre";
+import { createClient } from "@supabase/supabase-js";
 
-function getTokenSetFromEnv(): TokenSet {
-  const raw = process.env.XERO_TOKEN_SET;
-  if (!raw) throw new Error("XERO_TOKEN_SET env var missing");
-  return JSON.parse(raw);
-}
+const supabaseAdmin =
+  process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
+    ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+        auth: { persistSession: false },
+      })
+    : null;
 
-export function getXeroClient() {
-  if (!process.env.XERO_CLIENT_ID || !process.env.XERO_CLIENT_SECRET) {
-    throw new Error("Xero env vars missing");
+function buildXeroClient() {
+  if (!process.env.XERO_CLIENT_ID || !process.env.XERO_CLIENT_SECRET || !process.env.XERO_REDIRECT_URI) {
+    throw new Error("Xero env vars missing (XERO_CLIENT_ID/SECRET/REDIRECT_URI)");
   }
 
-  const xero = new XeroClient({
-    clientId: process.env.XERO_CLIENT_ID!,
-    clientSecret: process.env.XERO_CLIENT_SECRET!,
-    redirectUris: [process.env.XERO_REDIRECT_URI!],
-    scopes: (process.env.XERO_SCOPES || "").split(" "),
-  });
+  const scopes = (process.env.XERO_SCOPES || "").split(" ").filter(Boolean);
+  if (!scopes.includes("offline_access")) {
+    // Without offline_access you won't get a refresh token.
+    throw new Error("XERO_SCOPES must include offline_access");
+  }
 
-  const tokenSet = getTokenSetFromEnv();
+  return new XeroClient({
+    clientId: process.env.XERO_CLIENT_ID,
+    clientSecret: process.env.XERO_CLIENT_SECRET,
+    redirectUris: [process.env.XERO_REDIRECT_URI],
+    scopes,
+  });
+}
+
+async function loadTokenSet(): Promise<TokenSet | null> {
+  // 1) Prefer Supabase store (persistent)
+  if (supabaseAdmin) {
+    const { data, error } = await supabaseAdmin
+      .from("xero_token_store")
+      .select("token_set")
+      .eq("id", 1)
+      .single();
+
+    if (!error && data?.token_set && Object.keys(data.token_set).length) {
+      return data.token_set as TokenSet;
+    }
+  }
+
+  // 2) Fallback to env (bootstrap only)
+  const raw = process.env.XERO_TOKEN_SET;
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as TokenSet;
+  } catch {
+    throw new Error("XERO_TOKEN_SET is not valid JSON");
+  }
+}
+
+async function saveTokenSet(tokenSet: TokenSet) {
+  if (!supabaseAdmin) return;
+
+  const { error } = await supabaseAdmin
+    .from("xero_token_store")
+    .upsert({ id: 1, token_set: tokenSet, updated_at: new Date().toISOString() });
+
+  if (error) throw new Error(`Failed to persist Xero token set: ${error.message}`);
+}
+
+function isExpired(tokenSet: any) {
+  // xero-node typically uses expires_at (unix seconds). Be tolerant.
+  const expiresAt = tokenSet?.expires_at;
+  if (!expiresAt) return false;
+  const now = Math.floor(Date.now() / 1000);
+  return now >= (Number(expiresAt) - 60); // refresh 60s early
+}
+
+/**
+ * Returns an initialized Xero client with a fresh token set.
+ * If token is expired/invalid, it refreshes and persists the new token set.
+ */
+export async function getXeroClient() {
+  const xero = buildXeroClient();
+  await xero.initialize();
+
+  const tokenSet = await loadTokenSet();
+  if (!tokenSet) {
+    throw new Error(
+      "No Xero token set found. You must connect Xero once and store the token set."
+    );
+  }
+
   xero.setTokenSet(tokenSet);
+
+  // Refresh proactively if expired
+  if (isExpired(tokenSet)) {
+    const newTokenSet = await xero.refreshToken();
+    xero.setTokenSet(newTokenSet);
+    await saveTokenSet(newTokenSet);
+  }
 
   return xero;
 }
 
-export interface OrderRow {
-  id: string;
-  name: string | null;
-  address_line1: string | null;
-  address_line2: string | null;
-  city: string | null;
-  postcode: string | null;
-  fuel: "petrol" | "diesel" | null;
-  litres: number | string | null;
-  unit_price_pence: number | null;
-  delivery_date: string | null;
-  cost_centre: string | null;
-  subjective_code: string | null;
-}
+/**
+ * Helper: if an API call returns 401 invalid_token, refresh and retry once.
+ */
+export async function withXeroRetry<T>(fn: (xero: XeroClient) => Promise<T>): Promise<T> {
+  const xero = await getXeroClient();
+  try {
+    return await fn(xero);
+  } catch (err: any) {
+    const msg = String(err?.response?.data?.error || err?.message || err);
+    const status = err?.response?.status;
 
-export async function createXeroInvoiceForOrder(order: OrderRow) {
-  const xero = getXeroClient();
-  const tenantId = process.env.XERO_TENANT_ID;
-  if (!tenantId) throw new Error("XERO_TENANT_ID missing");
-
-  const invoiceDate =
-    order.delivery_date ?? new Date().toISOString().slice(0, 10);
-  const quantity = Number(order.litres || 0);
-  const unitAmount = (order.unit_price_pence ?? 0) / 100;
-
-  const description = `${order.fuel || "Fuel"} delivery to ${
-    order.postcode || ""
-  }`.trim();
-
-  // ----------------------------------------------------
-  // COST CENTRE TRACKING
-  // ----------------------------------------------------
-  // If the order already has a cost_centre in Supabase, we use it.
-  // If not, we build one from the postcode using your region rules.
-  const computedCostCentre =
-    order.cost_centre ||
-    buildCostCentreFromPostcode(order.postcode || "") ||
-    null;
-
-  const tracking: any[] = [];
-  if (computedCostCentre) {
-    // IMPORTANT: "Cost Centre" must match the Tracking Category name in Xero
-    tracking.push({ name: "Cost Centre", option: computedCostCentre });
+    if (status === 401 || msg.includes("invalid_token") || msg.includes("TokenExpired")) {
+      const newTokenSet = await xero.refreshToken();
+      xero.setTokenSet(newTokenSet);
+      await saveTokenSet(newTokenSet);
+      return await fn(xero);
+    }
+    throw err;
   }
-  if (order.subjective_code) {
-    tracking.push({ name: "Subjective Code", option: order.subjective_code });
-  }
-
-  // ----------------------------------------------------
-  // XERO ACCOUNT CODE
-  // ----------------------------------------------------
-  // Change these numbers to match YOUR account codes in Xero.
-  let accountCode = "200"; // Default Sales account
-
-  if (order.fuel === "diesel") {
-    accountCode = "200"; // e.g. "400" for Diesel Sales
-  } else if (order.fuel === "petrol") {
-    accountCode = "200"; // e.g. "401" for Petrol Sales
-  }
-
-  const invoice = {
-    type: "ACCREC" as const,
-    contact: {
-      name: order.name || "FuelFlow Customer",
-      addresses: [
-        {
-          addressType: "STREET",
-          addressLine1: order.address_line1 || undefined,
-          addressLine2: order.address_line2 || undefined,
-          city: order.city || undefined,
-          postalCode: order.postcode || undefined,
-          country: "United Kingdom",
-        },
-      ],
-    },
-    date: invoiceDate,
-    dueDate: invoiceDate,
-    lineAmountTypes: "NoTax", // adjust later if you add VAT
-    reference: `FuelFlow order ${order.id}`,
-    lineItems: [
-      {
-        description,
-        quantity,
-        unitAmount,
-        accountCode,
-        taxType: "NONE",
-        tracking,
-      },
-    ],
-  };
-
-  // Build payload for Xero
-  const payload: any = { invoices: [invoice as any] };
-
-  const result = await (xero.accountingApi as any).createInvoices(
-    tenantId,
-    payload
-  );
-  const created = (result.body as any).invoices?.[0];
-
-  if (!created) {
-    throw new Error("Xero createInvoices returned no invoices");
-  }
-
-  // If you ever want to auto-refresh tokens and store them somewhere,
-  // you can read the new tokenSet here:
-  // console.log("Updated token set:", JSON.stringify(xero.readTokenSet()));
-
-  return {
-    xeroInvoiceId: created.invoiceID,
-    xeroInvoiceNumber: created.invoiceNumber,
-  };
 }
