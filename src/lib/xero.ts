@@ -2,7 +2,7 @@
 // src/lib/xero.ts
 import { XeroClient, TokenSet } from "xero-node";
 import { createClient } from "@supabase/supabase-js";
-import { buildCostCentreFromPostcode } from "./cost-centre"; // keep - used elsewhere
+import { buildCostCentreFromPostcode } from "./cost-centre"; // keep - used elsewhere in your app
 
 // -----------------------------------------------------------------------------
 // Supabase (admin) client (SERVICE ROLE)
@@ -81,7 +81,7 @@ function isExpired(tokenSet: any) {
   if (!expiresAt) return false;
 
   const now = Math.floor(Date.now() / 1000);
-  return now >= Number(expiresAt) - 60; // refresh early
+  return now >= Number(expiresAt) - 60; // refresh early (60s buffer)
 }
 
 // -----------------------------------------------------------------------------
@@ -137,7 +137,7 @@ export async function withXeroRetry<T>(fn: (xero: XeroClient) => Promise<T>): Pr
 // IMPORTANT: index signature prevents endless TS build failures when new fields appear
 // -----------------------------------------------------------------------------
 export type OrderRow = {
-  // allow extra fields without breaking build
+  // allow extra fields without breaking builds
   [key: string]: any;
 
   id: string;
@@ -145,7 +145,6 @@ export type OrderRow = {
   user_email?: string | null;
   name?: string | null;
 
-  // common order fields (support both snake_case and camel_case)
   fuel?: string | null;
   litres?: string | number | null;
 
@@ -181,11 +180,13 @@ async function getTenantIdOrThrow(xero: any): Promise<string> {
   return tenantId;
 }
 
-/**
- * Back-compat: create invoice for an order row.
- * Keeps payload conservative to avoid breaking your model.
- */
-export async function createXeroInvoiceForOrder(order: OrderRow): Promise<string> {
+// -----------------------------------------------------------------------------
+// Back-compat: create invoice for order
+// MUST return { xeroInvoiceId, xeroInvoiceNumber } (sync-pending.ts destructures)
+// -----------------------------------------------------------------------------
+export async function createXeroInvoiceForOrder(
+  order: OrderRow
+): Promise<{ xeroInvoiceId: string; xeroInvoiceNumber?: string }> {
   return await withXeroRetry(async (xero) => {
     const tenantId = await getTenantIdOrThrow(xero);
 
@@ -203,7 +204,7 @@ export async function createXeroInvoiceForOrder(order: OrderRow): Promise<string
     const fuel = order.fuel ?? order.Fuel ?? "Fuel";
     const description = `FuelFlow ${fuel} order (${order.id})`;
 
-    // tracking / cost centre (optional)
+    // Tracking / cost centre (optional)
     const trackingCategoryId = process.env.XERO_TRACKING_CATEGORY_ID;
 
     // Prefer explicit cost_centre, fallback to postcode mapping if present
@@ -248,19 +249,17 @@ export async function createXeroInvoiceForOrder(order: OrderRow): Promise<string
 
     const resp = await xero.accountingApi.createInvoices(tenantId, payload);
 
-    // Handle multiple response shapes across SDK versions, without TS fighting us
+    // Handle multiple SDK response shapes without TS fighting us
     const body: any = resp?.body;
+    const invoice = body?.invoices?.[0] || body?.Invoices?.[0];
 
-    const invoiceId =
-      body?.invoices?.[0]?.invoiceID ||
-      body?.invoices?.[0]?.InvoiceID ||
-      body?.Invoices?.[0]?.invoiceID ||
-      body?.Invoices?.[0]?.InvoiceID;
+    const invoiceId: string | undefined = invoice?.invoiceID || invoice?.InvoiceID;
+    const invoiceNumber: string | undefined = invoice?.invoiceNumber || invoice?.InvoiceNumber;
 
     if (!invoiceId) {
       throw new Error("Xero invoice creation succeeded but no InvoiceID returned.");
     }
 
-    return invoiceId as string;
+    return { xeroInvoiceId: invoiceId, xeroInvoiceNumber: invoiceNumber };
   });
 }
