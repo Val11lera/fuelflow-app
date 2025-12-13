@@ -134,7 +134,6 @@ export async function withXeroRetry<T>(fn: (xero: XeroClient) => Promise<T>): Pr
 
 // -----------------------------------------------------------------------------
 // Backwards compatible types/exports for existing routes (sync-pending.ts)
-// IMPORTANT: index signature prevents endless TS build failures when new fields appear
 // -----------------------------------------------------------------------------
 export type OrderRow = {
   [key: string]: any;
@@ -169,20 +168,6 @@ function poundsFromPence(pence?: number | null) {
   return Math.round(pence) / 100;
 }
 
-function toXeroDateString(d?: string | null) {
-  // Xero prefers YYYY-MM-DD
-  if (!d) {
-    const now = new Date();
-    return now.toISOString().slice(0, 10);
-  }
-  // If it's already YYYY-MM-DD, keep it
-  if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
-
-  const dt = new Date(d);
-  if (Number.isNaN(dt.getTime())) return new Date().toISOString().slice(0, 10);
-  return dt.toISOString().slice(0, 10);
-}
-
 async function getTenantIdOrThrow(xero: any): Promise<string> {
   const envTenantId = process.env.XERO_TENANT_ID;
   if (envTenantId) return envTenantId;
@@ -191,6 +176,77 @@ async function getTenantIdOrThrow(xero: any): Promise<string> {
   const tenantId = tenants?.[0]?.tenantId;
   if (!tenantId) throw new Error("No Xero tenant connected. Reconnect Xero and try again.");
   return tenantId;
+}
+
+function toXeroDateString(d?: string | null) {
+  // Xero is happiest with YYYY-MM-DD
+  const dt = d ? new Date(d) : new Date();
+  const yyyy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+// -----------------------------------------------------------------------------
+// Auto-pick defaults (prevents “Account code/TaxType missing”)
+// -----------------------------------------------------------------------------
+let cachedSalesAccountCode: string | null = null;
+let cachedTaxType: string | null = null;
+
+async function resolveSalesAccountCode(xero: any, tenantId: string): Promise<string> {
+  // 1) explicit env (recommended)
+  const envCode = process.env.XERO_SALES_ACCOUNT_CODE?.trim();
+  if (envCode) return envCode;
+
+  if (cachedSalesAccountCode) return cachedSalesAccountCode;
+
+  // 2) auto-detect a Revenue/Sales account
+  const resp = await xero.accountingApi.getAccounts(tenantId);
+  const accounts: any[] = resp?.body?.accounts || resp?.body?.Accounts || [];
+
+  // Try common “Sales” account code first (often 200)
+  const by200 = accounts.find((a) => String(a?.code) === "200");
+  if (by200?.code) {
+    cachedSalesAccountCode = String(by200.code);
+    return cachedSalesAccountCode;
+  }
+
+  // Otherwise pick first REVENUE account
+  const revenue = accounts.find((a) => String(a?.type || "").toUpperCase() === "REVENUE");
+  if (revenue?.code) {
+    cachedSalesAccountCode = String(revenue.code);
+    return cachedSalesAccountCode;
+  }
+
+  throw new Error(
+    "No XERO_SALES_ACCOUNT_CODE set and could not auto-detect a Revenue account in Xero. Set XERO_SALES_ACCOUNT_CODE in Vercel."
+  );
+}
+
+async function resolveTaxType(xero: any, tenantId: string): Promise<string | undefined> {
+  // 1) explicit env (recommended if you know it)
+  const envType = process.env.XERO_TAX_TYPE?.trim();
+  if (envType) return envType;
+
+  if (cachedTaxType) return cachedTaxType;
+
+  // 2) auto-detect a sensible OUTPUT tax rate (VAT on Income)
+  const resp = await xero.accountingApi.getTaxRates(tenantId);
+  const taxRates: any[] = resp?.body?.taxRates || resp?.body?.TaxRates || [];
+
+  // Prefer a 20% OUTPUT rate if present
+  const preferred =
+    taxRates.find((t) => String(t?.taxType || "").toUpperCase().includes("OUTPUT") && Number(t?.displayTaxRate) === 20) ||
+    taxRates.find((t) => String(t?.taxType || "").toUpperCase().includes("OUTPUT"));
+
+  if (preferred?.taxType) {
+    cachedTaxType = String(preferred.taxType);
+    return cachedTaxType;
+  }
+
+  // If none found, we return undefined and let Xero default if your org allows it.
+  // (Some orgs require TaxType -> then you MUST set XERO_TAX_TYPE)
+  return undefined;
 }
 
 // -----------------------------------------------------------------------------
@@ -202,21 +258,6 @@ export async function createXeroInvoiceForOrder(
 ): Promise<{ xeroInvoiceId: string; xeroInvoiceNumber?: string }> {
   return await withXeroRetry(async (xero) => {
     const tenantId = await getTenantIdOrThrow(xero);
-
-    // REQUIRED for Xero validation:
-    const accountCode = process.env.XERO_SALES_ACCOUNT_CODE;
-    const taxType = process.env.XERO_TAX_TYPE;
-
-    if (!accountCode) {
-      throw new Error(
-        "Missing XERO_SALES_ACCOUNT_CODE env var. Set it in Vercel (e.g. '200' for Sales) then redeploy."
-      );
-    }
-    if (!taxType) {
-      throw new Error(
-        "Missing XERO_TAX_TYPE env var. Set it in Vercel to the correct Xero TaxType for your sales invoices then redeploy."
-      );
-    }
 
     const litresRaw = order.litres ?? order.Litres ?? 1;
     const litresNum = typeof litresRaw === "string" ? Number(litresRaw) : Number(litresRaw);
@@ -230,66 +271,65 @@ export async function createXeroInvoiceForOrder(
       (totalPence != null ? poundsFromPence(totalPence)! / qty : 0);
 
     const fuel = order.fuel ?? order.Fuel ?? "Fuel";
-    const description = `FuelFlow ${fuel} order (${order.id})`;
+    const description = `FuelFlow ${String(fuel).toLowerCase()} order (${order.id})`;
 
-    // Tracking / cost centre (optional)
-    // IMPORTANT NOTE:
-    // - TrackingCategoryID/TrackingOptionID are GUIDs.
-    // - Your "EECO5" is NOT a GUID.
-    // So we only attach tracking if you explicitly configure it correctly.
-    const trackingCategoryId = process.env.XERO_TRACKING_CATEGORY_ID; // GUID (optional)
-    const trackingOptionId = process.env.XERO_TRACKING_OPTION_ID; // GUID (optional)
+    // ✅ Fix #1: always provide AccountCode (Xero requires it)
+    const accountCode = await resolveSalesAccountCode(xero, tenantId);
 
-    // If you're not using GUIDs, don't send tracking to Xero.
+    // ✅ Fix #2: provide TaxType if available/required
+    const taxType = await resolveTaxType(xero, tenantId);
+
+    // ✅ Fix #3: Tracking uses Name/Option (NOT IDs)
+    const trackingCategoryName = process.env.XERO_TRACKING_CATEGORY_NAME?.trim();
+
+    // Use your order.cost_centre if present; otherwise build from postcode
+    const trackingOptionName =
+      (order.cost_centre as string | undefined) ||
+      (order.postcode ? buildCostCentreFromPostcode(order.postcode) : undefined);
+
     const tracking =
-      trackingCategoryId && trackingOptionId
-        ? [
-            {
-              TrackingCategoryID: trackingCategoryId,
-              TrackingOptionID: trackingOptionId,
-            },
-          ]
+      trackingCategoryName && trackingOptionName
+        ? [{ Name: trackingCategoryName, Option: trackingOptionName }]
         : undefined;
 
-    const invoiceDate = toXeroDateString(order.paid_at || order.created_at);
-    const dueDate = toXeroDateString(order.paid_at || order.created_at || order.delivery_date);
+    const invoiceDate = toXeroDateString(order.paid_at || order.created_at || order.delivery_date || null);
 
-    const invoice: any = {
-      type: "ACCREC",
-      status: "AUTHORISED",
-      reference: `FuelFlow Order ${order.id}`,
-      contact: {
-        name: order.name || order.user_email || "FuelFlow Customer",
-        emailAddress: order.user_email || undefined,
-      },
-      date: invoiceDate,
-      dueDate: dueDate,
-      lineAmountTypes: "Exclusive",
-      lineItems: [
+    const payload: any = {
+      Invoices: [
         {
-          description,
-          quantity: qty,
-          unitAmount,
-          accountCode, // ✅ REQUIRED
-          taxType,     // ✅ REQUIRED
-          ...(tracking ? { tracking } : {}),
+          Type: "ACCREC",
+          Status: "AUTHORISED",
+          Reference: `FuelFlow Order ${order.id}`,
+          Contact: {
+            Name: order.name || order.user_email || "FuelFlow Customer",
+            EmailAddress: order.user_email || undefined,
+          },
+          Date: invoiceDate,
+          DueDate: invoiceDate,
+          LineItems: [
+            {
+              Description: description,
+              Quantity: qty,
+              UnitAmount: unitAmount,
+              AccountCode: accountCode,
+              ...(taxType ? { TaxType: taxType } : {}),
+              ...(tracking ? { Tracking: tracking } : {}),
+            },
+          ],
         },
       ],
     };
 
-    // xero-node can accept either casing; we send the modern one to avoid "NoDataProcessed"
-    const payload: any = { invoices: [invoice] };
-
     const resp = await xero.accountingApi.createInvoices(tenantId, payload);
 
     const body: any = resp?.body;
-    const created = body?.invoices?.[0] || body?.Invoices?.[0];
+    const invoice = body?.invoices?.[0] || body?.Invoices?.[0];
 
-    const invoiceId: string | undefined = created?.invoiceID || created?.InvoiceID;
-    const invoiceNumber: string | undefined = created?.invoiceNumber || created?.InvoiceNumber;
+    const invoiceId: string | undefined = invoice?.invoiceID || invoice?.InvoiceID;
+    const invoiceNumber: string | undefined = invoice?.invoiceNumber || invoice?.InvoiceNumber;
 
     if (!invoiceId) {
-      throw new Error("Xero invoice creation succeeded but no InvoiceID returned.");
+      throw new Error("Xero invoice creation failed: no InvoiceID returned.");
     }
 
     return { xeroInvoiceId: invoiceId, xeroInvoiceNumber: invoiceNumber };
