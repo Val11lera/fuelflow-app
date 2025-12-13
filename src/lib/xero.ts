@@ -168,6 +168,16 @@ function poundsFromPence(pence?: number | null) {
   return Math.round(pence) / 100;
 }
 
+function isoDateOnly(d?: string | null) {
+  // Xero likes YYYY-MM-DD
+  if (!d) return new Date().toISOString().slice(0, 10);
+  // if it's already YYYY-MM-DD, keep it
+  if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return new Date().toISOString().slice(0, 10);
+  return dt.toISOString().slice(0, 10);
+}
+
 async function getTenantIdOrThrow(xero: any): Promise<string> {
   const envTenantId = process.env.XERO_TENANT_ID;
   if (envTenantId) return envTenantId;
@@ -178,80 +188,9 @@ async function getTenantIdOrThrow(xero: any): Promise<string> {
   return tenantId;
 }
 
-function toXeroDateString(d?: string | null) {
-  // Xero is happiest with YYYY-MM-DD
-  const dt = d ? new Date(d) : new Date();
-  const yyyy = dt.getUTCFullYear();
-  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(dt.getUTCDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-// -----------------------------------------------------------------------------
-// Auto-pick defaults (prevents “Account code/TaxType missing”)
-// -----------------------------------------------------------------------------
-let cachedSalesAccountCode: string | null = null;
-let cachedTaxType: string | null = null;
-
-async function resolveSalesAccountCode(xero: any, tenantId: string): Promise<string> {
-  // 1) explicit env (recommended)
-  const envCode = process.env.XERO_SALES_ACCOUNT_CODE?.trim();
-  if (envCode) return envCode;
-
-  if (cachedSalesAccountCode) return cachedSalesAccountCode;
-
-  // 2) auto-detect a Revenue/Sales account
-  const resp = await xero.accountingApi.getAccounts(tenantId);
-  const accounts: any[] = resp?.body?.accounts || resp?.body?.Accounts || [];
-
-  // Try common “Sales” account code first (often 200)
-  const by200 = accounts.find((a) => String(a?.code) === "200");
-  if (by200?.code) {
-    cachedSalesAccountCode = String(by200.code);
-    return cachedSalesAccountCode;
-  }
-
-  // Otherwise pick first REVENUE account
-  const revenue = accounts.find((a) => String(a?.type || "").toUpperCase() === "REVENUE");
-  if (revenue?.code) {
-    cachedSalesAccountCode = String(revenue.code);
-    return cachedSalesAccountCode;
-  }
-
-  throw new Error(
-    "No XERO_SALES_ACCOUNT_CODE set and could not auto-detect a Revenue account in Xero. Set XERO_SALES_ACCOUNT_CODE in Vercel."
-  );
-}
-
-async function resolveTaxType(xero: any, tenantId: string): Promise<string | undefined> {
-  // 1) explicit env (recommended if you know it)
-  const envType = process.env.XERO_TAX_TYPE?.trim();
-  if (envType) return envType;
-
-  if (cachedTaxType) return cachedTaxType;
-
-  // 2) auto-detect a sensible OUTPUT tax rate (VAT on Income)
-  const resp = await xero.accountingApi.getTaxRates(tenantId);
-  const taxRates: any[] = resp?.body?.taxRates || resp?.body?.TaxRates || [];
-
-  // Prefer a 20% OUTPUT rate if present
-  const preferred =
-    taxRates.find((t) => String(t?.taxType || "").toUpperCase().includes("OUTPUT") && Number(t?.displayTaxRate) === 20) ||
-    taxRates.find((t) => String(t?.taxType || "").toUpperCase().includes("OUTPUT"));
-
-  if (preferred?.taxType) {
-    cachedTaxType = String(preferred.taxType);
-    return cachedTaxType;
-  }
-
-  // If none found, we return undefined and let Xero default if your org allows it.
-  // (Some orgs require TaxType -> then you MUST set XERO_TAX_TYPE)
-  return undefined;
-}
-
 // -----------------------------------------------------------------------------
 // Back-compat: create invoice for order
-// MUST return { xeroInvoiceId, xeroInvoiceNumber } (sync-pending.ts destructures)
+// MUST return { xeroInvoiceId, xeroInvoiceNumber }
 // -----------------------------------------------------------------------------
 export async function createXeroInvoiceForOrder(
   order: OrderRow
@@ -271,49 +210,63 @@ export async function createXeroInvoiceForOrder(
       (totalPence != null ? poundsFromPence(totalPence)! / qty : 0);
 
     const fuel = order.fuel ?? order.Fuel ?? "Fuel";
-    const description = `FuelFlow ${String(fuel).toLowerCase()} order (${order.id})`;
+    const description = `FuelFlow ${fuel} order (${order.id})`;
 
-    // ✅ Fix #1: always provide AccountCode (Xero requires it)
-    const accountCode = await resolveSalesAccountCode(xero, tenantId);
+    // REQUIRED (in most orgs): at least an AccountCode (revenue) and a valid TaxType
+    const accountCode = process.env.XERO_SALES_ACCOUNT_CODE || process.env.XERO_ACCOUNT_CODE || "200";
+    const taxType = process.env.XERO_TAX_TYPE; // MUST be a valid Xero tax type code for your org
 
-    // ✅ Fix #2: provide TaxType if available/required
-    const taxType = await resolveTaxType(xero, tenantId);
+    if (!taxType) {
+      // Don’t silently create broken invoices
+      throw new Error(
+        "Missing XERO_TAX_TYPE. Set it in Vercel to a VALID Xero tax type code (e.g. OUTPUT2 / NONE / etc, depending on your org)."
+      );
+    }
 
-    // ✅ Fix #3: Tracking uses Name/Option (NOT IDs)
-    const trackingCategoryName = process.env.XERO_TRACKING_CATEGORY_NAME?.trim();
+    // Tracking (optional)
+    const trackingCategoryId = process.env.XERO_TRACKING_CATEGORY_ID;
 
-    // Use your order.cost_centre if present; otherwise build from postcode
-    const trackingOptionName =
+    // Prefer explicit cost_centre, fallback to postcode mapping if present
+    const trackingOptionId =
       (order.cost_centre as string | undefined) ||
       (order.postcode ? buildCostCentreFromPostcode(order.postcode) : undefined);
 
-    const tracking =
-      trackingCategoryName && trackingOptionName
-        ? [{ Name: trackingCategoryName, Option: trackingOptionName }]
-        : undefined;
-
-    const invoiceDate = toXeroDateString(order.paid_at || order.created_at || order.delivery_date || null);
-
+    // ✅ IMPORTANT: xero-node expects camelCase keys (invoices, lineItems, unitAmount, accountCode, taxType, contact)
     const payload: any = {
-      Invoices: [
+      invoices: [
         {
-          Type: "ACCREC",
-          Status: "AUTHORISED",
-          Reference: `FuelFlow Order ${order.id}`,
-          Contact: {
-            Name: order.name || order.user_email || "FuelFlow Customer",
-            EmailAddress: order.user_email || undefined,
+          type: "ACCREC",
+          status: "AUTHORISED",
+          reference: `FuelFlow Order ${order.id}`,
+
+          contact: {
+            name: order.name || order.user_email || "FuelFlow Customer",
+            emailAddress: order.user_email || undefined,
           },
-          Date: invoiceDate,
-          DueDate: invoiceDate,
-          LineItems: [
+
+          date: isoDateOnly(order.paid_at || order.created_at),
+          dueDate: isoDateOnly(order.paid_at || order.created_at),
+
+          lineAmountTypes: "Exclusive",
+
+          lineItems: [
             {
-              Description: description,
-              Quantity: qty,
-              UnitAmount: unitAmount,
-              AccountCode: accountCode,
-              ...(taxType ? { TaxType: taxType } : {}),
-              ...(tracking ? { Tracking: tracking } : {}),
+              description,
+              quantity: qty,
+              unitAmount,
+              accountCode,
+              taxType,
+
+              ...(trackingCategoryId && trackingOptionId
+                ? {
+                    tracking: [
+                      {
+                        trackingCategoryID: trackingCategoryId,
+                        trackingOptionID: trackingOptionId,
+                      },
+                    ],
+                  }
+                : {}),
             },
           ],
         },
@@ -323,13 +276,15 @@ export async function createXeroInvoiceForOrder(
     const resp = await xero.accountingApi.createInvoices(tenantId, payload);
 
     const body: any = resp?.body;
+
+    // OpenAPI generator uses lowerCamelCase `invoices`
     const invoice = body?.invoices?.[0] || body?.Invoices?.[0];
 
     const invoiceId: string | undefined = invoice?.invoiceID || invoice?.InvoiceID;
     const invoiceNumber: string | undefined = invoice?.invoiceNumber || invoice?.InvoiceNumber;
 
     if (!invoiceId) {
-      throw new Error("Xero invoice creation failed: no InvoiceID returned.");
+      throw new Error("Xero invoice creation returned no invoiceID. Check Xero response body.");
     }
 
     return { xeroInvoiceId: invoiceId, xeroInvoiceNumber: invoiceNumber };
