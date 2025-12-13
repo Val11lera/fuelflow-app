@@ -170,6 +170,17 @@ function poundsFromPence(pence?: number | null) {
   return Math.round(pence) / 100;
 }
 
+function toIsoDateOnly(value?: string | null) {
+  // Xero is happiest with YYYY-MM-DD
+  if (!value) return new Date().toISOString().slice(0, 10);
+  // if already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  // try parse
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
+  return d.toISOString().slice(0, 10);
+}
+
 async function getTenantIdOrThrow(xero: any): Promise<string> {
   const envTenantId = process.env.XERO_TENANT_ID;
   if (envTenantId) return envTenantId;
@@ -212,31 +223,38 @@ export async function createXeroInvoiceForOrder(
       (order.cost_centre as string | undefined) ||
       (order.postcode ? buildCostCentreFromPostcode(order.postcode) : undefined);
 
+    // Use delivery_date if present, otherwise paid_at/created_at/today
+    const invoiceDate = toIsoDateOnly(order.delivery_date || order.paid_at || order.created_at || null);
+
+    // IMPORTANT:
+    // - xero-node expects payload.invoices (lowercase)
+    // - invoice fields should be camelCase (type/contact/lineItems/etc)
+    // If you send { Invoices: [...] } it often becomes {} on the wire (your current error).
     const payload: any = {
-      Invoices: [
+      invoices: [
         {
-          Type: "ACCREC",
-          Status: "AUTHORISED",
-          Reference: `FuelFlow Order ${order.id}`,
-          Contact: {
-            Name: order.name || order.user_email || "FuelFlow Customer",
-            EmailAddress: order.user_email || undefined,
+          type: "ACCREC",
+          status: "AUTHORISED",
+          reference: `FuelFlow Order ${order.id}`,
+          contact: {
+            name: order.name || order.user_email || "FuelFlow Customer",
+            emailAddress: order.user_email || undefined,
           },
-          Date: order.paid_at || order.created_at || new Date().toISOString(),
-          DueDate: order.paid_at || order.created_at || new Date().toISOString(),
-          LineItems: [
+          date: invoiceDate,
+          dueDate: invoiceDate,
+          lineItems: [
             {
-              Description: description,
-              Quantity: qty,
-              UnitAmount: unitAmount,
-              AccountCode: process.env.XERO_SALES_ACCOUNT_CODE || undefined,
-              TaxType: process.env.XERO_TAX_TYPE || undefined,
+              description,
+              quantity: qty,
+              unitAmount: unitAmount,
+              accountCode: process.env.XERO_SALES_ACCOUNT_CODE || undefined,
+              taxType: process.env.XERO_TAX_TYPE || undefined,
               ...(trackingCategoryId && trackingOptionId
                 ? {
-                    Tracking: [
+                    tracking: [
                       {
-                        TrackingCategoryID: trackingCategoryId,
-                        TrackingOptionID: trackingOptionId,
+                        trackingCategoryID: trackingCategoryId,
+                        trackingOptionID: trackingOptionId,
                       },
                     ],
                   }
@@ -247,6 +265,12 @@ export async function createXeroInvoiceForOrder(
       ],
     };
 
+    // Helpful debug (safe): confirms we are NOT sending {}
+    // You can remove later once stable.
+    console.log("XERO createInvoices payload keys:", Object.keys(payload));
+    console.log("XERO createInvoices payload:", JSON.stringify(payload, null, 2));
+
+    // xero-node v13+ typically signature: createInvoices(tenantId, payload)
     const resp = await xero.accountingApi.createInvoices(tenantId, payload);
 
     // Handle multiple SDK response shapes without TS fighting us
