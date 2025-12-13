@@ -2,7 +2,7 @@
 // src/lib/xero.ts
 import { XeroClient, TokenSet } from "xero-node";
 import { createClient } from "@supabase/supabase-js";
-import { buildCostCentreFromPostcode } from "./cost-centre"; // keep - used elsewhere in your app
+import { buildCostCentreFromPostcode } from "./cost-centre"; // keep - used elsewhere
 
 // -----------------------------------------------------------------------------
 // Supabase (admin) client (SERVICE ROLE)
@@ -133,11 +133,9 @@ export async function withXeroRetry<T>(fn: (xero: XeroClient) => Promise<T>): Pr
 }
 
 // -----------------------------------------------------------------------------
-// Backwards compatible types/exports for existing routes (sync-pending.ts)
-// IMPORTANT: index signature prevents endless TS build failures when new fields appear
+// Backwards compatible types/exports
 // -----------------------------------------------------------------------------
 export type OrderRow = {
-  // allow extra fields without breaking builds
   [key: string]: any;
 
   id: string;
@@ -171,11 +169,9 @@ function poundsFromPence(pence?: number | null) {
 }
 
 function toIsoDateOnly(value?: string | null) {
-  // Xero is happiest with YYYY-MM-DD
   if (!value) return new Date().toISOString().slice(0, 10);
-  // if already YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
-  // try parse
+
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
   return d.toISOString().slice(0, 10);
@@ -192,14 +188,60 @@ async function getTenantIdOrThrow(xero: any): Promise<string> {
 }
 
 // -----------------------------------------------------------------------------
-// Back-compat: create invoice for order
-// MUST return { xeroInvoiceId, xeroInvoiceNumber } (sync-pending.ts destructures)
+// Direct Xero API request (bypasses xero-node serialization issues)
+// -----------------------------------------------------------------------------
+async function xeroApiRequest<T>(opts: {
+  accessToken: string;
+  tenantId: string;
+  path: string;
+  method: "GET" | "POST" | "PUT";
+  body?: any;
+}): Promise<T> {
+  const url = `https://api.xero.com${opts.path}`;
+
+  const res = await fetch(url, {
+    method: opts.method,
+    headers: {
+      Authorization: `Bearer ${opts.accessToken}`,
+      "Xero-Tenant-Id": opts.tenantId,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    // leave as text if not JSON
+  }
+
+  if (!res.ok) {
+    // Keep the response readable in logs + Supabase error column
+    throw new Error(`Xero API ${opts.method} ${opts.path} failed (${res.status}): ${text}`);
+  }
+
+  return json as T;
+}
+
+// -----------------------------------------------------------------------------
+// create invoice for order (returns IDs)
 // -----------------------------------------------------------------------------
 export async function createXeroInvoiceForOrder(
   order: OrderRow
 ): Promise<{ xeroInvoiceId: string; xeroInvoiceNumber?: string }> {
   return await withXeroRetry(async (xero) => {
     const tenantId = await getTenantIdOrThrow(xero);
+
+    // IMPORTANT: get the raw access token that will actually be used
+    const tokenSet: any = (xero as any).readTokenSet ? await (xero as any).readTokenSet() : (xero as any).tokenSet;
+    const accessToken: string | undefined = tokenSet?.access_token;
+
+    if (!accessToken) {
+      throw new Error("No Xero access_token available (token set missing access_token). Reconnect Xero.");
+    }
 
     const litresRaw = order.litres ?? order.Litres ?? 1;
     const litresNum = typeof litresRaw === "string" ? Number(litresRaw) : Number(litresRaw);
@@ -215,46 +257,41 @@ export async function createXeroInvoiceForOrder(
     const fuel = order.fuel ?? order.Fuel ?? "Fuel";
     const description = `FuelFlow ${fuel} order (${order.id})`;
 
-    // Tracking / cost centre (optional)
-    const trackingCategoryId = process.env.XERO_TRACKING_CATEGORY_ID;
+    // dates
+    const invoiceDate = toIsoDateOnly(order.delivery_date || order.paid_at || order.created_at || null);
 
-    // Prefer explicit cost_centre, fallback to postcode mapping if present
+    // tracking (optional)
+    const trackingCategoryId = process.env.XERO_TRACKING_CATEGORY_ID;
     const trackingOptionId =
       (order.cost_centre as string | undefined) ||
       (order.postcode ? buildCostCentreFromPostcode(order.postcode) : undefined);
 
-    // Use delivery_date if present, otherwise paid_at/created_at/today
-    const invoiceDate = toIsoDateOnly(order.delivery_date || order.paid_at || order.created_at || null);
-
-    // IMPORTANT:
-    // - xero-node expects payload.invoices (lowercase)
-    // - invoice fields should be camelCase (type/contact/lineItems/etc)
-    // If you send { Invoices: [...] } it often becomes {} on the wire (your current error).
-    const payload: any = {
-      invoices: [
+    // This is the EXACT structure Xero Accounting API expects
+    const invoicePayload: any = {
+      Invoices: [
         {
-          type: "ACCREC",
-          status: "AUTHORISED",
-          reference: `FuelFlow Order ${order.id}`,
-          contact: {
-            name: order.name || order.user_email || "FuelFlow Customer",
-            emailAddress: order.user_email || undefined,
+          Type: "ACCREC",
+          Status: "AUTHORISED",
+          Reference: `FuelFlow Order ${order.id}`,
+          Contact: {
+            Name: order.name || order.user_email || "FuelFlow Customer",
+            EmailAddress: order.user_email || undefined,
           },
-          date: invoiceDate,
-          dueDate: invoiceDate,
-          lineItems: [
+          Date: invoiceDate,
+          DueDate: invoiceDate,
+          LineItems: [
             {
-              description,
-              quantity: qty,
-              unitAmount: unitAmount,
-              accountCode: process.env.XERO_SALES_ACCOUNT_CODE || undefined,
-              taxType: process.env.XERO_TAX_TYPE || undefined,
+              Description: description,
+              Quantity: qty,
+              UnitAmount: unitAmount,
+              AccountCode: process.env.XERO_SALES_ACCOUNT_CODE || undefined,
+              TaxType: process.env.XERO_TAX_TYPE || undefined,
               ...(trackingCategoryId && trackingOptionId
                 ? {
-                    tracking: [
+                    Tracking: [
                       {
-                        trackingCategoryID: trackingCategoryId,
-                        trackingOptionID: trackingOptionId,
+                        TrackingCategoryID: trackingCategoryId,
+                        TrackingOptionID: trackingOptionId,
                       },
                     ],
                   }
@@ -265,23 +302,24 @@ export async function createXeroInvoiceForOrder(
       ],
     };
 
-    // Helpful debug (safe): confirms we are NOT sending {}
-    // You can remove later once stable.
-    console.log("XERO createInvoices payload keys:", Object.keys(payload));
-    console.log("XERO createInvoices payload:", JSON.stringify(payload, null, 2));
+    // log what we're actually sending (this will prove it isn't `{}`)
+    console.log("XERO DIRECT payload:", JSON.stringify(invoicePayload, null, 2));
 
-    // xero-node v13+ typically signature: createInvoices(tenantId, payload)
-    const resp = await xero.accountingApi.createInvoices(tenantId, payload);
+    // Xero uses PUT /Invoices for create
+    const resp = await xeroApiRequest<any>({
+      accessToken,
+      tenantId,
+      method: "PUT",
+      path: "/api.xro/2.0/Invoices",
+      body: invoicePayload,
+    });
 
-    // Handle multiple SDK response shapes without TS fighting us
-    const body: any = resp?.body;
-    const invoice = body?.invoices?.[0] || body?.Invoices?.[0];
-
-    const invoiceId: string | undefined = invoice?.invoiceID || invoice?.InvoiceID;
-    const invoiceNumber: string | undefined = invoice?.invoiceNumber || invoice?.InvoiceNumber;
+    const invoice = resp?.Invoices?.[0] || resp?.invoices?.[0];
+    const invoiceId = invoice?.InvoiceID || invoice?.invoiceID;
+    const invoiceNumber = invoice?.InvoiceNumber || invoice?.invoiceNumber;
 
     if (!invoiceId) {
-      throw new Error("Xero invoice creation succeeded but no InvoiceID returned.");
+      throw new Error(`Xero returned success but no InvoiceID. Raw response: ${JSON.stringify(resp)}`);
     }
 
     return { xeroInvoiceId: invoiceId, xeroInvoiceNumber: invoiceNumber };
